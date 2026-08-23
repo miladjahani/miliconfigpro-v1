@@ -1,0 +1,34 @@
+# Deploys the miliconfig-pro FRONTEND (this React app) as Cloudflare Workers
+# Static Assets. This is separate from public/repo/wrangler.toml, which is
+# the template used when the app deploys *other* edge-relay workers on
+# behalf of users.
+#
+# No secrets/dashboard variables are required — VITE_SUPABASE_URL and
+# VITE_SUPABASE_ANON_KEY are already committed in .env.production (safe by
+# design: Supabase's anon key is meant to be public, access is enforced by
+# RLS).
+#
+# ── One-time setup for automatic Git -> Cloudflare Worker deploys ──────────
+# This connection itself lives in Cloudflare's dashboard, not in the repo,
+# so it's the one step that can't be shipped as a file. After that one-time
+# click, every push to this repo deploys automatically — no GitHub Actions
+# needed for this target, Cloudflare runs its own build on push.
+#   1. dash.cloudflare.com -> Workers & Pages -> Create -> Connect to Git
+#   2. Pick this repo, branch: main
+#   3. Build command:   npm run build
+#      Deploy command:  npx wrangler deploy
+#      Root directory:  (leave blank)
+#      Node version:    auto-detected from .node-version / package.json engines
+# That's it — package.json already ships "wrangler" as a devDependency and a
+# "deploy" script, and this file already defines the Worker name and asset
+# routing, so Cloudflare's build step needs no further configuration.
+
+name = "miliconfig-pro"
+compatibility_date = "2025-11-04"
+
+[assets]
+directory = "./dist"
+# All unmatched paths fall back to index.html so client-side routing works
+# even if a visitor lands on a deep link directly (belt-and-suspenders on
+# top of HashRouter, which already avoids this in normal navigation).
+not_found_handling = "single-page-application"

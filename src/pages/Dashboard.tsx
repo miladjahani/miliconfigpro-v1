@@ -1,0 +1,205 @@
+import { useEffect, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/auth'
+import {
+  KeyRound,
+  Rocket,
+  Users,
+  Activity,
+  TrendingUp,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Cloud,
+  Bot,
+  Zap,
+} from 'lucide-react'
+import { Link } from 'react-router-dom'
+
+interface Stats {
+  tokens: number
+  deployments: number
+  deployed: number
+  failed: number
+  botUsers: number
+  activeBotUsers: number
+  recentLogs: number
+}
+
+interface RecentLog {
+  id: string
+  action: string
+  entity_name: string | null
+  created_at: string
+}
+
+export default function Dashboard() {
+  const { user } = useAuth()
+  const [stats, setStats] = useState<Stats | null>(null)
+  const [logs, setLogs] = useState<RecentLog[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function load() {
+      const [tokens, deployments, botUsers, recentLogs] = await Promise.all([
+        supabase.from('cf_tokens').select('*', { count: 'exact', head: true }),
+        supabase.from('deployments').select('status'),
+        supabase.from('bot_users').select('is_active'),
+        supabase.from('activity_logs').select('id, action, entity_name, created_at').order('created_at', { ascending: false }).limit(8),
+      ])
+
+      const depStatuses = deployments.data ?? []
+      setStats({
+        tokens: tokens.count ?? 0,
+        deployments: depStatuses.length,
+        deployed: depStatuses.filter((d: { status: string }) => d.status === 'deployed').length,
+        failed: depStatuses.filter((d: { status: string }) => d.status === 'failed').length,
+        botUsers: botUsers.data?.length ?? 0,
+        activeBotUsers: botUsers.data?.filter((b: { is_active: boolean }) => b.is_active).length ?? 0,
+        recentLogs: 0,
+      })
+      setLogs(recentLogs.data as RecentLog[])
+      setLoading(false)
+    }
+    load()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <Loader2 className="w-8 h-8 animate-spin text-brand-400" />
+      </div>
+    )
+  }
+
+  const statCards = [
+    { label: 'توکن‌های کلودفلر', value: stats?.tokens ?? 0, icon: KeyRound, color: 'from-blue-500 to-blue-600', link: '/tokens' },
+    { label: 'ورکرهای مستقر شده', value: stats?.deployed ?? 0, icon: Rocket, color: 'from-green-500 to-green-600', link: '/deployments' },
+    { label: 'کاربران ربات', value: stats?.botUsers ?? 0, icon: Users, color: 'from-purple-500 to-purple-600', link: '/bot-users' },
+    { label: 'کاربران فعال', value: stats?.activeBotUsers ?? 0, icon: Activity, color: 'from-orange-500 to-orange-600', link: '/bot-users' },
+  ]
+
+  const actionLabels: Record<string, string> = {
+    token_created: 'توکن ساخته شد',
+    token_deleted: 'توکن حذف شد',
+    deployment_created: 'استقرار شروع شد',
+    deployment_deployed: 'ورکر مستقر شد',
+    deployment_failed: 'استقرار ناموفق',
+    bot_configured: 'ربات پیکربندی شد',
+    bot_user_joined: 'کاربر جدید ربات',
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">داشبورد</h1>
+          <p className="text-slate-400 text-sm mt-1">سلام {user?.email?.split('@')[0]} 👋 خوش برگشتی!</p>
+        </div>
+        <Link to="/deploy" className="btn-primary flex items-center gap-2 self-start">
+          <Zap className="w-4 h-4" />
+          استقرار ورکر جدید
+        </Link>
+      </div>
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {statCards.map((card, i) => {
+          const Icon = card.icon
+          return (
+            <Link to={card.link} key={i} className="stat-card group animate-slide-up" style={{ animationDelay: `${i * 100}ms` }}>
+              <div className={`absolute -top-4 -left-4 w-24 h-24 bg-gradient-to-br ${card.color} opacity-10 rounded-full blur-2xl group-hover:opacity-20 transition-opacity`} />
+              <div className="flex items-start justify-between mb-4">
+                <div className={`p-3 rounded-xl bg-gradient-to-br ${card.color} shadow-lg`}>
+                  <Icon className="w-6 h-6 text-white" />
+                </div>
+                <TrendingUp className="w-4 h-4 text-slate-600" />
+              </div>
+              <p className="text-3xl font-bold text-white mb-1">{card.value}</p>
+              <p className="text-sm text-slate-400">{card.label}</p>
+            </Link>
+          )
+        })}
+      </div>
+
+      {/* Deployment status + quick actions */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Deployment status */}
+        <div className="glass-card p-6 lg:col-span-2">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <Cloud className="w-5 h-5 text-brand-400" />
+              وضعیت ورکرها
+            </h2>
+            <Link to="/deployments" className="text-sm text-brand-400 hover:text-brand-300 transition-colors">مشاهده همه</Link>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="text-center p-4 rounded-xl bg-slate-900/50 border border-slate-800">
+              <div className="inline-flex p-2 rounded-lg bg-blue-500/10 mb-2">
+                <Rocket className="w-5 h-5 text-blue-400" />
+              </div>
+              <p className="text-2xl font-bold text-white">{stats?.deployments ?? 0}</p>
+              <p className="text-xs text-slate-400 mt-1">کل ورکرها</p>
+            </div>
+            <div className="text-center p-4 rounded-xl bg-slate-900/50 border border-slate-800">
+              <div className="inline-flex p-2 rounded-lg bg-green-500/10 mb-2">
+                <CheckCircle2 className="w-5 h-5 text-green-400" />
+              </div>
+              <p className="text-2xl font-bold text-green-400">{stats?.deployed ?? 0}</p>
+              <p className="text-xs text-slate-400 mt-1">موفق</p>
+            </div>
+            <div className="text-center p-4 rounded-xl bg-slate-900/50 border border-slate-800">
+              <div className="inline-flex p-2 rounded-lg bg-red-500/10 mb-2">
+                <XCircle className="w-5 h-5 text-red-400" />
+              </div>
+              <p className="text-2xl font-bold text-red-400">{stats?.failed ?? 0}</p>
+              <p className="text-xs text-slate-400 mt-1">ناموفق</p>
+            </div>
+          </div>
+
+          {/* Quick action buttons */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-6">
+            <Link to="/tokens" className="btn-ghost flex items-center justify-center gap-2 text-sm">
+              <KeyRound className="w-4 h-4" /> مدیریت توکن
+            </Link>
+            <Link to="/bot-config" className="btn-ghost flex items-center justify-center gap-2 text-sm">
+              <Bot className="w-4 h-4" /> تنظیمات ربات
+            </Link>
+            <Link to="/logs" className="btn-ghost flex items-center justify-center gap-2 text-sm">
+              <Activity className="w-4 h-4" /> لاگ‌ها
+            </Link>
+          </div>
+        </div>
+
+        {/* Recent activity */}
+        <div className="glass-card p-6">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-4">
+            <Clock className="w-5 h-5 text-brand-400" />
+            فعالیت‌های اخیر
+          </h2>
+          {logs.length === 0 ? (
+            <div className="text-center py-8 text-slate-500 text-sm">
+              هنوز فعالیتی ثبت نشده
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {logs.map((log) => (
+                <div key={log.id} className="flex items-start gap-3 p-3 rounded-xl bg-slate-900/40 border border-slate-800/50 hover:border-slate-700 transition-colors">
+                  <div className="w-2 h-2 rounded-full bg-brand-400 mt-2 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white font-medium">{actionLabels[log.action] ?? log.action}</p>
+                    {log.entity_name && <p className="text-xs text-slate-500 truncate">{log.entity_name}</p>}
+                    <p className="text-xs text-slate-600 mt-1">{new Date(log.created_at).toLocaleString('fa-IR')}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
