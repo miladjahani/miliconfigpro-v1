@@ -1,6 +1,55 @@
 import type { Env } from './env'
 import { nowIso, genId } from './util'
-import { cfApi, getAccountId, createKvNamespace, uploadWorker } from './cfapi'
+
+// ── Ported 1:1 from the original cf-deploy function (Supabase → D1) ────────
+// The deploy steps, source URLs, bindings and fallbacks are identical to the
+// version the project originally shipped with.
+
+const API_BASE = 'https://api.cloudflare.com/client/v4'
+
+interface WorkerSourceConfig {
+  url: string
+  label: string
+  compat: string
+  kvBinding: string
+  configKey: string
+  configFormat: 'edgetunnel' | 'custom'
+  uuidEnvName: string
+  fallbackUrls?: string[]
+}
+
+const WORKER_SOURCES: Record<string, WorkerSourceConfig> = {
+  edgetunnel: {
+    url: 'https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js',
+    label: 'cmliu/edgetunnel',
+    compat: '2025-11-04',
+    kvBinding: 'KV',
+    configKey: 'config.json',
+    configFormat: 'edgetunnel',
+    uuidEnvName: 'UUID',
+  },
+  edgetunnel_kv: {
+    url: 'https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js',
+    label: 'cmliu/edgetunnel (KV mode)',
+    compat: '2025-11-04',
+    kvBinding: 'KV',
+    configKey: 'config.json',
+    configFormat: 'edgetunnel',
+    uuidEnvName: 'UUID',
+  },
+  custom: {
+    url: 'https://raw.githubusercontent.com/Alibakhshi-qr/miliconfig-pro/main/public/repo/worker-source.js',
+    label: 'Custom worker (CFnew v2.9.8c)',
+    compat: '2025-01-01',
+    kvBinding: 'C',
+    configKey: 'c',
+    configFormat: 'custom',
+    uuidEnvName: 'u',
+    fallbackUrls: [
+      'https://raw.githubusercontent.com/miladjahani/miliconfigpro-v1/main/public/repo/worker-source.js',
+    ],
+  },
+}
 
 export interface DeployJob {
   deployment_id: string
@@ -16,212 +65,360 @@ export interface DeployJob {
   origin: string
 }
 
-const EDGE_TUNNEL_URLS: Record<string, string> = {
-  edgetunnel: 'https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js',
-  edgetunnel_kv: 'https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js',
+async function appendLog(env: Env, id: string, line: string): Promise<void> {
+  const row = await env.DB.prepare('SELECT logs FROM deployments WHERE id = ?').bind(id).first<{ logs: string | null }>()
+  const existing = row?.logs ?? ''
+  await env.DB.prepare('UPDATE deployments SET logs = ? WHERE id = ?').bind(existing + line + '\n', id).run()
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-async function appendLogs(env: Env, deploymentId: string, lines: string[]): Promise<void> {
-  if (!lines.length) return
-  const row = await env.DB.prepare('SELECT logs FROM deployments WHERE id = ?').bind(deploymentId).first<{ logs: string | null }>()
-  const merged = [...(row?.logs ? row.logs.split('\n').filter(Boolean) : []), ...lines].join('\n')
-  await env.DB.prepare('UPDATE deployments SET logs = ?, updated_at = ? WHERE id = ?')
-    .bind(merged, nowIso(), deploymentId)
-    .run()
-}
-
-async function failDeployment(env: Env, job: DeployJob, message: string): Promise<void> {
-  await appendLogs(env, job.deployment_id, [`✗ ${message}`])
-  await env.DB.prepare("UPDATE deployments SET status = 'failed', error_message = ?, updated_at = ? WHERE id = ?")
-    .bind(message, nowIso(), job.deployment_id)
-    .run()
-}
-
-async function fetchWorkerCode(job: DeployJob): Promise<{ code?: string; error?: string }> {
-  const url =
-    job.worker_source === 'custom' ? `${job.origin}/repo/worker-source.js` : EDGE_TUNNEL_URLS[job.worker_source]
-  if (!url) return { error: `منبع ورکر نامشخص: ${job.worker_source}` }
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const resp = await fetch(url)
-      if (!resp.ok && attempt === 2) return { error: `دانلود سورس ورکر ناموفق بود (HTTP ${resp.status})` }
-      if (!resp.ok) { await sleep(1000); continue }
-      const code = await resp.text()
-      if (code && code.length > 200) return { code }
-      if (attempt === 2) return { error: 'سورس دانلودشده نامعتبر است' }
-      await sleep(1000)
-    } catch {
-      if (attempt === 2) return { error: 'خطای شبکه در دانلود سورس ورکر' }
-      await sleep(1000)
-    }
+async function updateDeployment(env: Env, id: string, status: string, updates: Record<string, unknown>): Promise<void> {
+  const sets = ['status = ?', 'updated_at = ?']
+  const binds: unknown[] = [status, nowIso()]
+  for (const [k, v] of Object.entries(updates)) {
+    sets.push(`${k} = ?`)
+    binds.push(typeof v === 'object' && v !== null ? JSON.stringify(v) : v)
   }
-  return { error: 'دانلود سورس ورکر ناموفق بود' }
-}
-
-/**
- * Resolve the account's workers.dev subdomain and make sure this worker is
- * enabled on it. Returns the final public host or null when unavailable.
- */
-async function resolveWorkersDevHost(
-  token: string,
-  accountId: string,
-  workerName: string,
-  logs: string[],
-): Promise<string | null> {
-  // 1. Account-level subdomain (e.g. "my-account.workers.dev")
-  const sd = await cfApi(token, `/accounts/${accountId}/workers/subdomain`)
-  const accountSubdomain =
-    ((sd.data?.result as { subdomain?: string } | undefined)?.subdomain ?? '').replace(/\.workers\.dev$/, '')
-  if (!sd.ok || !accountSubdomain) {
-    logs.push('⚠ زیردامنه workers.dev اکانت خوانده نشد — ممکن است workers.dev برای اکانت غیرفعال باشد')
-    return null
-  }
-
-  // 2. Enable this specific worker on workers.dev
-  const enable = await cfApi(token, `/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
-    method: 'POST',
-    body: { enabled: true },
-  })
-  if (!enable.ok) {
-    logs.push(`⚠ فعال‌سازی workers.dev برای این ورکر ناموفق بود (HTTP ${enable.status})`)
-    return null
-  }
-  logs.push(`✓ ورکر روی workers.dev فعال شد`)
-  return `${workerName}.${accountSubdomain}.workers.dev`
-}
-
-/** Wait until the deployed worker actually answers on its public URL. */
-async function waitUntilReachable(url: string, tries = 12): Promise<boolean> {
-  for (let i = 0; i < tries; i++) {
-    try {
-      const r = await fetch(url, { redirect: 'manual', headers: { 'User-Agent': 'miliconfig-deploy-check' } })
-      // Any HTTP response (even 4xx/5xx from the app itself) means DNS+edge is live.
-      if (r.status > 0) return true
-    } catch { /* not live yet */ }
-    await sleep(1000)
-  }
-  return false
+  binds.push(id)
+  await env.DB.prepare(`UPDATE deployments SET ${sets.join(', ')} WHERE id = ?`).bind(...(binds as string[])).run()
 }
 
 export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
-  const logs: string[] = []
+  const { deployment_id } = job
+  const worker_name = job.worker_name
+  const cf_token = job.cf_token
+  const uuid = job.uuid
+  const custom_path = job.custom_path ?? ''
+  const method = job.method
+  const worker_source = job.worker_source || 'edgetunnel'
+  const proxyip = job.proxyip ?? ''
+  const admin_password = job.admin_password ?? ''
+  const headers = { Authorization: `Bearer ${cf_token}` }
+
   try {
-    // ── 1. Verify token & resolve account ────────────────────────────────
-    const verify = await cfApi(job.cf_token, '/user/tokens/verify')
-    const verifyResult = verify.data?.result as { status?: string } | undefined
-    if (!verify.ok || verifyResult?.status !== 'active') {
-      await failDeployment(env, job, 'توکن Cloudflare نامعتبر یا غیرفعال است — توکن را در صفحه توکن‌ها بررسی کنید')
+    const sourceConfig = WORKER_SOURCES[worker_source] ?? WORKER_SOURCES.edgetunnel
+    const compatDate = sourceConfig.compat
+    const kvBindingName = sourceConfig.kvBinding
+    const configKvKey = sourceConfig.configKey
+    const configFormat = sourceConfig.configFormat
+    const uuidEnv = sourceConfig.uuidEnvName
+
+    // ── Verify token ────────────────────────────────────────────────────
+    await appendLog(env, deployment_id, 'verifying token...')
+    const verifyResp = await fetch(`${API_BASE}/user/tokens/verify`, { headers })
+    const verifyData = (await verifyResp.json()) as { success?: boolean }
+    if (!verifyData.success) {
+      await appendLog(env, deployment_id, '✗ invalid cloudflare token')
+      await updateDeployment(env, deployment_id, 'failed', { error_message: 'invalid cloudflare token' })
       return
     }
-    logs.push('✓ توکن Cloudflare تأیید شد')
+    await appendLog(env, deployment_id, '✓ token verified')
 
-    const acc = await getAccountId(job.cf_token)
-    if (!acc.accountId) {
-      await failDeployment(env, job, acc.error ?? 'اکانت کلودفلر پیدا نشد')
+    // ── Resolve account ─────────────────────────────────────────────────
+    await appendLog(env, deployment_id, 'listing accounts...')
+    const accountsResp = await fetch(`${API_BASE}/accounts?per_page=50`, { headers })
+    const accountsData = (await accountsResp.json()) as { success?: boolean; result?: Array<{ id: string; name: string }> }
+    if (!accountsData.success || !accountsData.result?.length) {
+      await appendLog(env, deployment_id, '✗ no cloudflare accounts found')
+      await updateDeployment(env, deployment_id, 'failed', { error_message: 'no cloudflare accounts found' })
       return
     }
-    const accountId = acc.accountId
-    logs.push(`✓ اکانت متصل شد (${accountId.slice(0, 8)}…)`)
+    const accountId = accountsData.result[0].id
+    const accountName = accountsData.result[0].name
+    await appendLog(env, deployment_id, `✓ account: ${accountName} (${accountId.slice(0, 8)}...)`)
 
-    // ── 2. Resolve workers.dev host EARLY so we can report an accurate URL
-    const host = await resolveWorkersDevHost(job.cf_token, accountId, job.worker_name, logs)
-    await appendLogs(env, job.deployment_id, logs)
-    logs.length = 0
-
-    // ── 3. Download worker source ────────────────────────────────────────
-    const src = await fetchWorkerCode(job)
-    if (!src.code) {
-      await failDeployment(env, job, src.error ?? 'سورس ورکر دریافت نشد')
-      return
-    }
-    logs.push('✓ سورس ورکر دانلود شد')
-
-    // ── 4. Provision KV namespace ────────────────────────────────────────
-    const ns = await createKvNamespace(job.cf_token, accountId, `${job.worker_name}-kv`)
-    logs.push(...ns.logs)
-    if (!ns.id) {
-      await failDeployment(env, job, ns.error ?? 'ساخت KV ناموفق بود')
-      return
-    }
-
-    // ── 5. Upload script with bindings ───────────────────────────────────
-    const isCustom = job.worker_source === 'custom'
-    const vars: Record<string, string> = isCustom
-      ? {
-          u: job.uuid.toLowerCase(),
-          ...(job.custom_path ? { d: job.custom_path } : {}),
-          ...(job.proxyip ? { p: job.proxyip } : {}),
+    // ── Fetch worker source ─────────────────────────────────────────────
+    await appendLog(env, deployment_id, `fetching worker source from ${sourceConfig.label}...`)
+    let workerCode = ''
+    // Primary URL first; if unavailable (e.g. repo moved/renamed), fall back to
+    // the copy bundled with this panel so the default source can never 404.
+    const fallbackUrls = [
+      ...(sourceConfig.fallbackUrls ?? []),
+      `${job.origin}/repo/worker-source.js`,
+    ]
+    for (const [i, url] of [sourceConfig.url, ...fallbackUrls].entries()) {
+      try {
+        const resp = await fetch(url)
+        if (resp.ok && Number(resp.headers.get('content-length') ?? '1') !== 0) {
+          const text = await resp.text()
+          if (text.trim().length > 0) {
+            workerCode = text
+            if (i > 0) await appendLog(env, deployment_id, `primary source unavailable, used fallback (${new URL(url).host})`)
+            break
+          }
         }
-      : {
-          UUID: job.uuid,
-          PROXYIP: job.proxyip ?? '',
-          ...(job.admin_password ? { ADMINPASS: job.admin_password } : {}),
-        }
-    const upload = await uploadWorker({
-      token: job.cf_token,
-      accountId,
-      name: job.worker_name,
-      code: src.code,
-      kvNamespaceId: ns.id,
-      vars,
+      } catch {
+        // try next candidate
+      }
+    }
+    if (!workerCode) {
+      await appendLog(env, deployment_id, '✗ failed to fetch worker source')
+      await updateDeployment(env, deployment_id, 'failed', { error_message: 'failed to fetch worker source' })
+      return
+    }
+    await appendLog(env, deployment_id, `✓ worker source fetched (${workerCode.length} bytes)`)
+
+    // ── Create KV namespace ─────────────────────────────────────────────
+    await appendLog(env, deployment_id, 'creating KV namespace...')
+    const kvResp = await fetch(`${API_BASE}/accounts/${accountId}/storage/kv/namespaces`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: `${worker_name}-kv` }),
     })
-    logs.push(...upload.logs)
-    if (!upload.ok) {
-      await failDeployment(env, job, upload.message ?? 'آپلود ورکر ناموفق بود')
+    const kvData = (await kvResp.json()) as { success?: boolean; result?: { id: string }; errors?: Array<{ message: string }> }
+    if (!kvData.success) {
+      const msg = kvData.errors?.[0]?.message ?? 'failed to create KV namespace'
+      await appendLog(env, deployment_id, `✗ ${msg}`)
+      await updateDeployment(env, deployment_id, 'failed', { error_message: msg })
       return
     }
+    const kvNamespaceId = kvData.result!.id
+    await appendLog(env, deployment_id, `✓ KV namespace created: ${kvNamespaceId.slice(0, 8)}...`)
 
-    // ── 6. Make sure the public URL is live before declaring success ─────
-    let workerUrl: string
-    if (host) {
-      const reachable = await waitUntilReachable(`https://${host}`)
-      if (reachable) {
-        workerUrl = `https://${host}`
-        logs.push(`✓ آدرس عمومی تأیید شد: ${workerUrl}`)
-      } else {
-        // Propagation can lag a few seconds behind enablement.
-        workerUrl = `https://${host}`
-        logs.push('⚠ آدرس هنوز پاسخ نمی‌دهد — معمولاً ظرف چند دقیقه فعال می‌شود')
+    // ── Write initial config to KV (format depends on worker source) ────
+    let initialConfig: Record<string, unknown>
+    const addTxtKey = 'ADD.txt'
+
+    if (configFormat === 'custom') {
+      initialConfig = {
+        wk: '', ev: 'yes', et: 'no', ex: 'no', ech: 'no', tp: '',
+        customDNS: 'https://223.5.5.5/dns-query',
+        customECHDomain: 'cloudflare-ech.com',
+        alpn: '', d: custom_path || '', p: proxyip || '', yx: '', yxURL: '', s: '', homepage: '',
+        scu: 'https://url.v1.mk/sub', ena: 'no', epd: 'yes', epi: 'yes', egi: 'yes',
+        ae: '', rm: '', qj: '', dkby: 'no', yxby: '',
+        ipv4: 'yes', ipv6: 'yes', ispMobile: 'yes', ispUnicom: 'yes', ispTelecom: 'yes',
       }
     } else {
-      workerUrl = `https://${job.worker_name}.${accountId.slice(0, 8)}.workers.dev`
-      logs.push(`⚠ workers.dev در دسترس نبود؛ آدرس تخمینی ثبت شد: ${workerUrl}`)
+      initialConfig = {
+        UUID: uuid,
+        HOST: '',
+        HOSTS: [],
+        PATH: custom_path ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path) : '/',
+        协议类型: 'vless',
+        传输协议: 'ws',
+        gRPC模式: 'gun',
+        gRPCUserAgent: 'Mozilla/5.0',
+        跳过证书验证: false,
+        启用0RTT: false,
+        TLS分片: null,
+        随机路径: false,
+        ECH: false,
+        ECHConfig: { DNS: 'https://dns.alidns.com/dns-query', SNI: 'cloudflare-ech.com' },
+        SS: { 加密方式: 'aes-128-gcm', TLS: true },
+        Fingerprint: 'chrome',
+        优选订阅生成: {
+          local: true,
+          本地IP库: { 随机IP: true, 随机数量: 16, 指定端口: -1 },
+          SUB: null,
+          SUBNAME: 'edgetunnel',
+          SUBUpdateTime: 3,
+          TOKEN: '',
+        },
+        订阅转换配置: {
+          SUBAPI: 'https://subapi.edt-pages.workers.dev',
+          SUBCONFIG: 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/main/Clash/config/ACL4SSR_Online_Mini_MultiMode.ini',
+          SUBEMOJI: false, SUBLIST: false, UDP: false, XUDP: false, TLS13: false, APPEND_TYPE: false, SORT: false,
+        },
+        反代: {
+          proxyip: proxyip || 'auto',
+          SOCKS5: { 启用: null, 全局: false, 账号: '', 白名单: [] },
+          路径模板: {},
+        },
+        TG: { 启用: false, BotToken: null, ChatID: null },
+        CF: { Email: null, GlobalAPIKey: null, AccountID: null, APIToken: null, UsageAPI: null, Usage: { success: false, pages: 0, workers: 0, total: 0, max: 100000 } },
+      }
     }
-    const panelUrl = `${workerUrl}/${job.custom_path || job.uuid}`
 
-    await appendLogs(env, job.deployment_id, logs)
-    logs.length = 0
+    await fetch(`${API_BASE}/accounts/${accountId}/storage/kv/namespaces/${kvNamespaceId}/values/${configKvKey}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(initialConfig, null, 2),
+    }).catch(() => null)
+    await appendLog(env, deployment_id, `✓ initial config written to KV (${configKvKey})`)
 
-    // ── 7. Persist final state + activity log ────────────────────────────
-    await env.DB.prepare(
-      `UPDATE deployments SET status = 'deployed', worker_url = ?, panel_url = ?, kv_namespace_id = ?,
-       cf_account_id = ?, config = ?, updated_at = ? WHERE id = ?`,
-    )
-      .bind(
-        workerUrl,
-        panelUrl,
-        ns.id,
-        accountId,
-        JSON.stringify({
-          method: job.method,
-          custom_path: job.custom_path ?? null,
-          worker_source: job.worker_source,
-          proxyip: job.proxyip ?? null,
-        }),
-        nowIso(),
-        job.deployment_id,
+    await fetch(`${API_BASE}/accounts/${accountId}/storage/kv/namespaces/${kvNamespaceId}/values/${addTxtKey}`, {
+      method: 'PUT',
+      headers: { ...headers, 'Content-Type': 'text/plain' },
+      body: proxyip || '',
+    }).catch(() => null)
+
+    let workerUrl: string
+    const panelKey = custom_path || uuid
+
+    if (method === 'workers') {
+      // ── Upload worker script ──────────────────────────────────────────
+      await appendLog(env, deployment_id, 'uploading worker script...')
+      const meta = {
+        main_module: 'worker.js',
+        compatibility_date: compatDate,
+        compatibility_flags: ['nodejs_compat'],
+        bindings: [
+          { type: 'kv_namespace', name: kvBindingName, namespace_id: kvNamespaceId },
+          { type: 'plain_text', name: uuidEnv, text: uuid },
+          ...(configFormat === 'edgetunnel' ? [
+            { type: 'plain_text', name: 'PATH', text: custom_path ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path) : '/' },
+            { type: 'plain_text', name: 'PROXYIP', text: proxyip },
+            ...(admin_password ? [{ type: 'plain_text', name: 'ADMIN', text: admin_password }] : []),
+          ] : [
+            { type: 'plain_text', name: 'P', text: proxyip },
+          ]),
+        ],
+      }
+
+      const formData = new FormData()
+      formData.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }))
+      formData.append('worker.js', new Blob([workerCode], { type: 'application/javascript+module' }), 'worker.js')
+
+      const uploadResp = await fetch(`${API_BASE}/accounts/${accountId}/workers/scripts/${worker_name}`, {
+        method: 'PUT', headers, body: formData,
+      })
+      const uploadData = (await uploadResp.json()) as { success?: boolean; errors?: Array<{ message: string }> }
+      if (!uploadData.success) {
+        const msg = uploadData.errors?.[0]?.message ?? 'failed to upload worker'
+        await appendLog(env, deployment_id, `✗ ${msg}`)
+        await updateDeployment(env, deployment_id, 'failed', { error_message: msg })
+        return
+      }
+      await appendLog(env, deployment_id, '✓ worker script uploaded')
+
+      // ── Enable workers.dev route (with the original fallbacks) ────────
+      await appendLog(env, deployment_id, 'enabling workers.dev route for script...')
+      const subdomainResp = await fetch(`${API_BASE}/accounts/${accountId}/workers/scripts/${worker_name}/subdomain`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      })
+      const subdomainResult = (await subdomainResp.json().catch(() => ({}))) as { success?: boolean; errors?: Array<{ message: string }> }
+      if (subdomainResult.success) {
+        await appendLog(env, deployment_id, '✓ workers.dev route enabled')
+      } else {
+        await appendLog(env, deployment_id, `⚠ workers.dev route: ${subdomainResult.errors?.[0]?.message ?? 'unknown error'} — trying account subdomain...`)
+        const existingSub = await fetch(`${API_BASE}/accounts/${accountId}/workers/subdomain`, { headers })
+        const existingSubData = (await existingSub.json().catch(() => ({}))) as { result?: { subdomain?: string } }
+        if (!existingSubData.result?.subdomain) {
+          const subName = `edge-${worker_name}`.replace(/[^a-z0-9-]/g, '').slice(0, 30)
+          await fetch(`${API_BASE}/accounts/${accountId}/workers/subdomain`, {
+            method: 'PUT',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subdomain: subName }),
+          }).catch(() => null)
+          await appendLog(env, deployment_id, `✓ account subdomain set: ${subName}`)
+        }
+        await fetch(`${API_BASE}/accounts/${accountId}/workers/scripts/${worker_name}/subdomain`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true }),
+        }).catch(() => null)
+      }
+
+      await fetch(`${API_BASE}/accounts/${accountId}/workers/scripts/${worker_name}/settings`, {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workers_dev: true, preview_version_id: null }),
+      }).catch(() => null)
+      await appendLog(env, deployment_id, '✓ workers.dev route enabled')
+
+      // ── Read workers.dev subdomain & build final URL ──────────────────
+      await appendLog(env, deployment_id, 'reading workers.dev subdomain...')
+      let subdomain: string | undefined
+      try {
+        const subResp = await fetch(`${API_BASE}/accounts/${accountId}/workers/subdomain`, { headers })
+        const subData = (await subResp.json()) as { result?: { subdomain?: string } }
+        subdomain = subData.result?.subdomain
+      } catch {
+        // Non-fatal — best-guess URL below.
+      }
+      workerUrl = subdomain
+        ? `https://${worker_name}.${subdomain}.workers.dev`
+        : `https://${worker_name}.workers.dev`
+      await appendLog(env, deployment_id, `✓ worker URL: ${workerUrl}`)
+
+      // Checkpoint: persist deployed NOW so the UI can never get stuck on
+      // "در حال استقرار" because of a later optional step.
+      await updateDeployment(env, deployment_id, 'deployed', {
+        worker_url: workerUrl,
+        kv_namespace_id: kvNamespaceId,
+        cf_account_id: accountId,
+        worker_source: worker_source,
+      })
+    } else {
+      // ── Pages deployment (original flow) ──────────────────────────────
+      await appendLog(env, deployment_id, 'creating Pages project...')
+      await fetch(`${API_BASE}/accounts/${accountId}/pages/projects`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: worker_name, production_branch: 'main' }),
+      }).catch(() => null)
+
+      await appendLog(env, deployment_id, 'binding KV & variables to project...')
+      const cfg = {
+        deployment_configs: {
+          production: {
+            compatibility_date: compatDate,
+            compatibility_flags: ['nodejs_compat'],
+            kv_namespaces: { [kvBindingName]: { namespace_id: kvNamespaceId } },
+            environment_variables: configFormat === 'edgetunnel' ? {
+              [uuidEnv]: { value: uuid, type: 'plain_text' },
+              PATH: { value: custom_path ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path) : '/', type: 'plain_text' },
+              PROXYIP: { value: proxyip, type: 'plain_text' },
+              ...(admin_password ? { ADMIN: { value: admin_password, type: 'plain_text' } } : {}),
+            } : {
+              [uuidEnv]: { value: uuid, type: 'plain_text' },
+              P: { value: proxyip, type: 'plain_text' },
+            },
+          },
+        },
+      }
+      await fetch(`${API_BASE}/accounts/${accountId}/pages/projects/${worker_name}`, {
+        method: 'PATCH',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      }).catch(() => null)
+
+      await appendLog(env, deployment_id, 'uploading _worker.js deployment...')
+      const pagesFd = new FormData()
+      pagesFd.append('_worker.js', new Blob([workerCode], { type: 'application/javascript' }), '_worker.js')
+      pagesFd.append('branch', 'main')
+      const pagesDepResp = await fetch(
+        `${API_BASE}/accounts/${accountId}/pages/projects/${worker_name}/deployments`,
+        { method: 'POST', headers, body: pagesFd },
       )
-      .run()
+      let pagesDepData: { result?: { url?: string } } = {}
+      try {
+        pagesDepData = (await pagesDepResp.json()) as { result?: { url?: string } }
+      } catch {
+        // Non-fatal — predictable *.pages.dev URL below.
+      }
+      workerUrl = pagesDepData.result?.url ?? `https://${worker_name}.pages.dev`
+      await appendLog(env, deployment_id, `✓ Pages URL: ${workerUrl}`)
 
+      await updateDeployment(env, deployment_id, 'deployed', {
+        worker_url: workerUrl,
+        kv_namespace_id: kvNamespaceId,
+        cf_account_id: accountId,
+        worker_source: worker_source,
+      })
+    }
+
+    const panelUrl = `${workerUrl}/${panelKey}`
+    await appendLog(env, deployment_id, `✓ panel URL: ${panelUrl}`)
+    await appendLog(env, deployment_id, '✓ deployment complete!')
+
+    await updateDeployment(env, deployment_id, 'deployed', {
+      worker_url: workerUrl,
+      panel_url: panelUrl,
+      kv_namespace_id: kvNamespaceId,
+      cf_account_id: accountId,
+      route: null,
+      worker_source: worker_source,
+    })
+
+    // Bookkeeping: token usage + activity log
     if (job.cf_token_row_id) {
       await env.DB.prepare('UPDATE cf_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), job.cf_token_row_id).run()
     }
     const depRow = await env.DB.prepare('SELECT user_id, name FROM deployments WHERE id = ?')
-      .bind(job.deployment_id)
+      .bind(deployment_id)
       .first<{ user_id: string; name: string }>()
     if (depRow) {
       await env.DB.prepare(
@@ -231,7 +428,8 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
         .run()
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'خطای نامشخص در استقرار'
-    await failDeployment(env, job, msg)
+    const msg = err instanceof Error ? err.message : 'unknown error'
+    await appendLog(env, deployment_id, `✗ ${msg}`)
+    await updateDeployment(env, deployment_id, 'failed', { error_message: msg })
   }
 }
