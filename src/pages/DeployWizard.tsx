@@ -391,10 +391,13 @@ export default function DeployWizard() {
                 <option value="edgetunnel">cmliu/edgetunnel — ورکر کامل (VLESS/Trojan/SS + پنل)</option>
                 <option value="edgetunnel_kv">cmliu/edgetunnel — حالت KV (پیکربندی از KV)</option>
                 <option value="custom">ورکر سفارشی ما — CFnew v2.9.8c (پنل داخلی با تنظیمات کامل)</option>
+                <option value="miliconfigzeus">miliconfig zeus — پنل کامل D1 (مدیریت کاربران، سهمیه، اسکنر)</option>
               </select>
               <p className="text-xs text-slate-500 mt-2">
                 {workerSource === 'custom'
                   ? <>ورکر سفارشی ما با پنل داخلی کامل، اسکنر IP داخلی، و آپدیت خودکار. KV binding با نام <code className="text-brand-300">C</code> و کلید پیکربندی <code className="text-brand-300">c</code>.</>
+                  : workerSource === 'miliconfigzeus'
+                  ? <>پنل کامل miliconfigzeus با دیتابیس اختصاصی D1 مستقر می‌شود (خودکار ساخته می‌شود). مدیریت کاربران، سهمیه‌ها و اسکنر داخل خود پنل مستقر است؛ آدرس پنل، ریشه همان ورکر خواهد بود. این سورس همیشه به‌صورت Workers مستقر می‌شود.</>
                   : <>ورکر از مخزن رسمی <a href="https://github.com/cmliu/edgetunnel" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">cmliu/edgetunnel</a> بارگذاری می‌شود. پنل داخلی ورکر حذف شده و همه تنظیمات از این برنامه مدیریت می‌شود.</>
                 }
               </p>
@@ -453,7 +456,7 @@ export default function DeployWizard() {
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">منبع ورکر</p>
-                  <p className="text-white font-medium" dir="ltr">{workerSource === 'custom' ? 'ورکر سفارشی ما' : workerSource === 'edgetunnel' ? 'cmliu/edgetunnel' : 'cmliu/edgetunnel (KV)'}</p>
+                  <p className="text-white font-medium" dir="ltr">{workerSource === 'custom' ? 'ورکر سفارشی ما' : workerSource === 'miliconfigzeus' ? 'miliconfig zeus' : workerSource === 'edgetunnel' ? 'cmliu/edgetunnel' : 'cmliu/edgetunnel (KV)'}</p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">Proxy IP</p>

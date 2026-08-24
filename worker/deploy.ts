@@ -17,6 +17,8 @@ interface WorkerSourceConfig {
   configFormat: 'edgetunnel' | 'custom'
   uuidEnvName: string
   fallbackUrls?: string[]
+  /** 'kv' (default): edgetunnel-style KV worker. 'zeus': full D1 panel. */
+  kind?: 'kv' | 'zeus'
 }
 
 const WORKER_SOURCES: Record<string, WorkerSourceConfig> = {
@@ -49,6 +51,16 @@ const WORKER_SOURCES: Record<string, WorkerSourceConfig> = {
     fallbackUrls: [
       'https://raw.githubusercontent.com/miladjahani/miliconfigpro-v1/main/public/repo/worker-source.js',
     ],
+  },
+  miliconfigzeus: {
+    url: 'https://raw.githubusercontent.com/miladjahani/miliconfigzeus/main/Source-2.js',
+    label: 'miliconfig zeus (full D1 panel)',
+    compat: '2025-01-01',
+    kvBinding: '',
+    configKey: '',
+    configFormat: 'custom',
+    uuidEnvName: '',
+    kind: 'zeus',
   },
 }
 
@@ -89,7 +101,9 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
   const cf_token = job.cf_token
   const uuid = job.uuid
   const custom_path = job.custom_path ?? ''
-  const method = job.method
+  const sourceConfig0 = WORKER_SOURCES[job.worker_source || 'edgetunnel'] ?? WORKER_SOURCES.edgetunnel
+  // Zeus is a full standalone panel — it always deploys as a Workers script.
+  const method: DeployJob['method'] = sourceConfig0.kind === 'zeus' ? 'workers' : job.method
   const worker_source = job.worker_source || 'edgetunnel'
   const proxyip = job.proxyip ?? ''
   const admin_password = job.admin_password ?? ''
@@ -158,7 +172,33 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     }
     await appendLog(env, deployment_id, `✓ worker source fetched (${workerCode.length} bytes)`)
 
-    // ── Create KV namespace ─────────────────────────────────────────────
+    // ── Provision storage: full D1 database (zeus) or KV namespace ──────
+    let d1DatabaseId = ''
+    let kvNamespaceId = ''
+    if (sourceConfig.kind === 'zeus') {
+      await appendLog(env, deployment_id, 'creating D1 database...')
+      const d1Name = `${worker_name}-db`
+      const d1Resp = await fetch(`${API_BASE}/accounts/${accountId}/d1/database`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: d1Name }),
+      })
+      const d1Data = (await d1Resp.json().catch(() => ({}))) as { success?: boolean; result?: { uuid?: string }; errors?: Array<{ message: string }> }
+      d1DatabaseId = d1Data.result?.uuid ?? ''
+      if (!d1DatabaseId) {
+        // Already exists? Reuse it instead of failing.
+        const listResp = await fetch(`${API_BASE}/accounts/${accountId}/d1/database?per_page=100`, { headers })
+        const listData = (await listResp.json().catch(() => ({}))) as { result?: Array<{ uuid?: string; name?: string }> }
+        d1DatabaseId = listData.result?.find((d) => d.name === d1Name)?.uuid ?? ''
+      }
+      if (!d1DatabaseId) {
+        const msg = d1Data.errors?.[0]?.message ?? 'failed to create D1 database'
+        await appendLog(env, deployment_id, `✗ ${msg}`)
+        await updateDeployment(env, deployment_id, 'failed', { error_message: msg })
+        return
+      }
+      await appendLog(env, deployment_id, `✓ D1 database ready: ${d1DatabaseId.slice(0, 8)}...`)
+    } else {
     await appendLog(env, deployment_id, 'creating KV namespace...')
     const kvResp = await fetch(`${API_BASE}/accounts/${accountId}/storage/kv/namespaces`, {
       method: 'POST',
@@ -172,10 +212,11 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       await updateDeployment(env, deployment_id, 'failed', { error_message: msg })
       return
     }
-    const kvNamespaceId = kvData.result!.id
+    kvNamespaceId = kvData.result!.id
     await appendLog(env, deployment_id, `✓ KV namespace created: ${kvNamespaceId.slice(0, 8)}...`)
+    }
 
-    // ── Write initial config to KV (format depends on worker source) ────
+    // ── Write initial config to KV (KV sources only; zeus self-manages) ─
     let initialConfig: Record<string, unknown>
     const addTxtKey = 'ADD.txt'
 
@@ -184,6 +225,11 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     const panelPath = custom_path
       ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path)
       : '/admin'
+
+    if (sourceConfig.kind === 'zeus') {
+      // Zeus panel lives at its own root with its own login — nothing to seed.
+      await appendLog(env, deployment_id, '✓ zeus source: D1 schema self-initializes on first request')
+    } else {
 
     if (configFormat === 'custom') {
       initialConfig = {
@@ -248,13 +294,15 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       headers: { ...headers, 'Content-Type': 'text/plain' },
       body: proxyip || '',
     }).catch(() => null)
+    } // end non-zeus KV seeding
 
     let workerUrl: string
     // edgetunnel: panel lives at the panel path (login page asking for the
     // password) — custom path or /admin by default.
     // Default (custom) worker: UUID is always part of the URL and bypasses
     // the login page entirely.
-    const panelKey = configFormat === 'edgetunnel' ? panelPath.slice(1) : uuid
+    // Zeus: the whole worker IS the admin panel (root URL, own login).
+    const panelKey = sourceConfig.kind === 'zeus' ? '' : configFormat === 'edgetunnel' ? panelPath.slice(1) : uuid
 
     if (method === 'workers') {
       // ── Upload worker script ──────────────────────────────────────────
@@ -263,7 +311,13 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
         main_module: 'worker.js',
         compatibility_date: compatDate,
         compatibility_flags: ['nodejs_compat'],
-        bindings: [
+        bindings: sourceConfig.kind === 'zeus' ? [
+          { type: 'd1', name: 'DB', id: d1DatabaseId },
+          { type: 'plain_text', name: 'CF_API_TOKEN', text: cf_token },
+          { type: 'plain_text', name: 'CF_ACCOUNT_ID', text: accountId },
+          { type: 'plain_text', name: 'WORKER_NAME', text: worker_name },
+          { type: 'plain_text', name: 'WIZARD_URL', text: job.origin },
+        ] : [
           { type: 'kv_namespace', name: kvBindingName, namespace_id: kvNamespaceId },
           { type: 'plain_text', name: uuidEnv, text: uuid },
           ...(configFormat === 'edgetunnel' ? [
@@ -411,7 +465,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       })
     }
 
-    const panelUrl = `${workerUrl}/${panelKey}`
+    const panelUrl = panelKey ? `${workerUrl}/${panelKey}` : workerUrl
     await appendLog(env, deployment_id, `✓ panel URL: ${panelUrl}`)
     await appendLog(env, deployment_id, '✓ deployment complete!')
 
