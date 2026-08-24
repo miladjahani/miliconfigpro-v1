@@ -79,6 +79,24 @@ export async function handleInjectorDelete(env: Env, userId: string, id: string)
   return json({ success: true })
 }
 
+/** Update an injected sub's preferred IPs (e.g. push fresh scan results). */
+export async function handleInjectorPatch(env: Env, userId: string, id: string, request: Request): Promise<Response> {
+  const body = safeJsonParse<InjectorBody>(await request.text().catch(() => ''), {})
+  const existing = await env.DB.prepare('SELECT id, ips, proxies FROM injector_jobs WHERE id = ? AND user_id = ?')
+    .bind(id, userId)
+    .first<{ id: string; ips: string; proxies: string }>()
+  if (!existing) return apiError('پیدا نشد', 404)
+
+  const ips = body.ips !== undefined ? sanitizeIps(body.ips) : safeJsonParse<PreferredIP[]>(existing.ips, [])
+  const proxies = body.proxies !== undefined ? sanitizeProxies(body.proxies) : safeJsonParse<ProxySpec[]>(existing.proxies, [])
+  if (ips.length === 0 && proxies.length === 0) return apiError('حداقل یک IP ترجیحی یا یک پروکسی لازم است')
+
+  await env.DB.prepare('UPDATE injector_jobs SET ips = ?, proxies = ?, updated_at = ? WHERE id = ?')
+    .bind(JSON.stringify(ips), JSON.stringify(proxies), nowIso(), id)
+    .run()
+  return json({ data: { id, ips, proxies } })
+}
+
 /** Public endpoint — GET /api/sub/inject/:token[?target=clash] */
 export async function serveInjectedSub(env: Env, token: string, target: string | null): Promise<Response> {
   const row = await env.DB.prepare('SELECT source, ips, proxies FROM injector_jobs WHERE sub_token = ?')

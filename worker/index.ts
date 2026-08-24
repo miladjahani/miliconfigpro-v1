@@ -8,7 +8,7 @@ import { handleTelegramWebhook } from './telegram'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
 import { handleGroupCreate, handleGroupList, handleGroupDelete, handleGroupPatch, serveGroupSub } from './subgroups'
-import { handleInjectorCreate, handleInjectorList, handleInjectorDelete, serveInjectedSub } from './injector'
+import { handleInjectorCreate, handleInjectorList, handleInjectorPatch, handleInjectorDelete, serveInjectedSub } from './injector'
 
 interface DeploymentBody {
   name?: string
@@ -369,6 +369,7 @@ async function handleRouted(
     // ── Custom injected subscriptions (miliconfig) ────────────────────
     if (path === '/api/injector' && method === 'GET') return await handleInjectorList(env, user.id)
     if (path === '/api/injector' && method === 'POST') return await handleInjectorCreate(env, user.id, request)
+    if (path.match(/^\/api\/injector\/[^/]+$/) && method === 'PATCH') return await handleInjectorPatch(env, user.id, path.split('/')[3], request)
     if (path.match(/^\/api\/injector\/[^/]+$/) && method === 'DELETE') return await handleInjectorDelete(env, user.id, path.split('/')[3])
 
     // ── Admin: user & quota management ─────────────────────────────────

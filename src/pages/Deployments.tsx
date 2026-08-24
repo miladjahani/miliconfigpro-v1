@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api, ApiError } from '../lib/api'
-import type { Deployment, CFToken, SubGroup } from '../lib/types'
+import type { Deployment, CFToken, SubGroup, InjectedSub } from '../lib/types'
 import type { PreferredIP, ProxySpec } from '../lib/types'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
   KeyRound, Rocket, Database, Copy, Check, Smartphone, Settings2,
   Power, PowerOff, AlertTriangle, Save, Eye, EyeOff, RefreshCw,
   Globe, Shield, Network, Server, Radar, ScanLine, Wifi, Github,
-  ArrowRight, ChevronDown, ChevronUp, Lock, Layers,
+  ArrowRight, ChevronDown, ChevronUp, Lock, Layers, Zap,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -979,11 +979,18 @@ function ScannerTab() {
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [applying, setApplying] = useState(false)
   const [applied, setApplied] = useState(false)
+  const [injections, setInjections] = useState<InjectedSub[]>([])
+  const [targetInj, setTargetInj] = useState<string>('')
+  const [injecting, setInjecting] = useState(false)
+  const [injected, setInjected] = useState(false)
 
   useEffect(() => {
     api<{ data: Deployment[] }>('/deployments')
       .then(({ data }) => setDeployments((data ?? []).filter((d) => d.status === 'deployed')))
       .catch(() => setDeployments([]))
+    api<{ data: InjectedSub[] }>('/injector')
+      .then(({ data }) => setInjections(data ?? []))
+      .catch(() => setInjections([]))
   }, [])
 
   const runScan = async () => {
@@ -1039,6 +1046,21 @@ function ScannerTab() {
       } else { setError(setData.error ?? 'خطا در ذخیره') }
     } catch (e) { setError(e instanceof Error ? e.message : 'خطا در اتصال') }
     setApplying(false)
+  }
+
+  /** Push selected scanned IPs straight into a custom injected sub. */
+  const injectToSub = async () => {
+    if (!targetInj || selectedIPs.size === 0) return
+    setInjecting(true); setError(null)
+    try {
+      const ips = Array.from(selectedIPs).map((ip) => {
+        const r = results.find((x) => x.ip === ip)
+        return r?.port ? { ip, port: r.port } : { ip }
+      })
+      await api(`/injector/${targetInj}`, { method: 'PATCH', body: { ips } })
+      setInjected(true); setTimeout(() => setInjected(false), 3000); setSelectedIPs(new Set())
+    } catch (e) { setError(e instanceof Error ? e.message : 'injection failed') }
+    setInjecting(false)
   }
 
   return (
@@ -1151,6 +1173,19 @@ function ScannerTab() {
                 {applying ? <Loader2 className="w-4 h-4 animate-spin" /> : applied ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
                 {applied ? 'اعمال شد ✓' : `اعمال روی ورکر${selectedIPs.size > 0 ? ` (${selectedIPs.size})` : ''}`}
               </button>
+              {injections.length > 0 && (
+                <>
+                  <select value={targetInj} onChange={(e) => setTargetInj(e.target.value)} className="input-field text-sm py-2 min-w-[180px]">
+                    <option value="">تزریق به ساب سفارشی...</option>
+                    {injections.map((inj) => <option key={inj.id} value={inj.id}>{inj.name}</option>)}
+                  </select>
+                  <button onClick={injectToSub} disabled={!targetInj || selectedIPs.size === 0 || injecting}
+                    className="btn-primary flex items-center gap-2 text-sm">
+                    {injecting ? <Loader2 className="w-4 h-4 animate-spin" /> : injected ? <CheckCircle2 className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
+                    {injected ? 'تزریق شد ✓' : `تزریق به ساب${selectedIPs.size > 0 ? ` (${selectedIPs.size})` : ''}`}
+                  </button>
+                </>
+              )}
             </div>
           </div>
           {applied && (
