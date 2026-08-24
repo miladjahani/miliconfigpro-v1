@@ -17,6 +17,48 @@ export const FRAGMENT_PRESETS: FragmentPreset[] = [
   { code: 'gaming',   label: 'گیمینگ (کم‌تأخیر)', flag: '🎮', config: { packets: 'tlshello', length: '1-5',   interval: '10-20' } },
 ]
 
+/** Ready cipher-suite (`cs=`) presets — injected verbatim into every link.
+ * The full list is the Xray-core recommended suite order (user-verified in Iran). */
+export const CS_PRESETS: Array<{ code: string; label: string; value: string }> = [
+  {
+    code: 'cs-full',
+    label: 'مجموعه کامل (Xray توصیه‌شده)',
+    value:
+      'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:' +
+      'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:' +
+      'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:' +
+      'TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:' +
+      'TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:' +
+      'TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256',
+  },
+  {
+    code: 'cs-modern',
+    label: 'مدرن (AES + ChaCha)',
+    value: 'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256',
+  },
+  {
+    code: 'cs-ecdhe',
+    label: 'ECDHE فقط (سبک)',
+    value: 'TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256',
+  },
+]
+
+/** Real, permissive SNI values (community-tested from Iran) for the SNI-mask
+ * dropdowns. These domains are not blocked and their TLS cert allows CDN
+ * fronting — used to bypass sanction/SNI filtering (Gemini, OpenAI, ...). */
+export const KNOWN_SNIS: string[] = [
+  'www.speedtest.net',
+  'fast.com',
+  'player.vimeo.com',
+  'www.icloud.com',
+  'www.apple.com',
+  'www.samsung.com',
+  'www.yahoo.com',
+  'www.bing.com',
+  'cdn.discordapp.com',
+  'www.datadoghq-browser-agent.com',
+]
+
 export function findPreset(code: string | undefined): FragmentPreset | null {
   if (!code) return null
   return FRAGMENT_PRESETS.find((p) => p.code === code) ?? null

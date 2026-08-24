@@ -142,6 +142,7 @@ export interface MemberSettings {
   custom_sni?: string
   custom_host?: string
   bypass_sanctions: boolean
+  sanctions_mode?: '' | 'sni' | 'warp'
   ip_rotation_minutes?: number
 }
 

@@ -48,6 +48,25 @@ export async function serveStatusPage(env: Env, token: string, origin: string): 
     qrSvg = await QRCode.toString(subUrl, { type: 'svg', margin: 1, width: 180, color: { dark: '#38bdf8', light: '#0f172a00' } })
   } catch { /* non-fatal */ }
 
+  // One-tap import deep-links: each opens the matching client app if it is
+  // installed on the user's device and imports the live subscription.
+  const enc = encodeURIComponent(subUrl)
+  const clientLinks: [string, string][] = [
+    ['v2rayNG', `v2rayng://install-sub?url=${enc}`],
+    ['Clash Meta', `clash://install-config?url=${enc}`],
+    ['sing-box', `sing-box://import-remote-profile?url=${enc}`],
+    ['Hiddify', `hiddify://import/${subUrl}`],
+    ['Streisand', `streisand://import/${subUrl}`],
+    ['NekoBox', `sn://subscription?url=${enc}&name=miliconfig`],
+  ]
+  // Store pages, in case the app is not installed yet.
+  const storeLinks: [string, string][] = [
+    ['v2rayNG ↗', 'https://play.google.com/store/apps/details?id=com.v2ray.ang'],
+    ['Hiddify ↗', 'https://play.google.com/store/apps/details?id=app.hiddify.com'],
+    ['sing-box ↗', 'https://play.google.com/store/apps/details?id=io.nekohasekai.sfa'],
+    ['Clash Meta ↗', 'https://github.com/MetaCubeX/ClashMetaForAndroid/releases'],
+  ]
+
   let body: string
   if (!m) {
     body = `<div class="card"><h1>❌ یافت نشد</h1><p class="muted">این لینک وضعیت معتبر نیست.</p></div>`
@@ -85,6 +104,16 @@ export async function serveStatusPage(env: Env, token: string, origin: string): 
         <a href="${plainUrl}" target="_blank" rel="noopener">Plain</a>
         <a href="${statusSub}" target="_blank" rel="noopener">دانلود مستقیم</a>
       </div>
+      <p class="muted" style="margin-top:18px;font-size:.8rem">افزودن مستقیم به کلاینت (اپ باید نصب باشد):</p>
+      <div class="clients">
+        ${clientLinks.map(([label, href]) => `<a href="${esc(href)}">${label}</a>`).join('')}
+      </div>
+      <details style="margin-top:12px">
+        <summary class="muted" style="font-size:.8rem;cursor:pointer">اپ را ندارید؟ دانلود از استور</summary>
+        <div class="clients" style="margin-top:8px">
+          ${storeLinks.map(([label, href]) => `<a href="${href}" target="_blank" rel="noopener">${label}</a>`).join('')}
+        </div>
+      </details>
       <div class="qr">${qrSvg}<small class="muted">برای افزودن، QR را با اپ VPN اسکن کنید</small></div>
     </div>`
   }
@@ -108,6 +137,9 @@ h1{font-size:1.25rem;margin-bottom:18px;color:#f8fafc}
 .links{display:flex;gap:10px;margin-top:18px}
 .links a{flex:1;text-align:center;padding:10px;border-radius:10px;background:#1e40af33;color:#93c5fd;text-decoration:none;font-size:.85rem;border:1px solid #1e40af}
 .links a:hover{background:#1e40af55}
+.clients{display:flex;flex-wrap:wrap;gap:8px}
+.clients a{flex:1 1 30%;text-align:center;padding:9px 6px;border-radius:10px;background:#052e1633;color:#6ee7b7;text-decoration:none;font-size:.8rem;border:1px solid #065f46}
+.clients a:hover{background:#052e1666}
 .qr{margin-top:18px;text-align:center}
 .qr svg{border-radius:12px}
 small{display:block;margin-top:6px;font-size:.75rem}

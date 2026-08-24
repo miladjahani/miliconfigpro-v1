@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity } from 'lucide-react'
+import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X } from 'lucide-react'
 import { api } from '../lib/api'
-import { FRAGMENT_PRESETS, FM_PRESETS } from '../../worker/presets'
+import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS, KNOWN_SNIS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
 
 const COUNTRIES = [
@@ -20,6 +20,91 @@ const TRANSPORTS = [
   { v: 'httpupgrade', label: 'HTTPUpgrade' },
 ]
 
+const SANCTIONS_MODES = [
+  { v: '', label: 'خاموش' },
+  { v: 'sni', label: 'SNI جایگزین (سبک — دور زدن فیلتر)' },
+  { v: 'warp', label: 'WARP (جمنی/OpenAI + UDP واقعی)' },
+]
+
+interface FormState {
+  name: string
+  quotaGb: string
+  reqQuota: string
+  ipLimit: string
+  startOnConnect: boolean
+  resetDays: string
+  rotateMin: string
+  expires: string
+  transport: string
+  countries: string[]
+  customIps: string
+  fragment: boolean
+  preset: string
+  fm: string
+  cs: string
+  fingerprint: string
+  sniChoice: string // '' = custom, otherwise a KNOWN_SNIS entry or 'none'
+  sniCustom: string
+  hostMask: string
+  sanctionsMode: string
+}
+
+const EMPTY_FORM: FormState = {
+  name: '', quotaGb: '', reqQuota: '', ipLimit: '', startOnConnect: false,
+  resetDays: '', rotateMin: '', expires: '', transport: '', countries: [],
+  customIps: '', fragment: false, preset: '', fm: '', cs: '',
+  fingerprint: '', sniChoice: '', sniCustom: '', hostMask: '', sanctionsMode: '',
+}
+
+function formToBody(f: FormState) {
+  const sni = f.sniChoice === '' ? f.sniCustom.trim() : f.sniChoice === 'none' ? '' : f.sniChoice
+  return {
+    countries: f.countries,
+    custom_ips: f.customIps.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
+    transport: f.transport,
+    fragment: f.fragment,
+    fragment_preset: f.preset,
+    fragment_config: {
+      ...(f.fm.trim() ? { fm: f.fm.trim() } : {}),
+      ...(f.cs.trim() ? { cs: f.cs.trim() } : {}),
+    },
+    fingerprint: f.fingerprint,
+    custom_sni: sni,
+    custom_host: f.hostMask.trim(),
+    sanctions_mode: f.sanctionsMode,
+    ip_rotation_minutes: f.rotateMin ? Number(f.rotateMin) : 0,
+    quota_gb: f.quotaGb ? Number(f.quotaGb) : null,
+    request_quota: f.reqQuota ? Number(f.reqQuota) : null,
+    ip_limit: f.ipLimit ? Number(f.ipLimit) : null,
+    start_on_connect: f.startOnConnect,
+    reset_period_days: f.resetDays ? Number(f.resetDays) : null,
+    expires_at: f.expires ? new Date(f.expires).toISOString() : null,
+  }
+}
+
+function memberToForm(m: WorkerMember): FormState {
+  const s = m.settings
+  const sni = s.custom_sni ?? ''
+  return {
+    name: m.name, quotaGb: m.quota_gb != null ? String(m.quota_gb) : '',
+    reqQuota: m.request_quota != null ? String(m.request_quota) : '',
+    ipLimit: m.ip_limit != null ? String(m.ip_limit) : '',
+    startOnConnect: !!m.start_on_connect,
+    resetDays: m.reset_period_days != null ? String(m.reset_period_days) : '',
+    rotateMin: s.ip_rotation_minutes ? String(s.ip_rotation_minutes) : '',
+    expires: m.expires_at ? m.expires_at.slice(0, 10) : '',
+    transport: s.transport ?? '', countries: s.countries ?? [],
+    customIps: (s.custom_ips ?? []).join('\n'),
+    fragment: !!s.fragment, preset: s.fragment_preset ?? '',
+    fm: s.fragment_config?.fm ?? '', cs: s.fragment_config?.cs ?? '',
+    fingerprint: s.fingerprint ?? '',
+    sniChoice: KNOWN_SNIS.includes(sni) ? sni : sni ? '' : 'none',
+    sniCustom: KNOWN_SNIS.includes(sni) ? '' : sni,
+    hostMask: s.custom_host ?? '',
+    sanctionsMode: s.sanctions_mode ?? (s.bypass_sanctions ? 'sni' : ''),
+  }
+}
+
 function Field({ label, value, onChange, placeholder, type = 'text', textarea, rows = 2 }: {
   label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; textarea?: boolean; rows?: number
 }) {
@@ -33,6 +118,20 @@ function Field({ label, value, onChange, placeholder, type = 'text', textarea, r
         <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
           className="input-field text-sm w-full" dir="ltr" />
       )}
+    </label>
+  )
+}
+
+function Select({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void
+  options: { v: string; label: string }[]
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs text-slate-400 mb-1 block">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
+        {options.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+      </select>
     </label>
   )
 }
@@ -57,27 +156,13 @@ export default function Members() {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
 
-  // new-member form
-  const [name, setName] = useState('')
-  const [countries, setCountries] = useState<string[]>([])
-  const [customIps, setCustomIps] = useState('')
-  const [transport, setTransport] = useState('')
-  const [fragment, setFragment] = useState(false)
-  const [preset, setPreset] = useState('')
-  const [fm, setFm] = useState('')
-  const [cs, setCs] = useState('')
-  const [fingerprint, setFingerprint] = useState('')
-  const [sniMask, setSniMask] = useState('')
-  const [hostMask, setHostMask] = useState('')
-  const [ipLimit, setIpLimit] = useState('')
-  const [startOnConnect, setStartOnConnect] = useState(false)
-  const [resetDays, setResetDays] = useState('')
-  const [rotateMin, setRotateMin] = useState('')
+  // Form: shown for create (editingId = null) or edit (editingId = member id)
+  const [formOpen, setFormOpen] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [form, setForm] = useState<FormState>(EMPTY_FORM)
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((p) => ({ ...p, [k]: v }))
+
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [bypass, setBypass] = useState(false)
-  const [quotaGb, setQuotaGb] = useState('')
-  const [reqQuota, setReqQuota] = useState('')
-  const [expires, setExpires] = useState('')
 
   const load = useCallback(async () => {
     if (!depId) { setMembers([]); return }
@@ -94,46 +179,36 @@ export default function Members() {
   }, [])
   useEffect(() => { load() }, [load])
 
-  const create = async () => {
+  const saveForm = async () => {
     if (!depId) { setError('اول یک ورکر انتخاب کنید'); return }
     setBusy(true); setError(null)
     try {
-      await api('/members', {
-        method: 'POST',
-        body: {
-          deployment_id: depId,
-          name: name.trim(),
-          countries,
-          custom_ips: customIps.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
-          transport,
-          fragment,
-          fragment_preset: preset,
-          fragment_config: {
-            ...(fm.trim() ? { fm: fm.trim() } : {}),
-            ...(cs.trim() ? { cs: cs.trim() } : {}),
-          },
-          fingerprint,
-          custom_sni: sniMask.trim(),
-          custom_host: hostMask.trim(),
-          bypass_sanctions: bypass,
-          ip_rotation_minutes: rotateMin ? Number(rotateMin) : 0,
-          quota_gb: quotaGb ? Number(quotaGb) : null,
-          request_quota: reqQuota ? Number(reqQuota) : null,
-          ip_limit: ipLimit ? Number(ipLimit) : null,
-          start_on_connect: startOnConnect,
-          reset_period_days: resetDays ? Number(resetDays) : null,
-          expires_at: expires ? new Date(expires).toISOString() : null,
-        },
-      })
-      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setIpLimit(''); setExpires(''); setStartOnConnect(false); setResetDays(''); setRotateMin(''); setSelected(new Set()); setFm(''); setCs(''); setFingerprint(''); setSniMask(''); setHostMask('')
+      if (editingId) {
+        await api(`/members/${editingId}`, { method: 'PATCH', body: formToBody(form) })
+      } else {
+        await api('/members', { method: 'POST', body: { deployment_id: depId, name: form.name.trim(), ...formToBody(form) } })
+      }
+      setFormOpen(false); setEditingId(null); setForm(EMPTY_FORM)
       await load()
     } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
     setBusy(false)
   }
 
-  const patch = async (id: string, body: Record<string, unknown>) => {
-    await api(`/members/${id}`, { method: 'PATCH', body }).catch(() => null)
-    await load()
+  const quickCreate = async () => {
+    if (!depId) { setError('اول یک ورکر انتخاب کنید'); return }
+    setBusy(true); setError(null)
+    try {
+      await api('/members', { method: 'POST', body: { deployment_id: depId, name: `کاربر-${Math.random().toString(36).slice(2, 6)}` } })
+      await load()
+    } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
+    setBusy(false)
+  }
+
+  const openEdit = (m: WorkerMember) => {
+    setEditingId(m.id)
+    setForm(memberToForm(m))
+    setFormOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const bulk = async (action: string) => {
@@ -172,9 +247,9 @@ export default function Members() {
           <h2 className="text-lg font-bold text-white">کاربران ورکر</h2>
         </div>
         <p className="text-sm text-slate-400">
-          برای هر ورکر، چند کاربر بسازید — هر کدام لینک ساب خصوصی و تنظیمات منحصربه‌فرد:
-          کشور IP، ترنسپورت (ws/gRPC/HTTPUpgrade)، فرگمنت، دور زدن تحریم، سقف حجم ماهانه و تاریخ انقضا.
-          ساب هر کاربر در لحظهٔ fetch ساخته می‌شود و همیشه به‌روز است.
+          برای هر ورکر چند کاربر بسازید — هر کدام لینک ساب خصوصی و تنظیمات منحصربه‌فرد:
+          کشور IP (آی‌پی واقعی و زنده از مخزن EDT)، ترنسپورت، فرگمنت و Cipher Suite،
+          دور زدن تحریم با SNI یا WARP (باز کردن جمنی)، سقف حجم و انقضا.
         </p>
       </div>
 
@@ -184,87 +259,120 @@ export default function Members() {
             <option value="">انتخاب ورکر...</option>
             {deployments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
+          {depId && (
+            <button onClick={quickCreate} disabled={busy} title="ساخت کاربر با تنظیمات پیش‌فرض، بدون فرم"
+              className="btn-secondary text-sm px-3 py-2 flex items-center gap-1.5">
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-amber-400" />}
+              ساخت سریع کاربر
+            </button>
+          )}
+          {depId && !formOpen && (
+            <button onClick={() => { setEditingId(null); setForm(EMPTY_FORM); setFormOpen(true) }}
+              className="btn-primary text-sm px-3 py-2 flex items-center gap-1.5">
+              <Plus className="w-4 h-4" /> کاربر پیشرفته
+            </button>
+          )}
         </div>
 
-        {depId && (
+        {depId && formOpen && (
           <div className="space-y-3 border border-slate-800 rounded-xl p-4 bg-slate-900/40">
-            <p className="text-sm font-medium text-white">کاربر جدید</p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-white">
+                {editingId ? '✏️ ویرایش کاربر — تغییرات بعد از ذخیره فوراً روی ساب اعمال می‌شود' : 'کاربر جدید (پیشرفته)'}
+              </p>
+              <button onClick={() => { setFormOpen(false); setEditingId(null); setForm(EMPTY_FORM) }}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="نام (مثلاً علی یا US-User)" value={name} onChange={setName} placeholder="علی" />
-              <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={quotaGb} onChange={setQuotaGb} placeholder="50" />
-              <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={reqQuota} onChange={setReqQuota} placeholder="100000" />
-              <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={ipLimit} onChange={setIpLimit} placeholder="2" />
+              <Field label="نام (مثلاً علی یا US-User)" value={form.name} onChange={(v) => set('name', v)} placeholder="علی" />
+              <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={form.quotaGb} onChange={(v) => set('quotaGb', v)} placeholder="50" />
+              <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={form.reqQuota} onChange={(v) => set('reqQuota', v)} placeholder="100000" />
+              <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={form.ipLimit} onChange={(v) => set('ipLimit', v)} placeholder="2" />
               <div className="flex items-end">
-                <Toggle checked={startOnConnect} onChange={() => setStartOnConnect(!startOnConnect)} label="شمارش از اولین اتصال" />
+                <Toggle checked={form.startOnConnect} onChange={() => set('startOnConnect', !form.startOnConnect)} label="شمارش از اولین اتصال" />
               </div>
-              <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={resetDays} onChange={setResetDays} placeholder="30" />
-              <Field label="چرخش خودکار IP هر N دقیقه (خالی = خاموش)" value={rotateMin} onChange={setRotateMin} placeholder="30" />
-              <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={expires} onChange={setExpires} type="date" />
-              <label className="block">
-                <span className="text-xs text-slate-400 mb-1 block">ترنسپورت</span>
-                <select value={transport} onChange={(e) => setTransport(e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
-                  {TRANSPORTS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
-                </select>
-              </label>
+              <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={form.resetDays} onChange={(v) => set('resetDays', v)} placeholder="30" />
+              <Field label="چرخش خودکار IP هر N دقیقه (خالی = خاموش)" value={form.rotateMin} onChange={(v) => set('rotateMin', v)} placeholder="30" />
+              <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={form.expires} onChange={(v) => set('expires', v)} type="date" />
+              <Select label="ترنسپورت" value={form.transport} onChange={(v) => set('transport', v)} options={TRANSPORTS} />
+              <Select label="دور زدن تحریم (جمنی/OpenAI)" value={form.sanctionsMode} onChange={(v) => set('sanctionsMode', v)} options={SANCTIONS_MODES} />
             </div>
             <div>
-              <span className="text-xs text-slate-400 mb-1 block">کشور IP (چندگزینه‌ای)</span>
+              <span className="text-xs text-slate-400 mb-1 block">کشور IP — IP واقعی و تست‌شده، زنده از مخزن EDT بارگیری می‌شود</span>
               <div className="flex items-center gap-2 flex-wrap">
                 {COUNTRIES.map((c) => (
-                  <button key={c.code} onClick={() => setCountries((p) => p.includes(c.code) ? p.filter((x) => x !== c.code) : [...p, c.code])}
-                    className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${countries.includes(c.code) ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
+                  <button key={c.code}
+                    onClick={() => set('countries', form.countries.includes(c.code) ? form.countries.filter((x) => x !== c.code) : [...form.countries, c.code])}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${form.countries.includes(c.code) ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
                     {c.label}
                   </button>
                 ))}
               </div>
             </div>
-            <Field label="IPهای سفارشی (هر خط یک IP)" value={customIps} onChange={setCustomIps} placeholder="104.16.1.1" />
+            <Field label="IPهای سفارشی ثابت (هر خط یک IP — اولویت با این‌هاست)" value={form.customIps} onChange={(v) => set('customIps', v)} placeholder="104.16.1.1" />
             <div className="flex items-center gap-5 flex-wrap">
-              <Toggle checked={fragment} onChange={() => setFragment(!fragment)} label="فرگمنت (TLS split — ضد DPI)" />
-              <Toggle checked={bypass} onChange={() => setBypass(!bypass)} label="دور زدن تحریم (SNI جایگزین)" />
+              <Toggle checked={form.fragment} onChange={() => set('fragment', !form.fragment)} label="فرگمنت (TLS split — ضد DPI)" />
             </div>
-            {fragment && (
+            {form.fragment && (
               <div className="space-y-3">
                 <label className="block max-w-xs">
                   <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور (روی تنظیم دستی اولویت دارد)</span>
-                  <select value={preset} onChange={(e) => setPreset(e.target.value)} className="input-field text-sm py-2 w-full">
+                  <select value={form.preset} onChange={(e) => set('preset', e.target.value)} className="input-field text-sm py-2 w-full">
                     <option value="">دستی / پیش‌فرض</option>
                     {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)}
                   </select>
                 </label>
                 <div className="flex gap-1.5 flex-wrap">
                   {FM_PRESETS.map((p) => (
-                    <button key={p.code} onClick={() => setFm(p.json)}
+                    <button key={p.code} onClick={() => set('fm', p.json)}
                       className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-brand-300 hover:bg-brand-600/20 border border-slate-700 transition-colors">
                       ⚡ {p.label}
                     </button>
                   ))}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="فرگمنت JSON — fm= (عیناً تزریق می‌شود)" value={fm} onChange={setFm}
+                  <Field label="فرگمنت JSON — fm= (عیناً تزریق می‌شود)" value={form.fm} onChange={(v) => set('fm', v)}
                     placeholder='{"tcp":[{"type":"fragment",...}]}' textarea rows={3} />
-                  <Field label="Cipher Suiteها — cs= (عیناً تزریق می‌شود)" value={cs} onChange={setCs}
-                    placeholder="TLS_AES_128_GCM_SHA256,TLS_CHACHA20..." textarea rows={3} />
+                  <Field label="Cipher Suiteها — cs= (عیناً تزریق می‌شود)" value={form.cs} onChange={(v) => set('cs', v)}
+                    placeholder="TLS_AES_256_GCM_SHA384:..." textarea rows={3} />
                 </div>
-                <p className="text-xs text-slate-500">مقادیر fm و cs بدون هیچ تغییری داخل لینک نهایی قرار می‌گیرند — همان کانفیگی که دستی جواب می‌دهد اینجا هم دقیقاً همان خروجی را دارد.</p>
+                <div className="flex gap-1.5 flex-wrap">
+                  {CS_PRESETS.map((p) => (
+                    <button key={p.code} onClick={() => set('cs', p.value)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-emerald-300 hover:bg-emerald-600/20 border border-slate-700 transition-colors">
+                      🔐 {p.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <label className="block">
-                <span className="text-xs text-slate-400 mb-1 block">اثرانگشت ClientHello (fp)</span>
-                <select value={fingerprint} onChange={(e) => setFingerprint(e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
-                  <option value="">پیش‌فرض ورکر</option>
-                  {['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'].map((f) => <option key={f} value={f}>{f}</option>)}
-                </select>
-              </label>
-              <Field label="SNI سفارشی (ماسک)" value={sniMask} onChange={setSniMask} placeholder="www.speedtest.net" />
-              <Field label="Host سفارشی (ماسک)" value={hostMask} onChange={setHostMask} placeholder="example.com" />
+              <Select label="اثرانگشت ClientHello (fp)" value={form.fingerprint} onChange={(v) => set('fingerprint', v)}
+                options={[
+                  { v: '', label: 'پیش‌فرض ورکر' },
+                  ...['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'].map((f) => ({ v: f, label: f })),
+                ]} />
+              <Select label="SNI واقعی (تست‌شده — ماسک TLS)" value={form.sniChoice} onChange={(v) => set('sniChoice', v)}
+                options={[
+                  { v: 'none', label: 'پیش‌فرض ورکر' },
+                  ...KNOWN_SNIS.map((s) => ({ v: s, label: s })),
+                  { v: '', label: 'سفارشی...' },
+                ]} />
+              {form.sniChoice === '' && (
+                <Field label="SNI سفارشی" value={form.sniCustom} onChange={(v) => set('sniCustom', v)} placeholder="example.com" />
+              )}
+              {form.sniChoice !== '' && <div />}
             </div>
+            <Field label="Host سفارشی (ماسک)" value={form.hostMask} onChange={(v) => set('hostMask', v)} placeholder="example.com" />
             {error && <p className="text-sm text-error-400">{error}</p>}
-            <button onClick={create} disabled={busy} className="btn-primary flex items-center gap-2 text-sm">
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              ساخت کاربر
-            </button>
+            <div className="flex gap-2">
+              <button onClick={saveForm} disabled={busy} className="btn-primary flex items-center gap-2 text-sm">
+                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : editingId ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                {editingId ? 'ذخیره تغییرات' : 'ساخت کاربر'}
+              </button>
+              <button onClick={() => { setFormOpen(false); setEditingId(null); setForm(EMPTY_FORM) }}
+                className="btn-secondary text-sm">انصراف</button>
+            </div>
           </div>
         )}
       </div>
@@ -295,23 +403,29 @@ export default function Members() {
                   <div className="flex items-center gap-2">
                     <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleSel(m.id)}
                       className="w-4 h-4 accent-brand-500" />
-                    <p className="text-white font-medium">{m.name}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {m.settings.countries.map((c) => COUNTRIES.find((x) => x.code === c)?.label ?? c).join('، ') || 'IP پیش‌فرض'}
-                      {m.settings.transport ? ` · ${m.settings.transport}` : ''}
-                      {m.settings.fragment ? ' · فرگمنت' : ''}
-                      {m.settings.bypass_sanctions ? ' · ضدتحریم' : ''}
-                      {expired ? ' · منقضی' : ''}
-                    </p>
+                    <div>
+                      <p className="text-white font-medium">{m.name}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {m.settings.countries.map((c) => COUNTRIES.find((x) => x.code === c)?.label ?? c).join('، ') || 'IP پیش‌فرض'}
+                        {m.settings.transport ? ` · ${m.settings.transport}` : ''}
+                        {m.settings.fragment ? ' · فرگمنت' : ''}
+                        {m.settings.sanctions_mode === 'warp' ? ' · WARP' : m.settings.sanctions_mode === 'sni' || m.settings.bypass_sanctions ? ' · ضدتحریم' : ''}
+                        {expired ? ' · منقضی' : ''}
+                      </p>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1">
+                    <button onClick={() => openEdit(m)} title="ویرایش تنظیمات"
+                      className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
+                      <Pencil className="w-4 h-4" />
+                    </button>
                     <button onClick={() => copy(m)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === m.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
                     </button>
                     <button onClick={() => copy(m, true)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === m.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
                     </button>
-                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" title="صفحه وضعیت + QR"
+                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" title="صفحه وضعیت + QR + افزودن به کلاینت"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
                       <Activity className="w-4 h-4" />
                     </a>
@@ -348,4 +462,9 @@ export default function Members() {
       )}
     </div>
   )
+
+  async function patch(id: string, body: Record<string, unknown>) {
+    await api(`/members/${id}`, { method: 'PATCH', body }).catch(() => null)
+    await load()
+  }
 }

@@ -8,7 +8,8 @@ import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
 import { renderSubscription } from './formats'
 import { resolvePool } from './countries'
-import { findPreset } from './presets'
+import { fetchCountryIps } from './edtips'
+import { findPreset, KNOWN_SNIS } from './presets'
 import { filterAlive, rotate } from './rotation'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
 import { notifyQuotaLevel } from './telegram'
@@ -53,6 +54,9 @@ export interface MemberSettings {
   custom_sni: string
   custom_host: string
   bypass_sanctions: boolean
+  /** Anti-sanction strategy: '' = off, 'sni' = permissive SNI mask,
+   *  'warp' = route egress through WARP (unlocks Gemini/OpenAI, real UDP). */
+  sanctions_mode: '' | 'sni' | 'warp'
   /** Rotate the preferred-IP entry order every N minutes (0 = off). */
   ip_rotation_minutes: number
 }
@@ -78,6 +82,7 @@ const DEFAULT_SETTINGS: MemberSettings = {
   countries: [], custom_ips: [], transport: '',
   fragment: false, fragment_preset: '', fragment_config: {},
   fingerprint: '', custom_sni: '', custom_host: '', bypass_sanctions: false,
+  sanctions_mode: '',
   ip_rotation_minutes: 0,
 }
 
@@ -110,6 +115,9 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
     custom_sni: cleanParam(s?.custom_sni, 200),
     custom_host: cleanParam(s?.custom_host, 200),
     bypass_sanctions: !!s?.bypass_sanctions,
+    sanctions_mode: (['', 'sni', 'warp'] as const).includes(s?.sanctions_mode as never)
+      ? (s?.sanctions_mode ?? '') as MemberSettings['sanctions_mode']
+      : (s?.bypass_sanctions ? 'sni' : ''),
     ip_rotation_minutes: Math.min(1440, Math.max(0, Math.round(Number(s?.ip_rotation_minutes) || 0))),
   }
 }
@@ -198,6 +206,7 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     custom_sni: body.custom_sni !== undefined ? body.custom_sni : prevSettings.custom_sni,
     custom_host: body.custom_host !== undefined ? body.custom_host : prevSettings.custom_host,
     bypass_sanctions: body.bypass_sanctions ?? prevSettings.bypass_sanctions,
+    sanctions_mode: body.sanctions_mode !== undefined ? body.sanctions_mode : prevSettings.sanctions_mode,
     ip_rotation_minutes: body.ip_rotation_minutes !== undefined ? body.ip_rotation_minutes : prevSettings.ip_rotation_minutes,
   })
   const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : (existing.enabled as number)
@@ -376,6 +385,23 @@ function addFragmentParams(line: string, fc: MemberSettings['fragment_config']):
   return setQueryParam(line, 'fragment', parts.join(','))
 }
 
+/** Rewrite the ws path of a node to edgetunnel's WARP-chaining path
+ *  (`/warp?ed=2560`) so the worker's egress goes through Cloudflare WARP —
+ *  unlocks Gemini/OpenAI/sanctioned sites and gives real UDP egress.
+ *  Handles both vmess base64 JSON and vless/trojan URI params. */
+function applyWarpPath(line: string): string {
+  if (line.startsWith('vmess://')) {
+    try {
+      const json = JSON.parse(atob(line.slice('vmess://'.length))) as Record<string, unknown>
+      if (String(json.net ?? '') === 'ws') json.path = '/warp?ed=2560'
+      return 'vmess://' + btoa(JSON.stringify(json))
+    } catch {
+      return line
+    }
+  }
+  return setQueryParam(line, 'path', '/warp?ed=2560')
+}
+
 /** Public endpoint — GET /api/sub/member/:token[?target=clash] */
 export async function serveMemberSub(env: Env, token: string, target: string | null, request?: Request): Promise<Response> {
   const member = await env.DB.prepare('SELECT * FROM worker_members WHERE token = ?').bind(token)
@@ -485,10 +511,16 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   if (settings.custom_sni) out = out.map((l) => setQueryParam(l, 'sni', settings.custom_sni))
   if (settings.custom_host) out = out.map((l) => setQueryParam(l, 'host', settings.custom_host))
   if (settings.fingerprint) out = out.map((l) => setQueryParam(l, 'fp', settings.fingerprint))
-  if (settings.bypass_sanctions && !settings.custom_sni) {
+  const sanctionsMode = settings.sanctions_mode || (settings.bypass_sanctions ? 'sni' : '')
+  if (sanctionsMode === 'warp') {
+    // WARP egress: unlock Gemini/OpenAI + real UDP. Permissive SNI keeps the
+    // TLS handshake alive on the CDN path.
+    out = out.map((l) => applyWarpPath(l))
+    if (!settings.custom_sni) out = out.map((l) => setQueryParam(l, 'sni', KNOWN_SNIS[0]!))
+  } else if (sanctionsMode === 'sni' && !settings.custom_sni) {
     // TLS SNI trick: point sni at a permissive domain so sanctioned-host
     // SNI blocking is bypassed on the CDN path.
-    out = out.map((l) => setQueryParam(l, 'sni', 'www.speedtest.net'))
+    out = out.map((l) => setQueryParam(l, 'sni', KNOWN_SNIS[0]!))
   }
   if (settings.fragment) {
     out = out.map((l) => addFragmentParams(l, settings.fragment_config))
@@ -498,10 +530,21 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     if (fc.cs) out = out.map((l) => setQueryParam(l, 'cs', fc.cs!))
   }
 
-  // Preferred-IP pool with optional rotation + live health-checked fallback:
-  // dead IPs are dropped (TCP probe, cached 5 min) and the rest are ordered
-  // fastest-first. With rotation on, the entry address changes every cycle.
-  let poolRaw = resolvePool(settings.countries, settings.custom_ips).map((p) => ({ ip: p.ip }))
+  // Preferred-IP pool: LIVE real IPs per country from the EDT ecosystem
+  // (ipdb bestcf/bestproxy), with the static CIDR pools as offline fallback.
+  // Custom IPs always win. Optional rotation + live health-checked fallback.
+  let poolRaw: { ip: string }[] = []
+  if (settings.countries.length) {
+    try {
+      const live = await fetchCountryIps(settings.countries, 4)
+      if (live.length) poolRaw = live.map((entry) => {
+        const [ip, port] = entry.split(':')
+        return port ? { ip: ip!, port: Number(port) } : { ip: ip! }
+      })
+    } catch { /* live source down → static pools */ }
+  }
+  if (!poolRaw.length) poolRaw = resolvePool(settings.countries, []).map((p) => ({ ip: p.ip }))
+  for (const ip of settings.custom_ips) poolRaw.push({ ip })
   if (settings.ip_rotation_minutes > 0) {
     poolRaw = rotate(poolRaw, settings.ip_rotation_minutes)
     const alive = await filterAlive(poolRaw, 12)
