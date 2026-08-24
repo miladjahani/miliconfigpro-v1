@@ -22,6 +22,7 @@ export default function Optimizer() {
   // ── Injection (miliconfig custom sub) ──
   const [injName, setInjName] = useState('')
   const [injSource, setInjSource] = useState('')
+  const [injRotate, setInjRotate] = useState('')
   const [injIps, setInjIps] = useState('')
   const [injProxies, setInjProxies] = useState('')
   const [injections, setInjections] = useState<InjectedSub[]>([])
@@ -54,7 +55,7 @@ export default function Optimizer() {
           ...(m[2] ? { username: m[2] } : {}), ...(m[3] ? { password: m[3] } : {}),
         }
       }).filter(Boolean)
-      await api('/injector', { method: 'POST', body: { name: injName.trim(), source: injSource.trim(), ips, proxies } })
+      await api('/injector', { method: 'POST', body: { name: injName.trim(), source: injSource.trim(), ips, proxies, rotate_minutes: injRotate ? Number(injRotate) : null } })
       setInjSource(''); setInjIps(''); setInjProxies(''); setInjName('')
       await loadInjections()
     } catch (e) {
@@ -235,6 +236,7 @@ export default function Optimizer() {
         </div>
         <div className="flex gap-2 flex-wrap">
           <input value={injName} onChange={(e) => setInjName(e.target.value)} placeholder="نام (اختیاری)" className="input-field text-sm flex-1 min-w-[160px]" />
+          <input value={injRotate} onChange={(e) => setInjRotate(e.target.value)} placeholder="چرخش IP (دقیقه)" className="input-field text-sm w-[140px]" />
           <button onClick={runInjection} disabled={injBusy} className="btn-primary text-sm flex items-center gap-2">
             <Syringe className="w-4 h-4" />{injBusy ? 'در حال ساخت...' : 'ساخت ساب تزریق‌شده'}
           </button>

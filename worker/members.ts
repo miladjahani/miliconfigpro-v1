@@ -8,6 +8,7 @@ import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
 import { resolvePool } from './countries'
 import { findPreset } from './presets'
+import { filterAlive, rotate } from './rotation'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
 
 export interface MemberSettings {
@@ -29,6 +30,8 @@ export interface MemberSettings {
   custom_sni: string
   custom_host: string
   bypass_sanctions: boolean
+  /** Rotate the preferred-IP entry order every N minutes (0 = off). */
+  ip_rotation_minutes: number
 }
 
 export interface MemberRow {
@@ -52,6 +55,7 @@ const DEFAULT_SETTINGS: MemberSettings = {
   countries: [], custom_ips: [], transport: '',
   fragment: false, fragment_preset: '', fragment_config: {},
   fingerprint: '', custom_sni: '', custom_host: '', bypass_sanctions: false,
+  ip_rotation_minutes: 0,
 }
 
 function cleanParam(v: unknown, max = 400): string {
@@ -83,6 +87,7 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
     custom_sni: cleanParam(s?.custom_sni, 200),
     custom_host: cleanParam(s?.custom_host, 200),
     bypass_sanctions: !!s?.bypass_sanctions,
+    ip_rotation_minutes: Math.min(1440, Math.max(0, Math.round(Number(s?.ip_rotation_minutes) || 0))),
   }
 }
 
@@ -170,6 +175,7 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     custom_sni: body.custom_sni !== undefined ? body.custom_sni : prevSettings.custom_sni,
     custom_host: body.custom_host !== undefined ? body.custom_host : prevSettings.custom_host,
     bypass_sanctions: body.bypass_sanctions ?? prevSettings.bypass_sanctions,
+    ip_rotation_minutes: body.ip_rotation_minutes !== undefined ? body.ip_rotation_minutes : prevSettings.ip_rotation_minutes,
   })
   const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : (existing.enabled as number)
   const expiresAt = body.expires_at !== undefined ? body.expires_at : (existing.expires_at as string | null)
@@ -460,8 +466,16 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     if (fc.cs) out = out.map((l) => setQueryParam(l, 'cs', fc.cs!))
   }
 
-  const pool: PreferredIP[] = resolvePool(settings.countries, settings.custom_ips)
-    .map((p) => ({ ip: p.ip }))
+  // Preferred-IP pool with optional rotation + live health-checked fallback:
+  // dead IPs are dropped (TCP probe, cached 5 min) and the rest are ordered
+  // fastest-first. With rotation on, the entry address changes every cycle.
+  let poolRaw = resolvePool(settings.countries, settings.custom_ips).map((p) => ({ ip: p.ip }))
+  if (settings.ip_rotation_minutes > 0) {
+    poolRaw = rotate(poolRaw, settings.ip_rotation_minutes)
+    const alive = await filterAlive(poolRaw, 12)
+    if (alive.length) poolRaw = alive.map((a) => ({ ip: a.ip, port: a.port }))
+  }
+  const pool: PreferredIP[] = poolRaw
 
   let subLines = out
   let clashExtra: { fragment?: MemberSettings['fragment_config'] } = {}

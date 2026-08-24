@@ -1,6 +1,8 @@
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { applyInjection, buildClashYaml, buildSubBase64, collectNodeLines, type PreferredIP, type ProxySpec } from './inject'
+import { rotate } from './rotation'
+import { ensureSchema } from './schema'
 
 // Injection jobs: a saved, reusable custom sub (miliconfig-branded) that
 // combines a source subscription with preferred IPs and proxy chains.
@@ -10,6 +12,7 @@ interface InjectorBody {
   source?: string
   ips?: PreferredIP[]
   proxies?: ProxySpec[]
+  rotate_minutes?: number | null
 }
 
 function sanitizeIps(ips?: PreferredIP[]): PreferredIP[] {
@@ -52,23 +55,25 @@ export async function handleInjectorCreate(env: Env, userId: string, request: Re
 
   const id = genId()
   const subToken = genId().replace(/-/g, '')
+  const rotateMinutes = body.rotate_minutes != null && body.rotate_minutes > 0 ? Math.round(body.rotate_minutes) : null
   await env.DB.prepare(
-    `INSERT INTO injector_jobs (id, user_id, name, source, ips, proxies, sub_token, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(id, userId, name, source.slice(0, 100_000), JSON.stringify(ips), JSON.stringify(proxies), subToken, nowIso(), nowIso()).run()
+    `INSERT INTO injector_jobs (id, user_id, name, source, ips, proxies, sub_token, rotate_minutes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(id, userId, name, source.slice(0, 100_000), JSON.stringify(ips), JSON.stringify(proxies), subToken, rotateMinutes, nowIso(), nowIso()).run()
 
   return json({ data: { id, sub_token: subToken } }, 201)
 }
 
 export async function handleInjectorList(env: Env, userId: string): Promise<Response> {
   const r = await env.DB.prepare(
-    'SELECT id, name, ips, proxies, sub_token, created_at FROM injector_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
+    'SELECT id, name, ips, proxies, sub_token, rotate_minutes, created_at FROM injector_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
   ).bind(userId).all()
   return json({
     data: r.results.map((row) => ({
       ...row,
       ips: safeJsonParse(row.ips as string, []),
       proxies: safeJsonParse(row.proxies as string, []),
+      rotate_minutes: row.rotate_minutes ?? null,
     })),
   })
 }
@@ -82,31 +87,36 @@ export async function handleInjectorDelete(env: Env, userId: string, id: string)
 /** Update an injected sub's preferred IPs (e.g. push fresh scan results). */
 export async function handleInjectorPatch(env: Env, userId: string, id: string, request: Request): Promise<Response> {
   const body = safeJsonParse<InjectorBody>(await request.text().catch(() => ''), {})
-  const existing = await env.DB.prepare('SELECT id, ips, proxies FROM injector_jobs WHERE id = ? AND user_id = ?')
+  const existing = await env.DB.prepare('SELECT id, ips, proxies, rotate_minutes FROM injector_jobs WHERE id = ? AND user_id = ?')
     .bind(id, userId)
-    .first<{ id: string; ips: string; proxies: string }>()
+    .first<{ id: string; ips: string; proxies: string; rotate_minutes: number | null }>()
   if (!existing) return apiError('پیدا نشد', 404)
 
   const ips = body.ips !== undefined ? sanitizeIps(body.ips) : safeJsonParse<PreferredIP[]>(existing.ips, [])
   const proxies = body.proxies !== undefined ? sanitizeProxies(body.proxies) : safeJsonParse<ProxySpec[]>(existing.proxies, [])
   if (ips.length === 0 && proxies.length === 0) return apiError('حداقل یک IP ترجیحی یا یک پروکسی لازم است')
 
-  await env.DB.prepare('UPDATE injector_jobs SET ips = ?, proxies = ?, updated_at = ? WHERE id = ?')
-    .bind(JSON.stringify(ips), JSON.stringify(proxies), nowIso(), id)
+  const rotateMinutes = body.rotate_minutes !== undefined
+    ? (body.rotate_minutes == null || body.rotate_minutes <= 0 ? null : Math.round(body.rotate_minutes))
+    : (existing.rotate_minutes ?? null)
+
+  await env.DB.prepare('UPDATE injector_jobs SET ips = ?, proxies = ?, rotate_minutes = ?, updated_at = ? WHERE id = ?')
+    .bind(JSON.stringify(ips), JSON.stringify(proxies), rotateMinutes, nowIso(), id)
     .run()
   return json({ data: { id, ips, proxies } })
 }
 
 /** Public endpoint — GET /api/sub/inject/:token[?target=clash] */
 export async function serveInjectedSub(env: Env, token: string, target: string | null): Promise<Response> {
-  const row = await env.DB.prepare('SELECT source, ips, proxies FROM injector_jobs WHERE sub_token = ?')
+  const row = await env.DB.prepare('SELECT source, ips, proxies, rotate_minutes FROM injector_jobs WHERE sub_token = ?')
     .bind(token)
-    .first<{ source: string; ips: string; proxies: string }>()
+    .first<{ source: string; ips: string; proxies: string; rotate_minutes: number | null }>()
   if (!row) return new Response('یافت نشد', { status: 404 })
 
   try {
     const lines = await collectNodeLines(row.source)
-    const result = applyInjection(lines, safeJsonParse<PreferredIP[]>(row.ips, []), safeJsonParse<ProxySpec[]>(row.proxies, []))
+    const rotatedIps = rotate(safeJsonParse<PreferredIP[]>(row.ips, []), row.rotate_minutes)
+    const result = applyInjection(lines, rotatedIps, safeJsonParse<ProxySpec[]>(row.proxies, []))
     if (target === 'clash') {
       return new Response(buildClashYaml(result), {
         headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' },

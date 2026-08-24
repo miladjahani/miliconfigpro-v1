@@ -72,6 +72,7 @@ export default function Members() {
   const [ipLimit, setIpLimit] = useState('')
   const [startOnConnect, setStartOnConnect] = useState(false)
   const [resetDays, setResetDays] = useState('')
+  const [rotateMin, setRotateMin] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bypass, setBypass] = useState(false)
   const [quotaGb, setQuotaGb] = useState('')
@@ -115,6 +116,7 @@ export default function Members() {
           custom_sni: sniMask.trim(),
           custom_host: hostMask.trim(),
           bypass_sanctions: bypass,
+          ip_rotation_minutes: rotateMin ? Number(rotateMin) : 0,
           quota_gb: quotaGb ? Number(quotaGb) : null,
           request_quota: reqQuota ? Number(reqQuota) : null,
           ip_limit: ipLimit ? Number(ipLimit) : null,
@@ -123,7 +125,7 @@ export default function Members() {
           expires_at: expires ? new Date(expires).toISOString() : null,
         },
       })
-      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setIpLimit(''); setExpires(''); setStartOnConnect(false); setResetDays(''); setSelected(new Set()); setFm(''); setCs(''); setFingerprint(''); setSniMask(''); setHostMask('')
+      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setIpLimit(''); setExpires(''); setStartOnConnect(false); setResetDays(''); setRotateMin(''); setSelected(new Set()); setFm(''); setCs(''); setFingerprint(''); setSniMask(''); setHostMask('')
       await load()
     } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
     setBusy(false)
@@ -196,6 +198,7 @@ export default function Members() {
                 <Toggle checked={startOnConnect} onChange={() => setStartOnConnect(!startOnConnect)} label="شمارش از اولین اتصال" />
               </div>
               <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={resetDays} onChange={setResetDays} placeholder="30" />
+              <Field label="چرخش خودکار IP هر N دقیقه (خالی = خاموش)" value={rotateMin} onChange={setRotateMin} placeholder="30" />
               <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={expires} onChange={setExpires} type="date" />
               <label className="block">
                 <span className="text-xs text-slate-400 mb-1 block">ترنسپورت</span>

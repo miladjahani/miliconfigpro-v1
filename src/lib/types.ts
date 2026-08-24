@@ -140,6 +140,7 @@ export interface MemberSettings {
   custom_sni?: string
   custom_host?: string
   bypass_sanctions: boolean
+  ip_rotation_minutes?: number
 }
 
 export interface WorkerMember {

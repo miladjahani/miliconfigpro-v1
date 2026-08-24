@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS injector_jobs (
   ips TEXT NOT NULL DEFAULT '[]',
   proxies TEXT NOT NULL DEFAULT '[]',
   sub_token TEXT NOT NULL UNIQUE,
+  rotate_minutes INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

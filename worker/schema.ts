@@ -112,6 +112,7 @@ const SCHEMA_STATEMENTS = [
     ips TEXT NOT NULL DEFAULT '[]',
     proxies TEXT NOT NULL DEFAULT '[]',
     sub_token TEXT NOT NULL UNIQUE,
+    rotate_minutes INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
@@ -169,6 +170,7 @@ const MIGRATIONS = [
   `ALTER TABLE worker_members ADD COLUMN activated_at TEXT`,
   `ALTER TABLE worker_members ADD COLUMN reset_period_days INTEGER`,
   `ALTER TABLE worker_members ADD COLUMN last_reset_at TEXT`,
+  `ALTER TABLE injector_jobs ADD COLUMN rotate_minutes INTEGER`,
 ]
 
 let ready: Promise<void> | null = null
