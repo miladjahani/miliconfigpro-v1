@@ -6,6 +6,7 @@ import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
+import { renderSubscription } from './formats'
 import { resolvePool } from './countries'
 import { findPreset } from './presets'
 import { filterAlive, rotate } from './rotation'
@@ -536,6 +537,8 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     const yaml = buildClashYaml({ ...result, clashProxies: proxies })
     return new Response(yaml, { headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' } })
   }
+
+  if (target === 'singbox' || target === 'plain') return renderSubscription(named, target)
 
   return new Response(b64encodeUtf8(named.join('\n')), {
     headers: { 'Content-Type': 'text/plain; charset=utf-8', 'profile-update-interval': '1' },

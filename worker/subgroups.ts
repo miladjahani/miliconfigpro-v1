@@ -3,8 +3,8 @@ import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, linesToResult, type PreferredIP, type ProxySpec } from './inject'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
-import { buildSingboxJson } from './formats'
-import { tryDecodeSub } from './net'
+import { configJsonToLines, renderSubscription } from './formats'
+import { expandRanges, tryDecodeSub } from './net'
 
 // ── Group subscriptions: merge several deployed workers into one sub link ──
 // With injection enabled, preferred IPs and HTTP/SOCKS5 chains are applied at
@@ -26,10 +26,21 @@ export function sanitizeFormat(v?: string | null): string {
 }
 
 function sanitizeIps(ips?: PreferredIP[]): PreferredIP[] {
-  return (ips ?? [])
-    .filter((p) => p && /^(\d{1,3}(\.\d{1,3}){3}|[a-z0-9.-]+\.[a-z]{2,})$/i.test(String(p.ip)))
-    .slice(0, 20)
-    .map((p) => ({ ip: String(p.ip), ...(p.port ? { port: Number(p.port) } : {}) }))
+  // CIDR ranges (104.16.0.0/30 style) are expanded per-address, capped.
+  const out: PreferredIP[] = []
+  for (const p of ips ?? []) {
+    if (!p || typeof p.ip !== 'string') continue
+    const ip = p.ip.trim()
+    if (ip.includes('/')) {
+      for (const expanded of expandRanges([ip], 40 - out.length)) {
+        out.push({ ip: expanded, ...(p.port ? { port: Number(p.port) } : {}) })
+        if (out.length >= 40) return out
+      }
+    } else if (/^(\d{1,3}(\.\d{1,3}){3}|[a-z0-9.-]+\.[a-z]{2,})$/i.test(ip)) {
+      out.push({ ip, ...(p.port ? { port: Number(p.port) } : {}) })
+    }
+  }
+  return out.slice(0, 20)
 }
 
 function sanitizeProxies(proxies?: ProxySpec[]): ProxySpec[] {
@@ -132,8 +143,15 @@ async function fetchWorkerSub(env: Env, deploymentId: string): Promise<string[]>
 
 /** Fetch nodes from an arbitrary subscription URL or raw pasted content.
  * Accepts any format that contains share links: plain link lists, base64
- * blobs, or a mix — everything is decoded and normalized to one line each. */
+ * blobs, sing-box JSON configs, or a mix — everything is normalized to one
+ * share-link line per node. */
 async function fetchExtraLink(link: string): Promise<string[]> {
+  const toLines = (text: string): string[] => {
+    // JSON configs (sing-box style with outbounds) → converted share links
+    const fromConfig = configJsonToLines(text.trim())
+    if (fromConfig.length) return fromConfig
+    return tryDecodeSub(text).split('\n').map((l) => l.trim()).filter(Boolean)
+  }
   try {
     if (/^https?:\/\//i.test(link)) {
       const ctrl = new AbortController()
@@ -141,13 +159,13 @@ async function fetchExtraLink(link: string): Promise<string[]> {
       try {
         const resp = await fetch(link, { redirect: 'follow', signal: ctrl.signal })
         if (!resp.ok) return []
-        return tryDecodeSub(await resp.text()).split('\n').map((l) => l.trim()).filter(Boolean)
+        return toLines(await resp.text())
       } finally {
         clearTimeout(t)
       }
     }
     // Raw content pasted directly into the group
-    return tryDecodeSub(link).split('\n').map((l) => l.trim()).filter(Boolean)
+    return toLines(link)
   } catch {
     return []
   }
@@ -155,17 +173,7 @@ async function fetchExtraLink(link: string): Promise<string[]> {
 
 /** Serialize merged node lines in the requested output format. */
 function renderOutput(lines: string[], format: string): Response {
-  const headers = { 'Content-Type': 'text/plain; charset=utf-8', 'profile-update-interval': '1' }
-  if (format === 'clash') {
-    return new Response(buildClashYaml(linesToResult(lines)), {
-      headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' },
-    })
-  }
-  if (format === 'singbox') {
-    return new Response(buildSingboxJson(lines), { headers })
-  }
-  if (format === 'plain') return new Response(lines.join('\n'), { headers })
-  return new Response(b64encodeUtf8(lines.join('\n')), { headers })
+  return renderSubscription(lines, format)
 }
 
 /** Public endpoint — GET /api/sub/group/:token[?target=base64|plain|clash|singbox] */

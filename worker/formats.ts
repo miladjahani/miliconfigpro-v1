@@ -1,6 +1,94 @@
 // Output-format converters for merged subscription content.
-// Currently: sing-box JSON outbounds built from standard share links
-// (vless / vmess / trojan / ss). Clash Meta already has buildClashYaml.
+// • buildSingboxJson()      — share links → sing-box config
+// • renderSubscription()    — one renderer for every sub type (group/inject/member)
+// • configJsonToLines()     — sing-box JSON configs parsed as node sources
+// Clash Meta already has buildClashYaml.
+
+import { b64encodeUtf8 } from './net'
+import { buildClashYaml, linesToResult } from './inject'
+
+/** Serialize node lines in the requested output format.
+ * format: base64 (default) | plain | clash | singbox */
+export function renderSubscription(lines: string[], format: string | null | undefined): Response {
+  const headers = { 'Content-Type': 'text/plain; charset=utf-8', 'profile-update-interval': '1' }
+  const fmt = ['plain', 'clash', 'singbox'].includes(String(format)) ? String(format) : 'base64'
+  if (fmt === 'clash') {
+    return new Response(buildClashYaml(linesToResult(lines)), {
+      headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' },
+    })
+  }
+  if (fmt === 'singbox') return new Response(buildSingboxJson(lines), { headers })
+  if (fmt === 'plain') return new Response(lines.join('\n'), { headers })
+  return new Response(b64encodeUtf8(lines.join('\n')), { headers })
+}
+
+/** Detect a sing-box style JSON config and convert its outbounds back into
+ * standard share links so any JSON source can feed a subscription. */
+export function configJsonToLines(text: string): string[] {
+  try {
+    const cfg = JSON.parse(text) as { outbounds?: Array<Record<string, unknown>> }
+    if (!Array.isArray(cfg.outbounds)) return []
+    return cfg.outbounds.map(outboundToLine).filter((l): l is string => !!l)
+  } catch {
+    return []
+  }
+}
+
+function outboundToLine(o: Record<string, unknown>): string | null {
+  try {
+    const type = String(o.type ?? '')
+    const server = String(o.server ?? '')
+    const port = Number(o.server_port ?? 0)
+    const tag = String(o.tag ?? `${type}-${server}`)
+    if (!server || !port) return null
+
+    const transport = o.transport as Record<string, unknown> | undefined
+    const network = transport ? String(transport.type ?? 'tcp') : 'tcp'
+    const path = transport ? String(transport.path ?? '') : ''
+    const wsHost = transport && typeof transport.headers === 'object' && transport.headers !== null
+      ? String((transport.headers as Record<string, unknown>).Host ?? '') : ''
+    const tls = o.tls as Record<string, unknown> | undefined
+    const security = type === 'trojan' ? 'tls' : tls?.enabled ? (tls.reality && (tls.reality as Record<string, unknown>).enabled ? 'reality' : 'tls') : 'none'
+    const sni = tls ? String(tls.server_name ?? '') : ''
+    const fp = tls && typeof tls.utls === 'object' ? String((tls.utls as Record<string, unknown>).fingerprint ?? '') : ''
+
+    const q = new URLSearchParams()
+    if (security !== 'none') {
+      q.set('security', security)
+      if (sni) q.set('sni', sni)
+      if (fp) q.set('fp', fp)
+      if (security === 'reality') {
+        const r = (tls!.reality ?? {}) as Record<string, unknown>
+        if (r.public_key) q.set('pbk', String(r.public_key))
+        if (r.short_id) q.set('sid', String(r.short_id))
+      }
+    }
+    if (network === 'ws' || network === 'grpc') {
+      q.set('type', network)
+      if (path) q.set('path', path)
+      if (wsHost) q.set('host', wsHost)
+    }
+    const qs = q.toString()
+
+    if (type === 'vless') {
+      const flow = o.flow ? `&flow=${encodeURIComponent(String(o.flow))}` : ''
+      return `vless://${o.uuid}@${server}:${port}?encryption=none${qs ? '&' + qs : ''}${flow}#${encodeURIComponent(tag)}`
+    }
+    if (type === 'vmess') {
+      const json = { v: '2', ps: tag, add: server, port, id: o.uuid, aid: o.alter_id ?? 0, scy: o.security ?? 'auto', net: network === 'grpc' ? 'grpc' : network === 'ws' ? 'ws' : 'tcp', host: wsHost, path, tls: security === 'tls' || security === 'reality' ? 'tls' : '', sni }
+      return `vmess://${btoa(JSON.stringify(json))}`
+    }
+    if (type === 'trojan') {
+      return `trojan://${encodeURIComponent(String(o.password ?? ''))}@${server}:${port}?${qs}#${encodeURIComponent(tag)}`
+    }
+    if (type === 'shadowsocks') {
+      return `ss://${btoa(`${o.method}:${o.password}`)}@${server}:${port}#${encodeURIComponent(tag)}`
+    }
+    return null
+  } catch {
+    return null
+  }
+}
 
 export function buildSingboxJson(lines: string[]): string {
   const outbounds = lines

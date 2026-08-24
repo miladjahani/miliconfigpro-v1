@@ -1,6 +1,8 @@
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
-import { applyInjection, buildClashYaml, buildSubBase64, collectNodeLines, type PreferredIP, type ProxySpec } from './inject'
+import { applyInjection, buildSubBase64, collectNodeLines, type PreferredIP, type ProxySpec } from './inject'
+import { renderSubscription } from './formats'
+import { expandRanges } from './net'
 import { rotate } from './rotation'
 import { ensureSchema } from './schema'
 
@@ -16,10 +18,21 @@ interface InjectorBody {
 }
 
 function sanitizeIps(ips?: PreferredIP[]): PreferredIP[] {
-  return (ips ?? [])
-    .filter((p) => p && /^(\d{1,3}(\.\d{1,3}){3}|[a-z0-9.-]+\.[a-z]{2,})$/i.test(String(p.ip)))
-    .slice(0, 20)
-    .map((p) => ({ ip: String(p.ip), ...(p.port ? { port: Number(p.port) } : {}) }))
+  // CIDR ranges (104.16.0.0/30 style) expand to individual addresses.
+  const out: PreferredIP[] = []
+  for (const p of ips ?? []) {
+    if (!p || typeof p.ip !== 'string') continue
+    const ip = p.ip.trim()
+    if (ip.includes('/')) {
+      for (const expanded of expandRanges([ip], 40 - out.length)) {
+        out.push({ ip: expanded, ...(p.port ? { port: Number(p.port) } : {}) })
+        if (out.length >= 40) return out
+      }
+    } else if (/^(\d{1,3}(\.\d{1,3}){3}|[a-z0-9.-]+\.[a-z]{2,})$/i.test(ip)) {
+      out.push({ ip, ...(p.port ? { port: Number(p.port) } : {}) })
+    }
+  }
+  return out.slice(0, 20)
 }
 
 function sanitizeProxies(proxies?: ProxySpec[]): ProxySpec[] {
@@ -117,25 +130,32 @@ export async function serveInjectedSub(env: Env, token: string, target: string |
     const lines = await collectNodeLines(row.source)
     const rotatedIps = rotate(safeJsonParse<PreferredIP[]>(row.ips, []), row.rotate_minutes)
     const result = applyInjection(lines, rotatedIps, safeJsonParse<ProxySpec[]>(row.proxies, []))
-    if (target === 'clash') {
-      return new Response(buildClashYaml(result), {
-        headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' },
-      })
-    }
-    return new Response(buildSubBase64(result), {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', 'profile-update-interval': '1' },
-    })
+    return renderSubscription(result.subLines, target)
   } catch (e) {
     return new Response(e instanceof Error ? e.message : 'خطا در تولید ساب', { status: 502 })
   }
 }
 
 /** Parse user-pasted IP / proxy text into structured lists (helper for the UI). */
-export function parseIpLines(text: string): PreferredIP[] {
-  return text.split(/[\n,]/).map((l) => l.trim()).filter(Boolean).map((l) => {
-    const [ip, portRaw] = l.split(':')
-    return portRaw ? { ip: ip.trim(), port: Number(portRaw) || undefined } : { ip: ip.trim() }
-  }).filter((p) => p.ip)
+export function parseIpLines(text: string, cap = 100): PreferredIP[] {
+  // edgetunnel ADD.csv-style lines: plain IP/host, ip:port or CIDR ranges
+  // like 104.16.0.0/30 (optionally with :port) are expanded per-address.
+  const out: PreferredIP[] = []
+  for (const raw of text.split(/[\n,]/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const [addr, portRaw] = line.split(':')
+    const port = portRaw ? Number(portRaw) || undefined : undefined
+    if (addr.includes('/')) {
+      for (const ip of expandRanges([addr], cap - out.length)) {
+        out.push(port ? { ip, port } : { ip })
+        if (out.length >= cap) return out
+      }
+    } else {
+      out.push(port ? { ip: addr, port } : { ip: addr })
+    }
+  }
+  return out
 }
 
 export function parseProxyLines(text: string): ProxySpec[] {
