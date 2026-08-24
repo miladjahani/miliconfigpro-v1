@@ -4,16 +4,16 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Worker runs first for every request; non-API paths are served from ASSETS.
+# NOTE: The D1 binding is intentionally NOT declared here so that Cloudflare
+# Builds can always deploy automatically (a declared-but-invalid database_id
+# fails the whole deployment). Attach the database once from the dashboard:
+# Workers & Pages → miliconfigpro-v1 → Settings → Bindings → Add → D1 DB,
+# variable name: DB. The worker self-initializes its schema on first use.
 [assets]
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = true
-
-[[d1_databases]]
-binding = "DB"
-database_name = "miliconfigpro-v1"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 [observability]
 enabled = true

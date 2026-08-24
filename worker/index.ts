@@ -360,8 +360,19 @@ export default {
     }
 
     try {
-      // Self-initialize an empty D1 database on first use.
+      // D1 is attached via dashboard bindings; until it is, answer the API
+      // with a clear one-time setup hint instead of crashing.
       if (path.startsWith('/api')) {
+        if (!env.DB) {
+          return json(
+            {
+              error:
+                'اتصال دیتابیس هنوز برقرار نیست. در داشبورد کلودفلر: Workers & Pages → miliconfigpro-v1 → Settings → Bindings → Add → D1 database، نام متغیر: DB',
+              setup_required: 'd1_binding',
+            },
+            503,
+          )
+        }
         await ensureSchema(env)
       }
       const response = await handleRouted(request, env, ctx, path, origin, method)
