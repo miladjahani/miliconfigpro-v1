@@ -89,6 +89,8 @@ export interface SubGroup {
   ips?: PreferredIP[]
   proxies?: ProxySpec[]
   inject?: boolean
+  format?: string
+  extra_links?: string[]
   created_at: string
 }
 

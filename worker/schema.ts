@@ -161,6 +161,8 @@ const MIGRATIONS = [
   `ALTER TABLE sub_groups ADD COLUMN ips TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE sub_groups ADD COLUMN proxies TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE sub_groups ADD COLUMN inject INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE sub_groups ADD COLUMN format TEXT NOT NULL DEFAULT 'base64'`,
+  `ALTER TABLE sub_groups ADD COLUMN extra_links TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE deployments ADD COLUMN cf_token_row_id TEXT`,
   `ALTER TABLE worker_members ADD COLUMN request_quota INTEGER`,
   `ALTER TABLE worker_members ADD COLUMN used_requests INTEGER NOT NULL DEFAULT 0`,

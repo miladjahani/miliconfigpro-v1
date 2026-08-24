@@ -223,6 +223,21 @@ export function buildSubBase64(result: InjectResult): string {
 
 const yamlSafe = (s: string) => JSON.stringify(s)
 
+/** Wrap plain node lines (no injection) into the InjectResult shape so
+ *  renderers like buildClashYaml can be reused for any line set. */
+export function linesToResult(lines: string[]): InjectResult {
+  const clashProxies: Array<Record<string, unknown>> = []
+  const clashProxiesNames: string[] = []
+  for (const node of lines.map(parseNodeLine).filter((n): n is ParsedNode => n !== null)) {
+    const proxy = nodeToClash(node, node.name)
+    if (proxy) {
+      clashProxies.push(proxy)
+      clashProxiesNames.push(node.name)
+    }
+  }
+  return { subLines: lines, clashProxies, clashProxiesNames, injectedCount: 0 }
+}
+
 export function buildClashYaml(result: InjectResult): string {
   const lines: string[] = []
   lines.push('# miliconfig — optimized & injected config')

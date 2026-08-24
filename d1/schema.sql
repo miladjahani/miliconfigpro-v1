@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS sub_groups (
   ips TEXT NOT NULL DEFAULT '[]',       -- preferred IPs injected at serve time
   proxies TEXT NOT NULL DEFAULT '[]',   -- http/socks5 chains injected at serve time
   inject INTEGER NOT NULL DEFAULT 0,
+  format TEXT NOT NULL DEFAULT 'base64',
+  extra_links TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

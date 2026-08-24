@@ -7,7 +7,7 @@ import {
   KeyRound, Rocket, Database, Copy, Check, Smartphone, Settings2,
   Power, PowerOff, AlertTriangle, Save, Eye, EyeOff, RefreshCw, Radio,
   Globe, Shield, Network, Server, Radar, ScanLine, Wifi, Github,
-  ArrowRight, ChevronDown, ChevronUp, Lock, Layers, Zap,
+  ArrowRight, ChevronDown, ChevronUp, Lock, Layers, Zap, Link2,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -387,6 +387,16 @@ function WorkersTab() {
                       <span className="text-xs text-slate-300 font-mono" dir="ltr">{dep.uuid.slice(0, 16)}...</span>
                     </InfoCell>
                   )}
+                  {dep.worker_url && dep.uuid && (
+                    <InfoCell icon={<Link2 className="w-3.5 h-3.5 text-emerald-400" />} label="ساب مستقیم (آدرس ورکر + uuid)">
+                      <button onClick={() => copySub(`${dep.worker_url}/${dep.uuid}`, `${dep.id}-direct`)}
+                        title={`${dep.worker_url}/${dep.uuid}`}
+                        className="flex items-center gap-1.5 text-xs text-emerald-400 hover:underline truncate max-w-full" dir="ltr">
+                        <span className="truncate">{dep.worker_url}/{dep.uuid.slice(0, 13)}…</span>
+                        {copiedSub === `${dep.id}-direct` ? <Check className="w-3 h-3 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
+                      </button>
+                    </InfoCell>
+                  )}
                   {dep.kv_namespace_id && (
                     <InfoCell icon={<Database className="w-3.5 h-3.5 text-green-400" />} label="KV Namespace">
                       <span className="text-xs text-slate-300 font-mono" dir="ltr">{dep.kv_namespace_id.slice(0, 16)}...</span>
@@ -478,6 +488,15 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editIps, setEditIps] = useState('')
   const [editProxies, setEditProxies] = useState('')
+  const [format, setFormat] = useState('base64')
+  const [extraLinks, setExtraLinks] = useState('')
+
+  const FORMATS = [
+    { key: 'base64', label: 'Base64 (v2rayNG و…)' },
+    { key: 'plain', label: 'متن ساده' },
+    { key: 'clash', label: 'Clash Meta' },
+    { key: 'singbox', label: 'Sing-Box JSON' },
+  ]
 
   const parseIps = (text: string): PreferredIP[] =>
     text.split(/[\n,]/).map((l) => l.trim()).filter(Boolean).map((l) => {
@@ -512,9 +531,11 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
         body: {
           name: name.trim(), deployment_ids: Array.from(selected),
           inject, ips: parseIps(injIps), proxies: parseProxies(injProxies),
+          format,
+          extra_links: extraLinks.split('\n').map((l) => l.trim()).filter(Boolean),
         },
       })
-      setSelected(new Set()); setName(''); await load(); onChanged()
+      setSelected(new Set()); setName(''); setExtraLinks(''); await load(); onChanged()
     } catch { /* ignore */ }
     setBusy(false)
   }
@@ -582,9 +603,25 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
             )}
           </div>
 
+          <div className="p-3 rounded-xl bg-slate-900/40 border border-slate-800 space-y-2">
+            <span className="text-xs font-medium text-slate-300">فرمت خروجی ساب — لینک نهایی در همین فرمت تحویل داده می‌شود</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {FORMATS.map((f) => (
+                <button key={f.key} type="button" onClick={() => setFormat(f.key)}
+                  className={`px-3 py-2 rounded-lg border text-xs transition-all ${format === f.key ? 'bg-brand-500/15 border-brand-500/40 text-brand-200' : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-white'}`}>
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <textarea value={extraLinks} onChange={(e) => setExtraLinks(e.target.value)} rows={2} dir="ltr"
+            placeholder={'لینک‌های اضافه (هر آدرس حاوی نود، هر خط یک مورد):\nhttps://example.com/sub\nیا محتوای کانفیگ خام'}
+            className="input-field text-xs font-mono" />
+
           <div className="flex gap-2 flex-wrap">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="نام گروه (اختیاری)" className="input-field text-sm flex-1 min-w-[160px]" />
-            <button onClick={create} disabled={busy || selected.size === 0} className="btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
+            <button onClick={create} disabled={busy || (selected.size === 0 && extraLinks.trim() === '')} className="btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
               <Layers className="w-4 h-4" />
               ساخت ساب گروهی ({selected.size})
             </button>
@@ -595,8 +632,9 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
               {groups.map((g) => (
                 <div key={g.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/40 border border-slate-800">
                   <div className="min-w-0">
-                    <p className="text-sm text-white truncate">{g.name} <span className="text-xs text-slate-500">({g.deployment_ids.length} ورکر)</span></p>
+                    <p className="text-sm text-white truncate">{g.name} <span className="text-xs text-slate-500">({g.deployment_ids.length} ورکر{g.extra_links?.length ? ` · ${g.extra_links.length} لینک اضافه` : ''})</span></p>
                     <p className="text-xs text-slate-500 font-mono truncate" dir="ltr">{groupUrl(g.sub_token)}</p>
+                    <p className="text-[10px] text-brand-400/80">فرمت: {FORMATS.find((f) => f.key === (g.format || 'base64'))?.label ?? 'Base64'}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <button onClick={() => copy(groupUrl(g.sub_token), g.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300" title="کپی لینک ساب">
@@ -604,6 +642,9 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
                     </button>
                     <button onClick={() => copy(groupUrl(g.sub_token) + '?target=clash', g.id + '-clash')} className="px-2 py-2 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-brand-300" title="کپی لینک Clash Meta">
                       Clash
+                    </button>
+                    <button onClick={() => copy(groupUrl(g.sub_token) + '?target=singbox', g.id + '-sb')} className="px-2 py-2 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-brand-300" title="کپی لینک Sing-Box">
+                      SB
                     </button>
                     <button onClick={() => { setEditingId(editingId === g.id ? null : g.id); setEditIps((g.ips ?? []).map((p) => p.port ? `${p.ip}:${p.port}` : p.ip).join('\n')); setEditProxies((g.proxies ?? []).map((p) => `${p.type}://${p.username ? p.username + (p.password ? ':' + p.password : '') + '@' : ''}${p.server}:${p.port}`).join('\n')) }}
                       className="px-2 py-2 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-brand-300" title="تنظیم تزریق">
