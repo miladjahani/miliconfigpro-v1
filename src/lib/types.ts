@@ -135,7 +135,10 @@ export interface MemberSettings {
   transport: '' | 'ws' | 'grpc' | 'httpupgrade'
   fragment: boolean
   fragment_preset?: string
-  fragment_config: { packets?: string; length?: string; interval?: string }
+  fragment_config: { packets?: string; length?: string; interval?: string; fm?: string; cs?: string }
+  fingerprint?: string
+  custom_sni?: string
+  custom_host?: string
   bypass_sanctions: boolean
 }
 
@@ -152,6 +155,8 @@ export interface WorkerMember {
   quota_gb: number | null
   used_requests: number
   request_quota: number | null
+  ip_limit: number | null
+  active_devices: number
   usage_updated_at: string | null
   settings: MemberSettings
   created_at: string

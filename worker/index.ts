@@ -313,7 +313,7 @@ async function handleRouted(
     if (path.startsWith('/api/sub/opt/')) return await serveOptimizerSub(env, token)
     if (path.startsWith('/api/sub/group/')) return await serveGroupSub(env, token, target)
     if (path.startsWith('/api/sub/inject/')) return await serveInjectedSub(env, token, target)
-    if (path.startsWith('/api/sub/member/')) return await serveMemberSub(env, token, target)
+    if (path.startsWith('/api/sub/member/')) return await serveMemberSub(env, token, target, request)
   }
 
   // Everything below requires a session

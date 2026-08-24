@@ -20,14 +20,19 @@ const TRANSPORTS = [
   { v: 'httpupgrade', label: 'HTTPUpgrade' },
 ]
 
-function Field({ label, value, onChange, placeholder, type = 'text' }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string
+function Field({ label, value, onChange, placeholder, type = 'text', textarea, rows = 2 }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; textarea?: boolean; rows?: number
 }) {
   return (
     <label className="block">
       <span className="text-xs text-slate-400 mb-1 block">{label}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
-        className="input-field text-sm w-full" dir="ltr" />
+      {textarea ? (
+        <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
+          className="input-field text-sm w-full font-mono" dir="ltr" />
+      ) : (
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+          className="input-field text-sm w-full" dir="ltr" />
+      )}
     </label>
   )
 }
@@ -59,6 +64,12 @@ export default function Members() {
   const [transport, setTransport] = useState('')
   const [fragment, setFragment] = useState(false)
   const [preset, setPreset] = useState('')
+  const [fm, setFm] = useState('')
+  const [cs, setCs] = useState('')
+  const [fingerprint, setFingerprint] = useState('')
+  const [sniMask, setSniMask] = useState('')
+  const [hostMask, setHostMask] = useState('')
+  const [ipLimit, setIpLimit] = useState('')
   const [bypass, setBypass] = useState(false)
   const [quotaGb, setQuotaGb] = useState('')
   const [reqQuota, setReqQuota] = useState('')
@@ -93,13 +104,21 @@ export default function Members() {
           transport,
           fragment,
           fragment_preset: preset,
+          fragment_config: {
+            ...(fm.trim() ? { fm: fm.trim() } : {}),
+            ...(cs.trim() ? { cs: cs.trim() } : {}),
+          },
+          fingerprint,
+          custom_sni: sniMask.trim(),
+          custom_host: hostMask.trim(),
           bypass_sanctions: bypass,
           quota_gb: quotaGb ? Number(quotaGb) : null,
           request_quota: reqQuota ? Number(reqQuota) : null,
+          ip_limit: ipLimit ? Number(ipLimit) : null,
           expires_at: expires ? new Date(expires).toISOString() : null,
         },
       })
-      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setExpires('')
+      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setIpLimit(''); setExpires(''); setFm(''); setCs(''); setFingerprint(''); setSniMask(''); setHostMask('')
       await load()
     } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
     setBusy(false)
@@ -154,6 +173,7 @@ export default function Members() {
               <Field label="نام (مثلاً علی یا US-User)" value={name} onChange={setName} placeholder="علی" />
               <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={quotaGb} onChange={setQuotaGb} placeholder="50" />
               <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={reqQuota} onChange={setReqQuota} placeholder="100000" />
+              <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={ipLimit} onChange={setIpLimit} placeholder="2" />
               <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={expires} onChange={setExpires} type="date" />
               <label className="block">
                 <span className="text-xs text-slate-400 mb-1 block">ترنسپورت</span>
@@ -179,14 +199,34 @@ export default function Members() {
               <Toggle checked={bypass} onChange={() => setBypass(!bypass)} label="دور زدن تحریم (SNI جایگزین)" />
             </div>
             {fragment && (
-              <label className="block max-w-xs">
-                <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور (روی تنظیم دستی اولویت دارد)</span>
-                <select value={preset} onChange={(e) => setPreset(e.target.value)} className="input-field text-sm py-2 w-full">
-                  <option value="">دستی / پیش‌فرض</option>
-                  {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)}
+              <div className="space-y-3">
+                <label className="block max-w-xs">
+                  <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور (روی تنظیم دستی اولویت دارد)</span>
+                  <select value={preset} onChange={(e) => setPreset(e.target.value)} className="input-field text-sm py-2 w-full">
+                    <option value="">دستی / پیش‌فرض</option>
+                    {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)}
+                  </select>
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="فرگمنت JSON — fm= (عیناً تزریق می‌شود)" value={fm} onChange={setFm}
+                    placeholder='{"enabled":true,...}' textarea rows={3} />
+                  <Field label="Cipher Suiteها — cs= (عیناً تزریق می‌شود)" value={cs} onChange={setCs}
+                    placeholder="TLS_AES_128_GCM_SHA256,TLS_CHACHA20..." textarea rows={3} />
+                </div>
+                <p className="text-xs text-slate-500">مقادیر fm و cs بدون هیچ تغییری داخل لینک نهایی قرار می‌گیرند — همان کانفیگی که دستی جواب می‌دهد اینجا هم دقیقاً همان خروجی را دارد.</p>
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <label className="block">
+                <span className="text-xs text-slate-400 mb-1 block">اثرانگشت ClientHello (fp)</span>
+                <select value={fingerprint} onChange={(e) => setFingerprint(e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
+                  <option value="">پیش‌فرض ورکر</option>
+                  {['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'].map((f) => <option key={f} value={f}>{f}</option>)}
                 </select>
               </label>
-            )}
+              <Field label="SNI سفارشی (ماسک)" value={sniMask} onChange={setSniMask} placeholder="www.speedtest.net" />
+              <Field label="Host سفارشی (ماسک)" value={hostMask} onChange={setHostMask} placeholder="example.com" />
+            </div>
             {error && <p className="text-sm text-error-400">{error}</p>}
             <button onClick={create} disabled={busy} className="btn-primary flex items-center gap-2 text-sm">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}

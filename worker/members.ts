@@ -16,7 +16,18 @@ export interface MemberSettings {
   transport: '' | 'ws' | 'grpc' | 'httpupgrade'
   fragment: boolean
   fragment_preset: string
-  fragment_config: { packets?: string; length?: string; interval?: string }
+  fragment_config: {
+    packets?: string; length?: string; interval?: string
+    /** Advanced JSON fragment — passed through verbatim (fm= param). */
+    fm?: string
+    /** Custom cipher suites — passed through verbatim (cs= param). */
+    cs?: string
+  }
+  /** ClientHello fingerprint (fp= param). */
+  fingerprint: string
+  /** Custom SNI/Host masking overrides. */
+  custom_sni: string
+  custom_host: string
   bypass_sanctions: boolean
 }
 
@@ -35,9 +46,16 @@ export interface MemberRow {
   created_at: string
 }
 
+export const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'] as const
+
 const DEFAULT_SETTINGS: MemberSettings = {
   countries: [], custom_ips: [], transport: '',
-  fragment: false, fragment_preset: '', fragment_config: {}, bypass_sanctions: false,
+  fragment: false, fragment_preset: '', fragment_config: {},
+  fingerprint: '', custom_sni: '', custom_host: '', bypass_sanctions: false,
+}
+
+function cleanParam(v: unknown, max = 400): string {
+  return typeof v === 'string' ? v.trim().slice(0, max) : ''
 }
 
 function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
@@ -50,13 +68,20 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
     transport: transport as MemberSettings['transport'],
     fragment: !!s?.fragment,
     fragment_preset: typeof s?.fragment_preset === 'string' ? s.fragment_preset.slice(0, 20) : '',
-    fragment_config: s?.fragment_config && typeof s.fragment_config === 'object' && Object.keys(s.fragment_config).length
+    fragment_config: s?.fragment_config && typeof s.fragment_config === 'object'
       ? {
+          // Basic values are length-capped; advanced fm/cs pass through
+          // verbatim so exact working configs from Iran survive untouched.
           ...(s.fragment_config.packets ? { packets: String(s.fragment_config.packets).slice(0, 20) } : {}),
           ...(s.fragment_config.length ? { length: String(s.fragment_config.length).slice(0, 20) } : {}),
           ...(s.fragment_config.interval ? { interval: String(s.fragment_config.interval).slice(0, 20) } : {}),
+          ...(cleanParam(s.fragment_config.fm) ? { fm: cleanParam(s.fragment_config.fm) } : {}),
+          ...(cleanParam(s.fragment_config.cs) ? { cs: cleanParam(s.fragment_config.cs) } : {}),
         }
-      : { packets: 'tlshello', length: '100-200', interval: '10-20' },
+      : {},
+    fingerprint: (FINGERPRINTS as readonly string[]).includes(String(s?.fingerprint)) ? String(s?.fingerprint) : '',
+    custom_sni: cleanParam(s?.custom_sni, 200),
+    custom_host: cleanParam(s?.custom_host, 200),
     bypass_sanctions: !!s?.bypass_sanctions,
   }
 }
@@ -70,6 +95,7 @@ interface MemberBody extends Partial<MemberSettings> {
   expires_at?: string | null
   quota_gb?: number | null
   request_quota?: number | null
+  ip_limit?: number | null
 }
 
 export async function handleMemberCreate(env: Env, userId: string, request: Request): Promise<Response> {
@@ -85,12 +111,13 @@ export async function handleMemberCreate(env: Env, userId: string, request: Requ
   const token = genId().replace(/-/g, '')
   const quotaBytes = body.quota_gb == null || body.quota_gb <= 0 ? null : Math.round(body.quota_gb * 1024 ** 3)
   const reqQuota = body.request_quota == null || body.request_quota <= 0 ? null : Math.round(body.request_quota)
+  const ipLimit = body.ip_limit == null || body.ip_limit <= 0 ? null : Math.round(body.ip_limit)
   await env.DB.prepare(
-    `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, request_quota, used_bytes, used_requests, settings, created_at)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?)`,
+    `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, request_quota, ip_limit, used_bytes, used_requests, recent_ips, settings, created_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, 0, '[]', ?, ?)`,
   ).bind(
     id, userId, dep.id, body.name?.trim() || `کاربر ${dep.name}`,
-    token, body.expires_at ?? null, quotaBytes, reqQuota, JSON.stringify(settings), nowIso(),
+    token, body.expires_at ?? null, quotaBytes, reqQuota, ipLimit, JSON.stringify(settings), nowIso(),
   ).run()
   return json({ data: { id, token } }, 201)
 }
@@ -112,6 +139,8 @@ function serializeMember(row: Record<string, unknown>) {
     quota_gb: row.quota_bytes ? Number((row.quota_bytes as number / 1024 ** 3).toFixed(2)) : null,
     used_requests: (row.used_requests as number) ?? 0,
     request_quota: row.request_quota ?? null,
+    ip_limit: row.ip_limit ?? null,
+    active_devices: safeJsonParse<{ ip: string }[]>(row.recent_ips as string ?? '[]', []).length,
   }
 }
 
@@ -129,6 +158,9 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     fragment: body.fragment ?? prevSettings.fragment,
     fragment_preset: body.fragment_preset !== undefined ? body.fragment_preset : prevSettings.fragment_preset,
     fragment_config: body.fragment_config ?? prevSettings.fragment_config,
+    fingerprint: body.fingerprint !== undefined ? body.fingerprint : prevSettings.fingerprint,
+    custom_sni: body.custom_sni !== undefined ? body.custom_sni : prevSettings.custom_sni,
+    custom_host: body.custom_host !== undefined ? body.custom_host : prevSettings.custom_host,
     bypass_sanctions: body.bypass_sanctions ?? prevSettings.bypass_sanctions,
   })
   const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : (existing.enabled as number)
@@ -139,10 +171,13 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
   const reqQuota = body.request_quota !== undefined
     ? (body.request_quota == null || body.request_quota <= 0 ? null : Math.round(body.request_quota))
     : (existing.request_quota as number | null)
+  const ipLimit = body.ip_limit !== undefined
+    ? (body.ip_limit == null || body.ip_limit <= 0 ? null : Math.round(body.ip_limit))
+    : (existing.ip_limit as number | null)
 
   await env.DB.prepare(
-    'UPDATE worker_members SET settings = ?, enabled = ?, expires_at = ?, quota_bytes = ?, request_quota = ? WHERE id = ?',
-  ).bind(JSON.stringify(settings), enabled, expiresAt, quotaBytes, reqQuota, id).run()
+    'UPDATE worker_members SET settings = ?, enabled = ?, expires_at = ?, quota_bytes = ?, request_quota = ?, ip_limit = ? WHERE id = ?',
+  ).bind(JSON.stringify(settings), enabled, expiresAt, quotaBytes, reqQuota, ipLimit, id).run()
   return json({ data: { id } })
 }
 
@@ -203,6 +238,19 @@ export async function refreshMemberUsage(env: Env, userId: string, id: string): 
 
 // ── Personalized sub serving ────────────────────────────────────────────────
 
+/** Rewrite or insert a single URI query param in a node link (before the #-name). */
+function setQueryParam(line: string, key: string, value: string): string {
+  const hashIdx = line.indexOf('#')
+  const main = hashIdx === -1 ? line : line.slice(0, hashIdx)
+  const suffix = hashIdx === -1 ? '' : line.slice(hashIdx)
+  const qIdx = main.indexOf('?')
+  if (qIdx === -1) return `${main}?${key}=${encodeURIComponent(value)}${suffix}`
+  const base = main.slice(0, qIdx)
+  const parts = main.slice(qIdx + 1).split('&').filter((p) => p && !p.startsWith(`${key}=`))
+  parts.push(`${key}=${encodeURIComponent(value)}`)
+  return `${base}?${parts.join('&')}${suffix}`
+}
+
 /** Rewrite transport type param in a vless/vmess/trojan URI. */
 function rewriteTransport(line: string, transport: MemberSettings['transport']): string {
   if (!transport) return line
@@ -216,12 +264,11 @@ function addFragmentParams(line: string, fc: MemberSettings['fragment_config']):
   if (fc.length) parts.push(`length=${fc.length}`)
   if (fc.interval) parts.push(`interval=${fc.interval}`)
   if (!parts.length) return line
-  const sep = line.includes('?') ? '&' : '?'
-  return `${line}${sep}fragment=${encodeURIComponent(parts.join(','))}`
+  return setQueryParam(line, 'fragment', parts.join(','))
 }
 
 /** Public endpoint — GET /api/sub/member/:token[?target=clash] */
-export async function serveMemberSub(env: Env, token: string, target: string | null): Promise<Response> {
+export async function serveMemberSub(env: Env, token: string, target: string | null, request?: Request): Promise<Response> {
   const member = await env.DB.prepare('SELECT * FROM worker_members WHERE token = ?').bind(token)
     .first<Record<string, unknown>>()
   if (!member) return new Response('یافت نشد', { status: 404 })
@@ -252,7 +299,27 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   // ISP preset wins over manual fragment values when chosen.
   if (settings.fragment && settings.fragment_preset) {
     const preset = findPreset(settings.fragment_preset)
-    if (preset) settings.fragment_config = { ...preset.config }
+    if (preset) settings.fragment_config = { ...preset.config, ...(settings.fragment_config.fm ? { fm: settings.fragment_config.fm } : {}), ...(settings.fragment_config.cs ? { cs: settings.fragment_config.cs } : {}) }
+  }
+
+  // ── Concurrent-device (IP) limit, enforced on sub fetch ──────────────
+  const ipLimit = member.ip_limit as number | null
+  if (ipLimit && ipLimit > 0 && request) {
+    const clientIp = request.headers.get('cf-connecting-ip') ?? 'unknown'
+    const now = Date.now()
+    const DAY = 86_400_000
+    const recent = safeJsonParse<{ ip: string; ts: number }[]>(member.recent_ips as string ?? '[]', [])
+      .filter((r) => now - r.ts < DAY)
+    if (!recent.some((r) => r.ip === clientIp)) {
+      if (recent.length >= ipLimit) {
+        return new Response(`تعداد دستگاه‌های مجاز شما (${ipLimit}) تکمیل است. با مدیر خود تماس بگیرید.`, { status: 403 })
+      }
+      recent.push({ ip: clientIp, ts: now })
+    } else {
+      for (const r of recent) if (r.ip === clientIp) r.ts = now
+    }
+    await env.DB.prepare('UPDATE worker_members SET recent_ips = ? WHERE id = ?')
+      .bind(JSON.stringify(recent), member.id as string).run()
   }
 
   // Base node per line (dedupe by identity, keep first).
@@ -266,12 +333,21 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   const namePrefix = String(member.name ?? '')
   let out = base
   if (settings.transport) out = out.map((l) => rewriteTransport(l, settings.transport))
-  if (settings.bypass_sanctions) {
-    // Prefer TLS SNI trick: point sni/host at a permissive domain so
-    // sanctioned-host SNI blocking is bypassed on the CDN path.
-    out = out.map((l) => l.includes('sni=') ? l : l.replace(/([?&])/, `$1sni=${encodeURIComponent('www.speedtest.net')}&`))
+  if (settings.custom_sni) out = out.map((l) => setQueryParam(l, 'sni', settings.custom_sni))
+  if (settings.custom_host) out = out.map((l) => setQueryParam(l, 'host', settings.custom_host))
+  if (settings.fingerprint) out = out.map((l) => setQueryParam(l, 'fp', settings.fingerprint))
+  if (settings.bypass_sanctions && !settings.custom_sni) {
+    // TLS SNI trick: point sni at a permissive domain so sanctioned-host
+    // SNI blocking is bypassed on the CDN path.
+    out = out.map((l) => setQueryParam(l, 'sni', 'www.speedtest.net'))
   }
-  if (settings.fragment) out = out.map((l) => addFragmentParams(l, settings.fragment_config))
+  if (settings.fragment) {
+    out = out.map((l) => addFragmentParams(l, settings.fragment_config))
+    // Advanced pass-through params — appended verbatim, never rewritten.
+    const fc = settings.fragment_config
+    if (fc.fm) out = out.map((l) => setQueryParam(l, 'fm', fc.fm!))
+    if (fc.cs) out = out.map((l) => setQueryParam(l, 'cs', fc.cs!))
+  }
 
   const pool: PreferredIP[] = resolvePool(settings.countries, settings.custom_ips)
     .map((p) => ({ ip: p.ip }))
@@ -295,10 +371,12 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
 
   if (target === 'clash') {
     const result = applyInjection(named, pool, [])
-    const proxies = result.clashProxies.map((p) => (
-      settings.fragment && (p.type === 'vless' || p.type === 'vmess')
-        ? { ...p, fragment: settings.fragment_config } : p
-    ))
+    const proxies = result.clashProxies.map((p) => {
+      let q = p
+      if (settings.fragment && (q.type === 'vless' || q.type === 'vmess')) q = { ...q, fragment: settings.fragment_config }
+      if (settings.fingerprint && 'client-fingerprint' in q) q = { ...q, 'client-fingerprint': settings.fingerprint }
+      return q
+    })
     const yaml = buildClashYaml({ ...result, clashProxies: proxies })
     return new Response(yaml, { headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' } })
   }

@@ -162,8 +162,10 @@ CREATE TABLE IF NOT EXISTS worker_members (
   expires_at TEXT,
   quota_bytes INTEGER,
   request_quota INTEGER,
+  ip_limit INTEGER,
   used_bytes INTEGER NOT NULL DEFAULT 0,
   used_requests INTEGER NOT NULL DEFAULT 0,
+  recent_ips TEXT NOT NULL DEFAULT '[]',
   usage_updated_at TEXT,
   settings TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
