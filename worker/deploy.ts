@@ -178,6 +178,12 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     let initialConfig: Record<string, unknown>
     const addTxtKey = 'ADD.txt'
 
+    // Panel path for edgetunnel: the custom path if set, otherwise always
+    // /admin so the panel address is predictable and ends with /admin.
+    const panelPath = custom_path
+      ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path)
+      : '/admin'
+
     if (configFormat === 'custom') {
       initialConfig = {
         wk: '', ev: 'yes', et: 'no', ex: 'no', ech: 'no', tp: '',
@@ -193,7 +199,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
         UUID: uuid,
         HOST: '',
         HOSTS: [],
-        PATH: custom_path ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path) : '/',
+        PATH: panelPath,
         协议类型: 'vless',
         传输协议: 'ws',
         gRPC模式: 'gun',
@@ -243,11 +249,11 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     }).catch(() => null)
 
     let workerUrl: string
-    // edgetunnel: panel lives at the custom path (login page asking for the
-    // password); without a custom path it falls back to /{uuid}.
+    // edgetunnel: panel lives at the panel path (login page asking for the
+    // password) — custom path or /admin by default.
     // Default (custom) worker: UUID is always part of the URL and bypasses
     // the login page entirely.
-    const panelKey = configFormat === 'edgetunnel' ? (custom_path || uuid) : uuid
+    const panelKey = configFormat === 'edgetunnel' ? panelPath.slice(1) : uuid
 
     if (method === 'workers') {
       // ── Upload worker script ──────────────────────────────────────────
@@ -260,7 +266,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
           { type: 'kv_namespace', name: kvBindingName, namespace_id: kvNamespaceId },
           { type: 'plain_text', name: uuidEnv, text: uuid },
           ...(configFormat === 'edgetunnel' ? [
-            { type: 'plain_text', name: 'PATH', text: custom_path ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path) : '/' },
+            { type: 'plain_text', name: 'PATH', text: panelPath },
             { type: 'plain_text', name: 'PROXYIP', text: proxyip },
             ...(admin_password ? [{ type: 'plain_text', name: 'ADMIN', text: admin_password }] : []),
           ] : [
@@ -363,7 +369,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
             kv_namespaces: { [kvBindingName]: { namespace_id: kvNamespaceId } },
             environment_variables: configFormat === 'edgetunnel' ? {
               [uuidEnv]: { value: uuid, type: 'plain_text' },
-              PATH: { value: custom_path ? (custom_path.startsWith('/') ? custom_path : '/' + custom_path) : '/', type: 'plain_text' },
+              PATH: { value: panelPath, type: 'plain_text' },
               PROXYIP: { value: proxyip, type: 'plain_text' },
               ...(admin_password ? { ADMIN: { value: admin_password, type: 'plain_text' } } : {}),
             } : {

@@ -331,7 +331,7 @@ export default function DeployWizard() {
                 className="input-field"
                 dir="ltr"
               />
-              <p className="text-xs text-slate-500 mt-2">اگر تنظیم شود، پنل از <code className="text-brand-300">/{customPath || 'mypath'}</code> در دسترس است نه <code className="text-brand-300">/{uuid.slice(0, 8)}...</code></p>
+              <p className="text-xs text-slate-500 mt-2">اگر تنظیم شود، پنل از <code className="text-brand-300">/{customPath || 'mypath'}</code> در دسترس است؛ در غیر این صورت پیش‌فرض <code className="text-brand-300">/admin</code> است</p>
             </div>
 
             <div className="flex justify-end">
@@ -471,7 +471,7 @@ export default function DeployWizard() {
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">مسیر پنل</p>
-                  <p className="text-white font-medium" dir="ltr">/{customPath || uuid.slice(0, 8) + '...'}</p>
+                  <p className="text-white font-medium" dir="ltr">/{customPath || 'admin'}</p>
                 </div>
               </div>
             </div>
