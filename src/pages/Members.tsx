@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power } from 'lucide-react'
+import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity } from 'lucide-react'
 import { api } from '../lib/api'
 import { FRAGMENT_PRESETS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
@@ -303,6 +303,10 @@ export default function Members() {
                     <button onClick={() => copy(m, true)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === m.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
                     </button>
+                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" title="صفحه وضعیت + QR"
+                      className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
+                      <Activity className="w-4 h-4" />
+                    </a>
                     <button onClick={() => refreshUsage(m.id)} disabled={busy} title="به‌روزرسانی مصرف"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
                       <RefreshCw className="w-4 h-4" />

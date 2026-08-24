@@ -14,9 +14,13 @@ import {
   Cloud,
   Bot,
   Zap,
+  Download,
+  Upload,
+  DatabaseBackup,
 } from 'lucide-react'
 import { Gauge } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { useRef } from 'react'
 
 interface Stats {
   tokens: number
@@ -41,6 +45,28 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<RecentLog[]>([])
   const [quota, setQuota] = useState<{ used_today: number; limit: number } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [backupMsg, setBackupMsg] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
+
+  const handleImport = async (file: File) => {
+    setImporting(true)
+    setBackupMsg(null)
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      const res = await api<{ members_added: number; members_skipped: number; injectors_added: number; injectors_skipped: number; groups_added: number; groups_skipped: number }>('/api/backup', {
+        method: 'POST',
+        body: JSON.stringify({ ...parsed, mode: 'merge' }),
+      })
+      setBackupMsg(`بازگردانی شد: ${res.members_added} عضو، ${res.injectors_added} ساب تزریقی، ${res.groups_added} گروه (${res.members_skipped + res.injectors_skipped + res.groups_skipped} تکراری رد شد)`)
+    } catch (e) {
+      setBackupMsg(`خطا در بازگردانی: ${e instanceof Error ? e.message : 'فایل نامعتبر'}`)
+    } finally {
+      setImporting(false)
+      if (importFileRef.current) importFileRef.current.value = ''
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -108,6 +134,31 @@ export default function Dashboard() {
         </Link>
       </div>
 
+
+      {/* Backup / restore */}
+      <div className="glass-card p-5">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <DatabaseBackup className="w-4 h-4 text-brand-400" /> بکاپ و بازگردانی
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">عضوها، ساب‌های تزریقی و گروهی — لینک‌ها بعد از بازگردانی همان قبلی می‌مانند.</p>
+            {backupMsg && <p className="text-xs text-brand-300 mt-2">{backupMsg}</p>}
+          </div>
+          <div className="flex items-center gap-2">
+            <a href="/api/backup" download
+              className="btn-secondary flex items-center gap-2 text-sm px-3 py-1.5">
+              <Download className="w-4 h-4" /> خروجی JSON
+            </a>
+            <button onClick={() => importFileRef.current?.click()} disabled={importing}
+              className="btn-primary flex items-center gap-2 text-sm px-3 py-1.5">
+              {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />} بازگردانی
+            </button>
+            <input ref={importFileRef} type="file" accept="application/json,.json" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleImport(f) }} />
+          </div>
+        </div>
+      </div>
 
       {/* Cloudflare daily-request quota monitor */}
       {quota && (

@@ -10,6 +10,8 @@ import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleO
 import { handleGroupCreate, handleGroupList, handleGroupDelete, handleGroupPatch, serveGroupSub } from './subgroups'
 import { handleInjectorCreate, handleInjectorList, handleInjectorPatch, handleInjectorDelete, serveInjectedSub } from './injector'
 import { handleMemberCreate, handleMemberList, handleMemberPatch, handleMemberDelete, handleMemberBulk, handleCfQuota, refreshMemberUsage, serveMemberSub } from './members'
+import { serveStatusPage } from './status'
+import { exportBackup, importBackup } from './backup'
 import { handleSourceSettings, handleSourceNodes } from './sourcebridge'
 
 interface DeploymentBody {
@@ -316,6 +318,11 @@ async function handleRouted(
     if (path.startsWith('/api/sub/member/')) return await serveMemberSub(env, token, target, request)
   }
 
+  // Public status page per member (token in URL acts as the credential)
+  if (path.startsWith('/status/') && method === 'GET') {
+    return await serveStatusPage(env, path.slice('/status/'.length), url.origin)
+  }
+
   // Everything below requires a session
   if (path.startsWith('/api/auth/') || path.startsWith('/api/')) {
     const user = await requireUser(env, request)
@@ -385,6 +392,8 @@ async function handleRouted(
     if (path.match(/^\/api\/injector\/[^/]+$/) && method === 'DELETE') return await handleInjectorDelete(env, user.id, path.split('/')[3])
 
     // ── Per-worker members (end users with private settings) ──────────
+    if (path === '/api/backup' && method === 'GET') return await exportBackup(env, user.id)
+    if (path === '/api/backup' && method === 'POST') return await importBackup(env, user.id, request)
     if (path === '/api/members' && method === 'GET') return await handleMemberList(env, user.id, url.searchParams.get('deployment_id'))
     if (path === '/api/members' && method === 'POST') return await handleMemberCreate(env, user.id, request)
     if (path === '/api/members/bulk' && method === 'POST') return await handleMemberBulk(env, user.id, request)
