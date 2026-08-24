@@ -1,8 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_SUPABASE_URL: string
-  readonly VITE_SUPABASE_ANON_KEY: string
+  /** Base URL of the panel worker API, e.g. https://my-panel.workers.dev/api */
+  readonly VITE_API_BASE?: string
 }
 
 interface ImportMeta {

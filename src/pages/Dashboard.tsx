@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import {
   KeyRound,
@@ -41,28 +41,30 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
     async function load() {
-      const [tokens, deployments, botUsers, recentLogs] = await Promise.all([
-        supabase.from('cf_tokens').select('*', { count: 'exact', head: true }),
-        supabase.from('deployments').select('status'),
-        supabase.from('bot_users').select('is_active'),
-        supabase.from('activity_logs').select('id, action, entity_name, created_at').order('created_at', { ascending: false }).limit(8),
-      ])
-
-      const depStatuses = deployments.data ?? []
-      setStats({
-        tokens: tokens.count ?? 0,
-        deployments: depStatuses.length,
-        deployed: depStatuses.filter((d: { status: string }) => d.status === 'deployed').length,
-        failed: depStatuses.filter((d: { status: string }) => d.status === 'failed').length,
-        botUsers: botUsers.data?.length ?? 0,
-        activeBotUsers: botUsers.data?.filter((b: { is_active: boolean }) => b.is_active).length ?? 0,
-        recentLogs: 0,
-      })
-      setLogs(recentLogs.data as RecentLog[])
-      setLoading(false)
+      try {
+        const s = await api<Stats & { recentLogs: RecentLog[] }>('/stats')
+        if (cancelled) return
+        setStats({
+          tokens: s.tokens,
+          deployments: s.deployments,
+          deployed: s.deployed,
+          failed: s.failed,
+          botUsers: s.botUsers,
+          activeBotUsers: s.activeBotUsers,
+          recentLogs: 0,
+        })
+        setLogs(s.recentLogs ?? [])
+      } catch {
+        if (!cancelled) {
+          setStats({ tokens: 0, deployments: 0, deployed: 0, failed: 0, botUsers: 0, activeBotUsers: 0, recentLogs: 0 })
+        }
+      }
+      if (!cancelled) setLoading(false)
     }
     load()
+    return () => { cancelled = true }
   }, [])
 
   if (loading) {

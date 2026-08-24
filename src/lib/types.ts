@@ -13,6 +13,7 @@ export interface Deployment {
   worker_code: string
   config: Record<string, unknown>
   status: 'pending' | 'deploying' | 'deployed' | 'failed'
+  logs?: string | null
   worker_url: string | null
   route: string | null
   error_message: string | null

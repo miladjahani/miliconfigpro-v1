@@ -12,10 +12,7 @@ import { AuthProvider } from './lib/auth'
 // causes a hard 404 on refresh/direct-link with a path-based router. Hash
 // routing (/#/tokens instead of /tokens) never touches the actual request
 // path, so it works identically — with zero server-side rewrite rules — on
-// GitHub Pages, Cloudflare Workers, Cloudflare Pages, or any plain static
-// host. Auth in this app is email/password only (no OAuth/magic-link hash
-// callback), so there's no conflict with Supabase writing tokens into the
-// URL hash.
+// GitHub Pages, Cloudflare Workers, Cloudflare Pages, or any plain static host.
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <HashRouter>

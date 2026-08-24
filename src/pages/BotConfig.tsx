@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { api, ApiError } from '../lib/api'
 import type { BotConfig } from '../lib/types'
 import {
   Bot,
@@ -23,12 +23,13 @@ export default function BotConfigPage() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('bot_config').select('*').maybeSingle()
-    if (data) {
-      setConfig(data as BotConfig)
-      setBotToken(data.bot_token)
-      setWelcomeMessage(data.welcome_message)
-    }
+    try {
+      const { data } = await api<{ data: BotConfig | null }>('/bot-config')
+      if (data) {
+        setConfig(data)
+        setWelcomeMessage(data.welcome_message)
+      }
+    } catch { /* not configured yet */ }
     setLoading(false)
   }, [])
 
@@ -40,54 +41,16 @@ export default function BotConfigPage() {
     setMessage(null)
 
     try {
-      const botInfoResp = await fetch(`https://api.telegram.org/bot${botToken}/getMe`)
-      const botInfo = await botInfoResp.json()
-
-      if (!botInfo.ok) {
-        setMessage({ type: 'error', text: 'توکن ربات نامعتبر است' })
-        setSaving(false)
-        return
-      }
-
-      const webhookUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/telegram-bot`
-
-      const webhookResp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: webhookUrl }),
+      // The server validates the token via Telegram getMe and connects the webhook.
+      const { data } = await api<{ data: BotConfig }>('/bot-config', {
+        method: 'PUT',
+        body: { bot_token: botToken.trim(), welcome_message: welcomeMessage, is_active: true },
       })
-      const webhookResult = await webhookResp.json()
-
-      if (!webhookResult.ok) {
-        setMessage({ type: 'error', text: webhookResult.description ?? 'اتصال وب‌هوک ناموفق بود' })
-        setSaving(false)
-        return
-      }
-
-      const payload = {
-        bot_token: botToken,
-        bot_username: botInfo.result?.username ?? null,
-        welcome_message: welcomeMessage,
-        is_active: true,
-        webhook_url: webhookUrl,
-      }
-
-      let savedId: string | undefined
-      if (config) {
-        await supabase.from('bot_config').update(payload).eq('id', config.id)
-        savedId = config.id
-      } else {
-        const { data } = await supabase.from('bot_config').insert(payload).select().single()
-        savedId = data?.id
-        setConfig(data as BotConfig)
-      }
-
-      setConfig(prev => prev ? { ...prev, bot_username: botInfo.result?.username ?? null, webhook_url: webhookUrl, is_active: true } : null)
-      await supabase.from('activity_logs').insert({ action: 'bot_configured', entity_type: 'bot', entity_name: botInfo.result?.username })
-
+      setConfig(data)
       setMessage({ type: 'success', text: 'ربات با موفقیت فعال شد! وب‌هوک متصل است و ربات آماده دریافت پیام‌هاست.' })
-    } catch {
-      setMessage({ type: 'error', text: 'خطا در ارتباط با سرور تلگرام' })
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'خطا در ارتباط با سرور'
+      setMessage({ type: 'error', text: msg })
     }
 
     setSaving(false)
@@ -97,8 +60,11 @@ export default function BotConfigPage() {
   const handleToggleActive = async () => {
     if (!config) return
     const newActive = !config.is_active
-    await supabase.from('bot_config').update({ is_active: newActive }).eq('id', config.id)
-    setConfig({ ...config, is_active: newActive })
+    try {
+      const { data } = await api<{ data: BotConfig }>('/bot-config', { method: 'PATCH', body: { is_active: newActive } })
+      if (data) setConfig(data)
+      else setConfig({ ...config, is_active: newActive })
+    } catch { /* ignore */ }
   }
 
   const copyWebhookUrl = () => {
@@ -113,7 +79,7 @@ export default function BotConfigPage() {
     return <div className="flex items-center justify-center h-96"><Loader2 className="w-8 h-8 animate-spin text-brand-400" /></div>
   }
 
-  const webhookUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/telegram-bot`
+  const webhookUrl = `${window.location.origin}/api/webhooks/telegram`
 
   return (
     <div className="space-y-6">
@@ -152,14 +118,14 @@ export default function BotConfigPage() {
           <label className="block text-sm text-slate-300 mb-2 font-medium">توکن ربات تلگرام</label>
           <input
             type="text"
-            required
+            required={!config}
             value={botToken}
             onChange={(e) => setBotToken(e.target.value)}
-            placeholder="123456789:ABCdefGHIjklMNO..."
+            placeholder={config ? 'برای تغییر توکن، توکن جدید را وارد کنید' : '123456789:ABCdefGHIjklMNO...'}
             className="input-field font-mono text-sm"
             dir="ltr"
           />
-          <p className="text-xs text-slate-500 mt-2">توکن را از @BotFather دریافت کنید</p>
+          <p className="text-xs text-slate-500 mt-2">توکن را از @BotFather دریافت کنید{config ? ' — برای حفظ توکن فعلی، این فیلد را خالی بگذارید' : ''}</p>
         </div>
 
         <div>

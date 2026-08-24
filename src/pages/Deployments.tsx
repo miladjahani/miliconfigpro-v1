@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { supabase } from '../lib/supabase'
+import { api, ApiError } from '../lib/api'
 import type { Deployment, CFToken } from '../lib/types'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
@@ -66,10 +66,15 @@ interface ScanResult {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const EDGE_BASE = import.meta.env.VITE_SUPABASE_URL + '/functions/v1'
-const EDGE_HEADERS = {
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+const EDGE_BASE = '/api'
+
+/** Call a panel API endpoint; returns parsed JSON or null on failure. */
+async function edgePost<T = Record<string, unknown>>(path: string, body: unknown): Promise<T | null> {
+  try {
+    return await api<T>(path, { method: 'POST', body })
+  } catch {
+    return null
+  }
 }
 
 const DEFAULT_CONFIG: EdgeConfig = {
@@ -218,12 +223,12 @@ function WorkersTab() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [depRes, tokRes] = await Promise.all([
-      supabase.from('deployments').select('*').order('created_at', { ascending: false }),
-      supabase.from('cf_tokens').select('*').eq('status', 'active'),
+    const [deps, toks] = await Promise.all([
+      api<{ data: Deployment[] }>('/deployments').catch(() => ({ data: [] as Deployment[] })),
+      api<{ data: CFToken[] }>('/tokens').catch(() => ({ data: [] as CFToken[] })),
     ])
-    setDeployments((depRes.data as Deployment[]) ?? [])
-    setTokens((tokRes.data as CFToken[]) ?? [])
+    setDeployments(deps.data ?? [])
+    setTokens((toks.data ?? []).filter((t) => t.status === 'active'))
     setLoading(false)
   }, [])
 
@@ -247,7 +252,7 @@ function WorkersTab() {
         .filter((d) => d.status === 'deploying' || d.status === 'pending')
         .map((d) => d.id)
       if (pendingIds.length === 0) return
-      const { data } = await supabase.from('deployments').select('*').in('id', pendingIds)
+      const { data } = await api<{ data: Deployment[] }>(`/deployments?ids=${pendingIds.join(',')}`).catch(() => ({ data: [] as Deployment[] }))
       if (!data || data.length === 0) return
       setDeployments((prev) => {
         const byId = new Map((data as Deployment[]).map((d) => [d.id, d]))
@@ -259,18 +264,17 @@ function WorkersTab() {
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`ورکر «${name}» حذف شود؟`)) return
-    await supabase.from('deployments').delete().eq('id', id)
+    try { await api(`/deployments/${id}`, { method: 'DELETE' }) } catch { /* ignore */ }
     load()
   }
 
   const toggleWorker = async (dep: Deployment) => {
     setTogglingId(dep.id)
     try {
-      const resp = await fetch(`${EDGE_BASE}/worker-config`, {
-        method: 'POST', headers: EDGE_HEADERS,
-        body: JSON.stringify({ deployment_id: dep.id, action: 'toggle' }),
+      const data = await api<{ success: boolean; disabled: boolean }>('/worker-config', {
+        method: 'POST',
+        body: { deployment_id: dep.id, action: 'toggle' },
       })
-      const data = await resp.json()
       if (data.success) {
         setDeployments((prev) => prev.map((d) =>
           d.id === dep.id ? { ...d, config: { ...((d.config as Record<string, unknown>) ?? {}), disabled: data.disabled } } : d
@@ -476,11 +480,10 @@ function ConfigModal({ dep, onClose, onSaved }: {
     (async () => {
       setError(null)
       try {
-        const resp = await fetch(`${EDGE_BASE}/worker-config`, {
-          method: 'POST', headers: EDGE_HEADERS,
-          body: JSON.stringify({ deployment_id: dep.id, action: 'get' }),
+        const data = await api<{ success: boolean; config?: Partial<EdgeConfig>; addTxt?: string; error?: string }>('/worker-config', {
+          method: 'POST',
+          body: { deployment_id: dep.id, action: 'get' },
         })
-        const data = await resp.json()
         if (!cancelled) {
           if (data.success) {
             setConfig(mergeConfig((data.config ?? {}) as Partial<EdgeConfig>))
@@ -504,17 +507,13 @@ function ConfigModal({ dep, onClose, onSaved }: {
   const save = async () => {
     setSaving(true); setError(null)
     try {
-      const resp = await fetch(`${EDGE_BASE}/worker-config`, {
-        method: 'POST', headers: EDGE_HEADERS,
-        body: JSON.stringify({ deployment_id: dep.id, action: 'set', config }),
+      const data = await api<{ success: boolean; error?: string }>('/worker-config', {
+        method: 'POST',
+        body: { deployment_id: dep.id, action: 'set', config },
       })
-      const data = await resp.json()
       if (data.success) {
         // Also save ADD.txt if changed
-        await fetch(`${EDGE_BASE}/worker-config`, {
-          method: 'POST', headers: EDGE_HEADERS,
-          body: JSON.stringify({ deployment_id: dep.id, action: 'set_addtxt', addTxt }),
-        })
+        await edgePost('/worker-config', { deployment_id: dep.id, action: 'set_addtxt', addTxt })
         onSaved(dep.id, config as unknown as Record<string, unknown>)
         setSaved(true)
         setTimeout(() => setSaved(false), 2500)
@@ -794,19 +793,19 @@ function ScannerTab() {
   const [applied, setApplied] = useState(false)
 
   useEffect(() => {
-    supabase.from('deployments').select('*').eq('status', 'deployed').order('created_at', { ascending: false })
-      .then(({ data }) => setDeployments((data as Deployment[]) ?? []))
+    api<{ data: Deployment[] }>('/deployments')
+      .then(({ data }) => setDeployments((data ?? []).filter((d) => d.status === 'deployed')))
+      .catch(() => setDeployments([]))
   }, [])
 
   const runScan = async () => {
     setScanning(true); setError(null); setResults([]); setProxies([]); setSelectedIPs(new Set())
     try {
-      const resp = await fetch(`${EDGE_BASE}/ip-scanner`, {
-        method: 'POST', headers: EDGE_HEADERS,
-        body: JSON.stringify({ type: scanType, count: 30, includeProxies }),
+      const data = await api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string }>('/ip-scanner', {
+        method: 'POST',
+        body: { type: scanType, count: 30, includeProxies },
       })
-      const data = await resp.json()
-      if (data.success && data.results?.length > 0) {
+      if (data.success && data.results && data.results.length > 0) {
         setResults(data.results as ScanResult[])
         if (data.proxies) setProxies(data.proxies as ScanResult[])
       } else if (data.success) {
@@ -825,11 +824,10 @@ function ScannerTab() {
     if (!targetDep || selectedIPs.size === 0) return
     setApplying(true); setError(null)
     try {
-      const getResp = await fetch(`${EDGE_BASE}/worker-config`, {
-        method: 'POST', headers: EDGE_HEADERS,
-        body: JSON.stringify({ deployment_id: targetDep, action: 'get' }),
+      const getData = await api<{ success: boolean; addTxt?: string; error?: string }>('/worker-config', {
+        method: 'POST',
+        body: { deployment_id: targetDep, action: 'get' },
       })
-      const getData = await getResp.json()
       if (!getData.success) { setError(getData.error ?? 'خطا در خواندن تنظیمات'); setApplying(false); return }
 
       // Build ADD.txt format: IP:port#name
@@ -842,11 +840,10 @@ function ScannerTab() {
       const existing = (getData.addTxt as string) ?? ''
       const merged = existing ? `${existing}\n${newIPs}` : newIPs
 
-      const setResp = await fetch(`${EDGE_BASE}/worker-config`, {
-        method: 'POST', headers: EDGE_HEADERS,
-        body: JSON.stringify({ deployment_id: targetDep, action: 'set_addtxt', addTxt: merged }),
+      const setData = await api<{ success: boolean; error?: string }>('/worker-config', {
+        method: 'POST',
+        body: { deployment_id: targetDep, action: 'set_addtxt', addTxt: merged },
       })
-      const setData = await setResp.json()
       if (setData.success) {
         setApplied(true); setTimeout(() => setApplied(false), 3000); setSelectedIPs(new Set())
       } else { setError(setData.error ?? 'خطا در ذخیره') }

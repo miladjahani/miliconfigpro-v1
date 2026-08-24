@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import { useNavigate } from 'react-router-dom'
 import {
   Rocket,
@@ -57,11 +57,17 @@ export default function DeployWizard() {
   const [deployResult, setDeployResult] = useState<{ success: boolean; message: string; url?: string; panelUrl?: string } | null>(null)
 
   useEffect(() => {
-    supabase.from('cf_tokens').select('*').eq('status', 'active').then(({ data }) => {
-      setTokens(data as CFToken[] ?? [])
-      if (data && data.length > 0) setSelectedToken((data[0] as CFToken).id)
-      setLoading(false)
-    })
+    let cancelled = false
+    api<{ data: CFToken[] }>('/tokens')
+      .then(({ data }) => {
+        if (cancelled) return
+        const active = (data ?? []).filter((t) => t.status === 'active')
+        setTokens(active)
+        if (active.length > 0) setSelectedToken(active[0].id)
+      })
+      .catch(() => setTokens([]))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [])
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -80,24 +86,21 @@ export default function DeployWizard() {
   const startPolling = useCallback((deploymentId: string) => {
     stopPolling()
     pollRef.current = setInterval(async () => {
-      const { data } = await supabase
-        .from('deployments')
-        .select('status, logs, worker_url, panel_url, error_message')
-        .eq('id', deploymentId)
-        .maybeSingle()
-
-      const dep = data as { status: string; logs: string | null; worker_url: string | null; panel_url: string | null; error_message: string | null } | null
+      type DepState = { status?: string; logs?: string | null; worker_url?: string | null; panel_url?: string | null; error_message?: string | null } | null
+      let dep: DepState = null
+      try {
+        dep = (await api<{ data: DepState }>(`/deployments/${deploymentId}`)).data
+      } catch { return }
       if (!dep) return
 
       if (dep.logs) {
         setDeployLogs(dep.logs.split('\n').filter(Boolean))
       }
 
+      // Activity log + token last_used_at are written server-side.
       if (dep.status === 'deployed') {
         stopPolling()
         setDeploying(false)
-        await supabase.from('activity_logs').insert({ action: 'deployment_deployed', entity_type: 'deployment', entity_name: name })
-        await supabase.from('cf_tokens').update({ last_used_at: new Date().toISOString() }).eq('id', selectedToken)
         setDeployResult({
           success: true,
           message: 'ورکر با موفقیت مستقر شد!',
@@ -107,11 +110,10 @@ export default function DeployWizard() {
       } else if (dep.status === 'failed') {
         stopPolling()
         setDeploying(false)
-        await supabase.from('activity_logs').insert({ action: 'deployment_failed', entity_type: 'deployment', entity_name: name })
         setDeployResult({ success: false, message: dep.error_message ?? 'استقرار ناموفق بود' })
       }
     }, 2000)
-  }, [stopPolling, name, selectedToken])
+  }, [stopPolling])
 
   const handleDeploy = async () => {
     setDeploying(true)
@@ -125,56 +127,30 @@ export default function DeployWizard() {
       return
     }
 
-    const { data: dep } = await supabase.from('deployments').insert({
-      name,
-      worker_code: '[auto-loaded from repo]',
-      config: { method, custom_path: customPath, token_name: token.name, worker_source: workerSource, proxyip: proxyIP, admin_password: adminPassword },
-      status: 'deploying',
-      uuid,
-      custom_path: customPath || null,
-      method,
-    }).select().single()
-
-    await supabase.from('activity_logs').insert({ action: 'deployment_created', entity_type: 'deployment', entity_name: name })
-
     try {
-      const funcUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cf-deploy`
-      const resp = await fetch(funcUrl, {
+      // The server creates the deployment row, kicks off the deploy engine and
+      // keeps status/logs updated — we just poll for the result.
+      const { data: dep } = await api<{ data: { id: string } }>('/deployments', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          deployment_id: dep?.id,
-          worker_name: name,
-          cf_token: token.token,
+        body: {
+          name,
           uuid,
           custom_path: customPath || undefined,
           method,
           worker_source: workerSource,
           proxyip: proxyIP || undefined,
           admin_password: adminPassword || undefined,
-        }),
+          cf_token_id: token.id,
+        },
       })
 
-      const result = await resp.json()
-
-      if (result.success) {
-        // Edge function accepted the request and is processing in background.
-        // Start polling the DB for live logs and final status.
-        startPolling(dep!.id)
+      if (dep?.id) {
+        startPolling(dep.id)
       } else {
-        await supabase.from('deployments').update({
-          status: 'failed',
-          error_message: result.error ?? 'خطای نامشخص',
-        }).eq('id', dep?.id)
-        setDeployResult({ success: false, message: result.error ?? 'استقرار ناموفق بود' })
-        setDeploying(false)
+        throw new Error('شناسه استقرار دریافت نشد')
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'خطای شبکه'
-      await supabase.from('deployments').update({ status: 'failed', error_message: msg }).eq('id', dep?.id)
       setDeployResult({ success: false, message: msg })
       setDeploying(false)
     }

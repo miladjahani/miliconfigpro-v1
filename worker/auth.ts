@@ -1,0 +1,53 @@
+import type { Env } from './env'
+import { apiError, json, hashPassword, verifyPassword, createSession, getUserFromRequest, nowIso, genId, safeJsonParse } from './util'
+
+interface SignupBody { email?: string; password?: string }
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+export async function handleSignup(env: Env, request: Request): Promise<Response> {
+  const body = safeJsonParse<SignupBody>(await request.text().catch(() => ''), {})
+  const email = body.email?.trim().toLowerCase() ?? ''
+  const password = body.password ?? ''
+  if (!EMAIL_RE.test(email)) return apiError('ایمیل معتبر نیست')
+  if (password.length < 6) return apiError('رمز عبور باید حداقل ۶ کاراکتر باشد')
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first<{ id: string }>()
+  if (existing) return apiError('این ایمیل قبلاً ثبت شده است', 409)
+
+  const id = genId()
+  await env.DB.prepare('INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)')
+    .bind(id, email, await hashPassword(password), nowIso())
+    .run()
+
+  const { token } = await createSession(env, id)
+  return json({ token, user: { id, email } })
+}
+
+export async function handleLogin(env: Env, request: Request): Promise<Response> {
+  const body = safeJsonParse<SignupBody>(await request.text().catch(() => ''), {})
+  const email = body.email?.trim().toLowerCase() ?? ''
+  const password = body.password ?? ''
+
+  const row = await env.DB.prepare('SELECT id, email, password_hash FROM users WHERE email = ?').bind(email).first<{ id: string; email: string; password_hash: string }>()
+  if (!row || !(await verifyPassword(password, row.password_hash))) {
+    return apiError('ایمیل یا رمز عبور اشتباه است', 401)
+  }
+  const { token } = await createSession(env, row.id)
+  return json({ token, user: { id: row.id, email: row.email } })
+}
+
+export async function handleLogout(env: Env, request: Request): Promise<Response> {
+  const header = request.headers.get('Authorization') ?? ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+  if (token) {
+    await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run()
+  }
+  return json({ success: true })
+}
+
+export async function handleMe(env: Env, request: Request): Promise<Response> {
+  const user = await getUserFromRequest(env, request)
+  if (!user) return apiError('نشست منقضی شده است', 401)
+  return json({ user })
+}

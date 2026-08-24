@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import type { CFToken } from '../lib/types'
 import {
   KeyRound,
@@ -57,8 +57,12 @@ export default function Tokens() {
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set())
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('cf_tokens').select('*').order('created_at', { ascending: false })
-    setTokens(data as CFToken[] ?? [])
+    try {
+      const { data } = await api<{ data: CFToken[] }>('/tokens')
+      setTokens(data ?? [])
+    } catch {
+      setTokens([])
+    }
     setLoading(false)
   }, [])
 
@@ -67,21 +71,20 @@ export default function Tokens() {
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    const { data } = await supabase.from('cf_tokens').insert({ name: newName, token: newToken }).select().single()
-    if (data) {
-      await supabase.from('activity_logs').insert({ action: 'token_created', entity_type: 'token', entity_name: newName })
+    try {
+      await api('/tokens', { method: 'POST', body: { name: newName, token: newToken } })
+      setNewName('')
+      setNewToken('')
+      setShowAdd(false)
+    } finally {
+      setSaving(false)
+      load()
     }
-    setNewName('')
-    setNewToken('')
-    setShowAdd(false)
-    setSaving(false)
-    load()
   }
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`توکن «${name}» حذف شود؟`)) return
-    await supabase.from('cf_tokens').delete().eq('id', id)
-    await supabase.from('activity_logs').insert({ action: 'token_deleted', entity_type: 'token', entity_name: name })
+    try { await api(`/tokens/${id}`, { method: 'DELETE' }) } catch { /* ignore */ }
     load()
   }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import type { ActivityLog } from '../lib/types'
 import {
   ScrollText,
@@ -28,8 +28,12 @@ export default function ActivityLogs() {
   const [filter, setFilter] = useState<string>('all')
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(100)
-    setLogs(data as ActivityLog[] ?? [])
+    try {
+      const { data } = await api<{ data: ActivityLog[] }>('/logs')
+      setLogs(data ?? [])
+    } catch {
+      setLogs([])
+    }
     setLoading(false)
   }, [])
 

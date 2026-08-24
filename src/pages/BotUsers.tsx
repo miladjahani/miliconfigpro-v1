@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { supabase } from '../lib/supabase'
+import { api } from '../lib/api'
 import type { BotUser } from '../lib/types'
 import {
   Users,
@@ -20,26 +20,30 @@ export default function BotUsers() {
   const [filter, setFilter] = useState<'all' | 'active' | 'inactive' | 'admin'>('all')
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from('bot_users').select('*').order('created_at', { ascending: false })
-    setUsers(data as BotUser[] ?? [])
+    try {
+      const { data } = await api<{ data: BotUser[] }>('/bot-users')
+      setUsers(data ?? [])
+    } catch {
+      setUsers([])
+    }
     setLoading(false)
   }, [])
 
   useEffect(() => { load() }, [load])
 
   const handleToggle = async (user: BotUser) => {
-    await supabase.from('bot_users').update({ is_active: !user.is_active }).eq('id', user.id)
+    try { await api(`/bot-users/${user.id}`, { method: 'PATCH', body: { is_active: !user.is_active } }) } catch { /* ignore */ }
     load()
   }
 
   const handleToggleAdmin = async (user: BotUser) => {
-    await supabase.from('bot_users').update({ is_admin: !user.is_admin }).eq('id', user.id)
+    try { await api(`/bot-users/${user.id}`, { method: 'PATCH', body: { is_admin: !user.is_admin } }) } catch { /* ignore */ }
     load()
   }
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`کاربر «${name}» حذف شود؟`)) return
-    await supabase.from('bot_users').delete().eq('id', id)
+    try { await api(`/bot-users/${id}`, { method: 'DELETE' }) } catch { /* ignore */ }
     load()
   }
 

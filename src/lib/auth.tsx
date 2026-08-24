@@ -1,9 +1,12 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import type { Session, User } from '@supabase/supabase-js'
-import { supabase } from './supabase'
+import { api, setToken, clearToken, getToken } from './api'
+
+export interface User {
+  id: string
+  email: string
+}
 
 interface AuthContextType {
-  session: Session | null
   user: User | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
@@ -12,7 +15,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType>({
-  session: null,
   user: null,
   loading: true,
   signIn: async () => ({ error: 'not implemented' }),
@@ -21,44 +23,53 @@ const AuthContext = createContext<AuthContextType>({
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
-      setUser(data.session?.user ?? null)
+    if (!getToken()) {
       setLoading(false)
-    })
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, sess) => {
-      (async () => {
-        setSession(sess)
-        setUser(sess?.user ?? null)
-        setLoading(false)
-      })()
-    })
-
-    return () => listener.subscription.unsubscribe()
+      return
+    }
+    api<{ user: User }>('/auth/me')
+      .then(({ user }) => setUser(user))
+      .catch(() => {
+        clearToken()
+        setUser(null)
+      })
+      .finally(() => setLoading(false))
   }, [])
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    return { error: error?.message ?? null }
+    try {
+      const { token, user } = await api<{ token: string; user: User }>('/auth/login', { method: 'POST', body: { email, password } })
+      setToken(token)
+      setUser(user)
+      return { error: null }
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : 'خطا در ورود' }
+    }
   }
 
   const signUp = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({ email, password })
-    return { error: error?.message ?? null }
+    try {
+      const { token, user } = await api<{ token: string; user: User }>('/auth/signup', { method: 'POST', body: { email, password } })
+      setToken(token)
+      setUser(user)
+      return { error: null }
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : 'خطا در ثبت‌نام' }
+    }
   }
 
   const signOut = async () => {
-    await supabase.auth.signOut()
+    try { await api('/auth/logout', { method: 'POST' }) } catch { /* best effort */ }
+    clearToken()
+    setUser(null)
   }
 
   return (
-    <AuthContext.Provider value={{ session, user, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
       {children}
     </AuthContext.Provider>
   )
