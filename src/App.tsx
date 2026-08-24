@@ -11,6 +11,7 @@ import ActivityLogs from './pages/ActivityLogs'
 import Optimizer from './pages/Optimizer'
 import Members from './pages/Members'
 import Admin from './pages/Admin'
+import Guide from './pages/Guide'
 import Layout from './components/Layout'
 
 function ProtectedRoute({ children }: { children?: React.ReactNode }) {
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="optimizer" element={<Optimizer />} />
         <Route path="members" element={<Members />} />
         <Route path="admin" element={<Admin />} />
+        <Route path="guide" element={<Guide />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

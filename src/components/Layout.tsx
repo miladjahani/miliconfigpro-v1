@@ -15,6 +15,7 @@ import {
   UserPlus,
   Zap,
   Shield,
+  BookOpen,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -30,6 +31,7 @@ const baseNavItems: NavItem[] = [
   { to: '/bot-config', label: 'ربات تلگرام', icon: Bot },
   { to: '/bot-users', label: 'کاربران ربات', icon: Users },
   { to: '/logs', label: 'لاگ‌ها', icon: ScrollText },
+  { to: '/guide', label: 'راهنما', icon: BookOpen },
 ]
 
 const adminNavItem: NavItem = { to: '/admin', label: 'مدیریت کاربران', icon: Shield }
