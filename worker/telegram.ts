@@ -69,6 +69,26 @@ export async function notifyDeployment(env: Env, userId: string, workerName: str
   }
 }
 
+/** Push a quota-usage alert to the bot owner.
+ * level 1 = ≥80% used, 2 = ≥90%, 3 = exhausted. Dedup is handled by the
+ * caller via the member's notified_level column — this just sends.
+ */
+export async function notifyQuotaLevel(env: Env, userId: string, memberName: string, workerName: string, level: 1 | 2 | 3, detail: string): Promise<void> {
+  try {
+    const cfg = await env.DB.prepare('SELECT bot_token, chat_id FROM bot_config WHERE user_id = ? AND is_active = 1 LIMIT 1')
+      .bind(userId)
+      .first<{ bot_token: string; chat_id: string | null }>()
+    if (!cfg?.chat_id) return
+    const head = level === 3 ? '⛔ سهمی تمام شد'
+      : level === 2 ? '🟠 سهمی رو به اتمام (۹۰٪)'
+      : '🟡 مصرف بالا (۸۰٪)'
+    const msg = `${head}\n\n👤 ${memberName} · 📦 ${workerName}\n${detail}`
+    await sendMsg(cfg.bot_token, cfg.chat_id, msg)
+  } catch {
+    // notifications must never break sub serving
+  }
+}
+
 /** Push optimizer completion to the bot owner. */
 export async function notifyOptimizer(env: Env, userId: string, jobName: string, alive: number, total: number, subUrl: string | null): Promise<void> {
   try {

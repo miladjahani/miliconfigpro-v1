@@ -10,6 +10,28 @@ import { resolvePool } from './countries'
 import { findPreset } from './presets'
 import { filterAlive, rotate } from './rotation'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
+import { notifyQuotaLevel } from './telegram'
+
+/** Fire a Telegram quota alert only when the member crosses a new level.
+ * Levels: 0 none, 1 = 80%, 2 = 90%, 3 = exhausted. Stored in notified_level
+ * so each threshold is announced exactly once (reset clears it).
+ */
+async function maybeNotifyQuota(env: Env, member: Record<string, unknown>, level: 1 | 2 | 3, isRequests = false): Promise<void> {
+  try {
+    const current = (member.notified_level as number) ?? 0
+    if (level <= current) return
+    await env.DB.prepare('UPDATE worker_members SET notified_level = ? WHERE id = ?')
+      .bind(level, member.id as string).run()
+    const dep = await env.DB.prepare('SELECT name FROM deployments WHERE id = ?')
+      .bind(member.deployment_id as string).first<{ name: string }>()
+    const fmt = (n: number) => n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : `${Math.round(n / 1048576)} MB`
+    const detail = isRequests && level === 3 ? 'سقف درخواست‌ها به پایان رسید'
+      : `مصرف: ${fmt((member.used_bytes as number) ?? 0)}${member.quota_bytes ? ` از ${fmt(member.quota_bytes as number)}` : ''}`
+    void notifyQuotaLevel(env, member.owner_user_id as string, member.name as string, dep?.name ?? 'ورکر', level, detail)
+  } catch {
+    // alerts must never break sub serving
+  }
+}
 
 export interface MemberSettings {
   countries: string[]
@@ -218,7 +240,7 @@ export async function handleMemberBulk(env: Env, userId: string, request: Reques
       break
     case 'reset_quota':
       await env.DB.prepare(
-        `UPDATE worker_members SET used_bytes = 0, used_requests = 0, recent_ips = '[]', last_reset_at = ? WHERE owner_user_id = ? AND id IN (${ph})`,
+        `UPDATE worker_members SET used_bytes = 0, used_requests = 0, recent_ips = '[]', notified_level = 0, last_reset_at = ? WHERE owner_user_id = ? AND id IN (${ph})`,
       ).bind(nowIso(), userId, ...ids).run()
       break
     case 'reset_time':
@@ -386,7 +408,7 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     const anchor = new Date((member.last_reset_at as string | null) ?? (member.created_at as string)).getTime()
     if (Date.now() - anchor >= resetDays * 86_400_000) {
       await env.DB.prepare(
-        'UPDATE worker_members SET used_bytes = 0, used_requests = 0, recent_ips = \'[]\', last_reset_at = ? WHERE id = ?',
+        'UPDATE worker_members SET used_bytes = 0, used_requests = 0, recent_ips = \'[]\', notified_level = 0, last_reset_at = ? WHERE id = ?',
       ).bind(nowIso(), member.id as string).run()
       member.used_bytes = 0
       member.used_requests = 0
@@ -395,12 +417,21 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   }
   const quota = member.quota_bytes as number | null
   if (quota && (member.used_bytes as number) >= quota) {
+    await maybeNotifyQuota(env, member, 3)
     return new Response('حجم اشتراک شما به پایان رسیده است. با مدیر خود تماس بگیرید.', { status: 402 })
   }
   const reqQuota = member.request_quota as number | null
   if (reqQuota && ((member.used_requests as number) ?? 0) >= reqQuota) {
+    await maybeNotifyQuota(env, member, 3, true)
     return new Response('سقف تعداد درخواست‌های شما به پایان رسیده است. با مدیر خود تماس بگیرید.', { status: 402 })
   }
+
+  // ── Quota-usage alerts (80% / 90%) — fire once per threshold ─────────
+  const byteRatio = quota ? (member.used_bytes as number) / quota : 0
+  const reqRatio = reqQuota ? ((member.used_requests as number) ?? 0) / reqQuota : 0
+  const ratio = Math.max(byteRatio, reqRatio)
+  if (ratio >= 0.9) await maybeNotifyQuota(env, member, 2)
+  else if (ratio >= 0.8) await maybeNotifyQuota(env, member, 1)
 
   const ctx = await resolveSource(env, member.owner_user_id as string, member.deployment_id as string)
   if (!ctx) return new Response('ورکر در دسترس نیست (اتصال واقعی به سورس برقرار نشد)', { status: 502 })

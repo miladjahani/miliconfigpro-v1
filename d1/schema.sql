@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS worker_members (
   activated_at TEXT,
   reset_period_days INTEGER,
   last_reset_at TEXT,
+  notified_level INTEGER NOT NULL DEFAULT 0,
   usage_updated_at TEXT,
   settings TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
