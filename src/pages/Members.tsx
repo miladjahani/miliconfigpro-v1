@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity } from 'lucide-react'
 import { api } from '../lib/api'
-import { FRAGMENT_PRESETS } from '../../worker/presets'
+import { FRAGMENT_PRESETS, FM_PRESETS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
 
 const COUNTRIES = [
@@ -232,9 +232,17 @@ export default function Members() {
                     {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)}
                   </select>
                 </label>
+                <div className="flex gap-1.5 flex-wrap">
+                  {FM_PRESETS.map((p) => (
+                    <button key={p.code} onClick={() => setFm(p.json)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-brand-300 hover:bg-brand-600/20 border border-slate-700 transition-colors">
+                      ⚡ {p.label}
+                    </button>
+                  ))}
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Field label="فرگمنت JSON — fm= (عیناً تزریق می‌شود)" value={fm} onChange={setFm}
-                    placeholder='{"enabled":true,...}' textarea rows={3} />
+                    placeholder='{"tcp":[{"type":"fragment",...}]}' textarea rows={3} />
                   <Field label="Cipher Suiteها — cs= (عیناً تزریق می‌شود)" value={cs} onChange={setCs}
                     placeholder="TLS_AES_128_GCM_SHA256,TLS_CHACHA20..." textarea rows={3} />
                 </div>

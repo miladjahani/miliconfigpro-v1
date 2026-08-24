@@ -4,8 +4,59 @@
 // • configJsonToLines()     — sing-box JSON configs parsed as node sources
 // Clash Meta already has buildClashYaml.
 
-import { b64encodeUtf8 } from './net'
+import { b64encodeUtf8, tryDecodeSub } from './net'
 import { buildClashYaml, linesToResult } from './inject'
+
+/** Fetch node lines from ANY subscription URL, tolerating every real-world
+ * shape: base64 blobs, plain link lists, sing-box JSON, error pages with
+ * partial content, and wrong paths. If the exact URL fails (404 etc.) we
+ * retry smart fallback variants — e.g. a pasted `worker/uuid/sub?target=x`
+ * still resolves to the working `worker/uuid` direct subscription. */
+export async function fetchSubLines(url: string, timeoutMs = 8000): Promise<string[]> {
+  const toLines = (text: string): string[] => {
+    const fromConfig = configJsonToLines(text.trim())
+    if (fromConfig.length) return fromConfig
+    return tryDecodeSub(text).split('\n').map((l) => l.trim()).filter(Boolean)
+  }
+
+  const u = url.trim()
+  const variants: string[] = [u]
+  try {
+    const parsed = new URL(u)
+    // 2) without query string
+    if (parsed.search) variants.push(parsed.origin + parsed.pathname)
+    // 3) without a trailing `/sub` segment (common wrong mix of direct-sub + panel path)
+    if (/\/sub\/?$/i.test(parsed.pathname)) {
+      const stripped = parsed.origin + parsed.pathname.replace(/\/sub\/?$/i, '')
+      variants.push(stripped)
+      if (parsed.search) variants.push(stripped + parsed.search)
+    }
+    // 4) origin + first path segment only (edgetunnel direct sub = /UUID)
+    const seg = '/' + parsed.pathname.split('/').filter(Boolean)[0]
+    if (seg !== '/' && seg !== parsed.pathname) variants.push(parsed.origin + seg)
+  } catch { /* not a URL — caller handles raw content */ }
+
+  for (const candidate of [...new Set(variants)]) {
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), timeoutMs)
+      let text = ''
+      let ok = false
+      try {
+        const resp = await fetch(candidate, { redirect: 'follow', signal: ctrl.signal })
+        ok = resp.ok
+        // Even non-200 bodies sometimes contain usable node lines — read them.
+        text = await resp.text()
+      } finally {
+        clearTimeout(t)
+      }
+      const lines = toLines(text).filter((l) => /^(vless|vmess|trojan|ss|hysteria2?|tuic):\/\//i.test(l))
+      if (lines.length) return lines
+      if (!ok) continue // 404/5xx with no usable content → next variant
+    } catch { /* network error → next variant */ }
+  }
+  return []
+}
 
 /** Serialize node lines in the requested output format.
  * format: base64 (default) | plain | clash | singbox */

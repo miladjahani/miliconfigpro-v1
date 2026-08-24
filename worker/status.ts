@@ -38,7 +38,10 @@ export async function serveStatusPage(env: Env, token: string, origin: string): 
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
   const subUrl = `${origin}/api/sub/member/${token}`
+  const statusSub = `${origin}/status/${token}/sub`
   const clashUrl = `${subUrl}?target=clash`
+  const singboxUrl = `${subUrl}?target=singbox`
+  const plainUrl = `${subUrl}?target=plain`
 
   let qrSvg = ''
   try {
@@ -74,8 +77,13 @@ export async function serveStatusPage(env: Env, token: string, origin: string): 
       ${bar(m.used_bytes, m.quota_bytes, 'حجم مصرفی', fmtBytes)}
       ${bar(m.used_requests, m.request_quota, 'درخواست‌ها', (n) => n.toLocaleString('en-US'))}
       <div class="links">
-        <a href="${subUrl}" target="_blank" rel="noopener">لینک ساب</a>
+        <a href="${subUrl}" target="_blank" rel="noopener">ساب (Base64)</a>
         <a href="${clashUrl}" target="_blank" rel="noopener">Clash Meta</a>
+      </div>
+      <div class="links">
+        <a href="${singboxUrl}" target="_blank" rel="noopener">Sing-box</a>
+        <a href="${plainUrl}" target="_blank" rel="noopener">Plain</a>
+        <a href="${statusSub}" target="_blank" rel="noopener">دانلود مستقیم</a>
       </div>
       <div class="qr">${qrSvg}<small class="muted">برای افزودن، QR را با اپ VPN اسکن کنید</small></div>
     </div>`

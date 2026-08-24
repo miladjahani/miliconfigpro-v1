@@ -98,6 +98,42 @@ async function fetchProxyList(protocol: 'https' | 'socks5' | 'http'): Promise<Sc
   }
 }
 
+/** Official Cloudflare ranges (always available) — expands CIDRs into a
+ * spread sample so we probe different /16s instead of neighbours. */
+async function fetchOfficialRanges(sample = 16): Promise<Array<{ ip: string; region?: string }>> {
+  try {
+    const r = await fetch('https://www.cloudflare.com/ips-v4')
+    if (!r.ok) return []
+    const ranges = (await r.text()).split('\n').map((l) => l.trim()).filter(Boolean)
+    const ips = expandRanges(ranges, 4000)
+    if (!ips.length) return []
+    const step = Math.max(1, Math.floor(ips.length / sample))
+    return Array.from({ length: sample }, (_, i) => ({ ip: ips[Math.min(i * step, ips.length - 1)] }))
+  } catch {
+    return []
+  }
+}
+
+/** Plain `ip` or `ip:port` proxy lists (e.g. TheSpeedX/PROXY-List). */
+async function fetchHostPortList(url: string, defaultPort: number, cap = 40): Promise<Array<{ ip: string; port?: number; region?: string }>> {
+  try {
+    const r = await fetch(url)
+    if (!r.ok) return []
+    return (await r.text())
+      .split(/\s+/)
+      .map((l) => l.trim())
+      .filter((l) => /^\d+\.\d+\.\d+\.\d+:\d+$/.test(l))
+      .filter((l, i, arr) => arr.indexOf(l) === i)
+      .slice(0, cap)
+      .map((l) => {
+        const [ip, port] = l.split(':')
+        return { ip, port: Number(port) || defaultPort }
+      })
+  } catch {
+    return []
+  }
+}
+
 /**
  * Real TCP scan over user-provided CIDR ranges and ports using the
  * Workers Sockets API — measures actual handshake latency per IP:port.
@@ -153,9 +189,15 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
   if (type === 'cloudflare') {
     for (const c of await fetchIPDB('bestcf')) candidates.push({ ...c, type: 'cloudflare', source: 'ipdb.api.030101.xyz' })
     for (const c of await fetchGithubList('https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt')) candidates.push({ ...c, type: 'cloudflare', source: 'ymyuuu/IPDB' })
+    for (const c of await fetchGithubList('https://raw.githubusercontent.com/ZhiXuanWang/cf-speedtest/main/ip.txt')) candidates.push({ ...c, type: 'cloudflare', source: 'ZhiXuanWang/cf-speedtest' })
+    for (const c of await fetchOfficialRanges()) candidates.push({ ...c, type: 'cloudflare', source: 'cloudflare.com/ips-v4' })
   } else {
     for (const c of await fetchIPDB('bestProxy')) candidates.push({ ...c, type: 'clean', source: 'ipdb.api.030101.xyz' })
     for (const c of await fetchGithubList('https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt')) candidates.push({ ...c, type: 'clean', source: 'ymyuuu/IPDB' })
+  }
+  if (candidates.length === 0 && body.type !== 'clean') {
+    for (const c of await fetchGithubList('https://raw.githubusercontent.com/ZhiXuanWang/cf-speedtest/main/ip.txt')) candidates.push({ ...c, type: 'cloudflare', source: 'cf-speedtest/fallback' })
+    for (const c of await fetchOfficialRanges(10)) candidates.push({ ...c, type: 'cloudflare', source: 'cloudflare.com/ips-v4' })
   }
   if (candidates.length === 0) {
     for (const ip of FALLBACK_CF_IPS) candidates.push({ ip, type: type === 'cloudflare' ? 'cloudflare' : 'clean', source: 'fallback' })
@@ -181,12 +223,31 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
 
   let proxies: ScanResult[] = []
   if (body.includeProxies) {
-    const [httpsProxies, socks5Proxies, httpProxies] = await Promise.all([
+    const [httpsProxies, socks5Proxies, httpProxies, speedxHttp, speedxSocks] = await Promise.all([
       fetchProxyList('https'),
       fetchProxyList('socks5'),
       fetchProxyList('http'),
+      fetchHostPortList('https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt', 8080),
+      fetchHostPortList('https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt', 1080),
     ])
-    proxies = [...httpsProxies, ...socks5Proxies, ...httpProxies]
+    const mapToResult = (list: Array<{ ip: string; port?: number }>, protocol: string, source: string): ScanResult[] =>
+      list.map((p) => ({
+        ip: p.ip,
+        latencyMs: null,
+        status: 'ok' as const,
+        type: 'proxy' as const,
+        source,
+        port: p.port,
+        protocol,
+        proxy: `${protocol}://${p.ip}:${p.port}`,
+      }))
+    proxies = [
+      ...httpsProxies,
+      ...socks5Proxies,
+      ...httpProxies,
+      ...mapToResult(speedxHttp, 'http', 'TheSpeedX/PROXY-List'),
+      ...mapToResult(speedxSocks, 'socks5', 'TheSpeedX/PROXY-List'),
+    ]
   }
 
   if (sorted.length === 0) {

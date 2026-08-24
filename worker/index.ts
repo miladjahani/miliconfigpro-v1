@@ -312,15 +312,22 @@ async function handleRouted(
   if (path.startsWith('/api/sub/') && method === 'GET') {
     const token = path.split('/')[4] ?? ''
     const target = url.searchParams.get('target')
-    if (path.startsWith('/api/sub/opt/')) return await serveOptimizerSub(env, token)
+    if (path.startsWith('/api/sub/opt/')) return await serveOptimizerSub(env, token, target)
     if (path.startsWith('/api/sub/group/')) return await serveGroupSub(env, token, target)
     if (path.startsWith('/api/sub/inject/')) return await serveInjectedSub(env, token, target)
     if (path.startsWith('/api/sub/member/')) return await serveMemberSub(env, token, target, request)
   }
 
-  // Public status page per member (token in URL acts as the credential)
+  // Public status page per member (token in URL acts as the credential).
+  // `/status/<token>/sub` serves the member's live subscription directly —
+  // so the download button on the status card never 404s.
   if (path.startsWith('/status/') && method === 'GET') {
-    return await serveStatusPage(env, path.slice('/status/'.length), url.origin)
+    const rest = path.slice('/status/'.length)
+    const subMatch = rest.match(/^([^/]+)\/sub\/?$/)
+    if (subMatch) {
+      return await serveMemberSub(env, subMatch[1], url.searchParams.get('target'), request)
+    }
+    return await serveStatusPage(env, rest, url.origin)
   }
 
   // Everything below requires a session

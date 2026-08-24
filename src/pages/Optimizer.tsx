@@ -114,6 +114,7 @@ export default function Optimizer() {
   }
 
   const subUrl = (token: string) => `${window.location.origin}${API_BASE}/sub/opt/${token}`
+  const fmtUrl = (base: string, target?: string) => (target ? `${base}?target=${target}` : base)
 
   return (
     <div className="space-y-6">
@@ -186,9 +187,13 @@ export default function Optimizer() {
                 </span>
                 {job.status === 'done' && job.nodes_alive > 0 && (
                   <>
-                    <button onClick={() => copy(subUrl(job.sub_token), job.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300" title="کپی لینک ساب بهینه">
-                      {copied === job.id ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                    </button>
+                    {([['', 'ساب'], ['clash', 'Clash'], ['singbox', 'Sing-box'], ['plain', 'Plain']] as const).map(([t, label]) => (
+                      <button key={label} onClick={() => copy(fmtUrl(subUrl(job.sub_token), t), job.id + (t || '-b'))}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300"
+                        title={`کپی لینک ${label}`}>
+                        {copied === job.id + (t || '-b') ? <Check className="w-3 h-3 text-emerald-400 inline" /> : null} {label}
+                      </button>
+                    ))}
                     <button onClick={() => openDetail(job.id)} className="text-xs px-3 py-2 rounded-lg bg-brand-600/20 text-brand-300 hover:bg-brand-600/30">
                       نودها
                     </button>
@@ -246,8 +251,9 @@ export default function Optimizer() {
         {injections.length > 0 && (
           <div className="space-y-2 pt-2">
             {injections.map((inj) => {
-              const subUrl = `${window.location.origin}${API_BASE}/sub/inject/${inj.sub_token}`
-              const clashUrl = `${subUrl}?target=clash`
+              const injSub = `${window.location.origin}${API_BASE}/sub/inject/${inj.sub_token}`
+              const clashUrl = fmtUrl(injSub, 'clash')
+              const singboxUrl = fmtUrl(injSub, 'singbox')
               return (
                 <div key={inj.id} className="p-3 rounded-xl bg-slate-900/40 border border-slate-800">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -256,18 +262,21 @@ export default function Optimizer() {
                       <p className="text-xs text-slate-500">{inj.ips.length} IP · {inj.proxies.length} پروکسی</p>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button onClick={() => copy(subUrl, inj.id)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      <button onClick={() => copy(injSub, inj.id)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                         {copied === inj.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
                       </button>
                       <button onClick={() => copy(clashUrl, inj.id + '-c')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                         {copied === inj.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
+                      </button>
+                      <button onClick={() => copy(singboxUrl, inj.id + '-sb')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                        {copied === inj.id + '-sb' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Sing-box
                       </button>
                       <button onClick={async () => { await api(`/injector/${inj.id}`, { method: 'DELETE' }).catch(() => null); loadInjections() }} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
-                  <p className="text-xs text-slate-500 font-mono truncate mt-2" dir="ltr">{subUrl}</p>
+                  <p className="text-xs text-slate-500 font-mono truncate mt-2" dir="ltr">{injSub}</p>
                 </div>
               )
             })}

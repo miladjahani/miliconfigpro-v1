@@ -21,3 +21,24 @@ export function findPreset(code: string | undefined): FragmentPreset | null {
   if (!code) return null
   return FRAGMENT_PRESETS.find((p) => p.code === code) ?? null
 }
+
+/** Battle-tested multi-fragment `fm=` JSON configs (Iran-verified). These are
+ * injected VERBATIM into every link as the `fm` query param — exactly what
+ * cf-optimizor's ready buttons emit. Never rewritten by the panel. */
+export const FM_PRESETS: Array<{ code: string; label: string; json: string }> = [
+  {
+    code: 'fm-dual',
+    label: 'فرگمنت دو مرحله‌ای (پایدار)',
+    json: '{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","lengths":["5","94","1"],"delays":["0"],"maxSplit":"0"}},{"type":"fragment","settings":{"packets":"1-1","lengths":["109","1"],"delays":["1"],"maxSplit":"355"}}]}',
+  },
+  {
+    code: 'fm-single',
+    label: 'فرگمنت ساده (سبک)',
+    json: '{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","lengths":["1-1"],"delays":["0"],"maxSplit":"0"}}]}',
+  },
+  {
+    code: 'fm-combo',
+    label: 'فرگمنت ترکیبی (ضد اختلال)',
+    json: '{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","lengths":["1-1"],"delays":["0"],"maxSplit":"0"}},{"type":"fragment","settings":{"packets":"1-3","lengths":["1-1"],"delays":["1"],"maxSplit":"500"}}]}',
+  },
+]

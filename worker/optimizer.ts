@@ -1,6 +1,7 @@
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8, probeBatch, tryDecodeSub } from './net'
+import { configJsonToLines, fetchSubLines, renderSubscription } from './formats'
 
 // ── Config parsing ──────────────────────────────────────────────────────
 
@@ -59,11 +60,14 @@ export function parseNodeLine(line: string): ParsedNode | null {
 async function collectInputLines(input: string): Promise<string[]> {
   const trimmed = input.trim()
   if (/^https?:\/\//i.test(trimmed)) {
-    const resp = await fetch(trimmed, { redirect: 'follow' })
-    if (!resp.ok) throw new Error(`دریافت لینک ساب ناموفق بود (HTTP ${resp.status})`)
-    return tryDecodeSub(await resp.text()).split('\n')
+    // Robust fetch: base64 / plain / JSON, with smart URL fallbacks on 404.
+    const lines = await fetchSubLines(trimmed)
+    if (!lines.length) throw new Error('دریافت لینک ساب ناموفق بود — هیچ نود معتبری در هیچ آدرس جایگزین پیدا نشد')
+    return lines
   }
-  // Raw pasted content — maybe base64 blob or plain links
+  // Raw pasted content — sing-box JSON, base64 blob, or plain links
+  const fromConfig = configJsonToLines(trimmed)
+  if (fromConfig.length) return fromConfig
   return tryDecodeSub(trimmed).split('\n')
 }
 
@@ -184,8 +188,9 @@ export async function handleOptimizerDelete(env: Env, userId: string, id: string
 }
 
 /** Public endpoint — GET /api/sub/opt/:token */
-export async function serveOptimizerSub(env: Env, token: string): Promise<Response> {
+export async function serveOptimizerSub(env: Env, token: string, target: string | null): Promise<Response> {
   const row = await env.DB.prepare('SELECT result_sub, status FROM optimizer_jobs WHERE sub_token = ?').bind(token).first<{ result_sub: string; status: string }>()
   if (!row || !row.result_sub) return new Response('یافت نشد یا هنوز آماده نیست', { status: 404 })
-  return new Response(row.result_sub, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+  const lines = tryDecodeSub(row.result_sub).split('\n').map((l) => l.trim()).filter(Boolean)
+  return renderSubscription(lines, target)
 }
