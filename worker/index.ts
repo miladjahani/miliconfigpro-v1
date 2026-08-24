@@ -3,9 +3,11 @@ import { apiError, json, getUserFromRequest, logActivity, genId, nowIso, safeJso
 import { handleSignup, handleLogin, handleLogout, handleMe } from './auth'
 import { runDeployment } from './deploy'
 import { handleWorkerConfig } from './kvconfig'
-import { handleIpScanner } from './scanner'
+import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleTelegramWebhook } from './telegram'
 import { ensureSchema } from './schema'
+import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
+import { handleGroupCreate, handleGroupList, handleGroupDelete, serveGroupSub } from './subgroups'
 
 interface DeploymentBody {
   name?: string
@@ -88,9 +90,11 @@ async function createDeployment(env: Env, userId: string, request: Request, ctx:
     .first<{ id: string; token: string }>()
   if (!tokenRow) return apiError('توکن فعال انتخاب‌شده پیدا نشد', 400)
 
-  // Enforce a sane per-user limit to avoid runaway deployments.
+  // Enforce the user's quota to avoid runaway deployments.
+  const quotaRow = await env.DB.prepare('SELECT max_deployments FROM users WHERE id = ?').bind(userId).first<{ max_deployments: number | null }>()
+  const quota = quotaRow?.max_deployments ?? 100
   const count = await env.DB.prepare('SELECT COUNT(*) AS c FROM deployments WHERE user_id = ?').bind(userId).first<{ c: number }>()
-  if ((count?.c ?? 0) >= 100) return apiError('به سقف تعداد ورکرها رسیده‌اید', 400)
+  if ((count?.c ?? 0) >= quota) return apiError(`به سقف تعداد ورکرهای خود (${quota}) رسیده‌اید`, 400)
 
   const id = genId()
   await env.DB.prepare(
@@ -299,6 +303,13 @@ async function handleRouted(
   if (path === '/api/auth/signup' && method === 'POST') return await handleSignup(env, request)
   if (path === '/api/auth/login' && method === 'POST') return await handleLogin(env, request)
 
+  // Public subscription endpoints (token in URL acts as the credential)
+  if (path.startsWith('/api/sub/') && method === 'GET') {
+    const token = path.split('/')[4] ?? ''
+    if (path.startsWith('/api/sub/opt/')) return await serveOptimizerSub(env, token)
+    if (path.startsWith('/api/sub/group/')) return await serveGroupSub(env, token)
+  }
+
   // Everything below requires a session
   if (path.startsWith('/api/auth/') || path.startsWith('/api/')) {
     const user = await requireUser(env, request)
@@ -335,8 +346,48 @@ async function handleRouted(
       return await handleWorkerConfig(env, user.id, body)
     }
     if (path === '/api/ip-scanner' && method === 'POST') {
-      const body = safeJsonParse(await request.text().catch(() => ''), {})
+      const body = safeJsonParse<{ mode?: string; ranges?: string; ports?: string; count?: number; timeout?: number }>(await request.text().catch(() => ''), {})
+      if (body.mode === 'ranges') return await handleRangeScan(body)
       return await handleIpScanner(body)
+    }
+
+    // ── Config optimizer ────────────────────────────────────────────────
+    if (path === '/api/optimizer' && method === 'GET') return await handleOptimizerList(env, user.id)
+    if (path === '/api/optimizer' && method === 'POST') return await handleOptimizerCreate(env, user.id, request, ctx)
+    if (path.match(/^\/api\/optimizer\/[^/]+$/) && method === 'GET') return await handleOptimizerGet(env, user.id, path.split('/')[3])
+    if (path.match(/^\/api\/optimizer\/[^/]+$/) && method === 'DELETE') return await handleOptimizerDelete(env, user.id, path.split('/')[3])
+
+    // ── Group subscriptions ───────────────────────────────────────────
+    if (path === '/api/subgroups' && method === 'GET') return await handleGroupList(env, user.id)
+    if (path === '/api/subgroups' && method === 'POST') return await handleGroupCreate(env, user.id, request)
+    if (path.match(/^\/api\/subgroups\/[^/]+$/) && method === 'DELETE') return await handleGroupDelete(env, user.id, path.split('/')[3])
+
+    // ── Admin: user & quota management ─────────────────────────────────
+    if (path.startsWith('/api/admin')) {
+      if (user.role !== 'admin') return apiError('دسترسی فقط برای ادمین', 403)
+      if (path === '/api/admin/users' && method === 'GET') {
+        const r = await env.DB.prepare(
+          `SELECT u.id, u.email, u.role, u.max_deployments, u.created_at,
+            (SELECT COUNT(*) FROM deployments d WHERE d.user_id = u.id) AS deployments
+           FROM users u ORDER BY u.created_at`,
+        ).all()
+        return json({ data: r.results })
+      }
+      const adminTarget = path.match(/^\/api\/admin\/users\/([^/]+)$/)
+      if (adminTarget && method === 'PATCH') {
+        const body = safeJsonParse<{ role?: string; max_deployments?: number }>(await request.text().catch(() => ''), {})
+        if (body.role !== undefined) {
+          if (!['admin', 'user'].includes(body.role)) return apiError('نقش نامعتبر است')
+          await env.DB.prepare('UPDATE users SET role = ? WHERE id = ?').bind(body.role, adminTarget[1]).run()
+        }
+        if (body.max_deployments !== undefined) {
+          const quota = Math.min(Math.max(1, Number(body.max_deployments) || 1), 1000)
+          await env.DB.prepare('UPDATE users SET max_deployments = ? WHERE id = ?').bind(quota, adminTarget[1]).run()
+        }
+        const row = await env.DB.prepare('SELECT id, email, role, max_deployments FROM users WHERE id = ?').bind(adminTarget[1]).first()
+        if (!row) return apiError('کاربر پیدا نشد', 404)
+        return json({ data: row })
+      }
     }
 
     return apiError('مسیر API پیدا نشد', 404)

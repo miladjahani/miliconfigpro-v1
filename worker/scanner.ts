@@ -1,4 +1,5 @@
 import { apiError, json } from './util'
+import { expandRanges, probeBatch } from './net'
 
 interface ScanResult {
   ip: string
@@ -95,6 +96,52 @@ async function fetchProxyList(protocol: 'https' | 'socks5' | 'http'): Promise<Sc
   } catch {
     return []
   }
+}
+
+/**
+ * Real TCP scan over user-provided CIDR ranges and ports using the
+ * Workers Sockets API — measures actual handshake latency per IP:port.
+ */
+export async function handleRangeScan(body: {
+  ranges?: string
+  ports?: string
+  count?: number
+  timeout?: number
+}): Promise<Response> {
+  const ranges = (body.ranges ?? '').split(/[\n,]/).map((r) => r.trim()).filter(Boolean).slice(0, 8)
+  if (!ranges.length) return apiError('حداقل یک بازه IP وارد کنید (مثلاً 104.16.0.0/24)')
+  const ports = (body.ports ?? '443')
+    .split(/[\n,]/)
+    .map((p) => Number(p.trim()))
+    .filter((p) => Number.isInteger(p) && p > 0 && p < 65536)
+    .slice(0, 5)
+  if (!ports.length) return apiError('پورت معتبری وارد نشد')
+
+  const ips = expandRanges(ranges, 512)
+  if (!ips.length) return apiError('بازه IP معتبر نیست')
+
+  const targets = ips.flatMap((ip) => ports.map((port) => ({ host: ip, port, ip })))
+  const probed = await probeBatch(targets, 20, Math.min(Math.max(body.timeout ?? 2500, 500), 5000))
+
+  const ok = probed
+    .filter((p) => p.latencyMs !== null)
+    .sort((a, b) => (a.latencyMs ?? 99999) - (b.latencyMs ?? 99999))
+    .slice(0, Math.min(Math.max(body.count ?? 50, 1), 200))
+    .map((p) => ({
+      ip: p.ip,
+      port: p.port,
+      latencyMs: p.latencyMs,
+      status: 'ok' as const,
+      type: 'cloudflare' as const,
+      source: 'tcp-scan',
+    }))
+
+  return json({
+    success: ok.length > 0,
+    scanned: targets.length,
+    count: ok.length,
+    results: ok,
+  })
 }
 
 export async function handleIpScanner(body: { type?: string; count?: number; includeProxies?: boolean }): Promise<Response> {

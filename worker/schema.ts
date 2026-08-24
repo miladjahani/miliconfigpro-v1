@@ -80,6 +80,29 @@ const SCHEMA_STATEMENTS = [
     details TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  `CREATE TABLE IF NOT EXISTS optimizer_jobs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    input TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+    result_nodes TEXT NOT NULL DEFAULT '[]',
+    result_sub TEXT NOT NULL DEFAULT '',
+    sub_token TEXT NOT NULL UNIQUE,
+    nodes_total INTEGER NOT NULL DEFAULT 0,
+    nodes_alive INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS sub_groups (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    deployment_ids TEXT NOT NULL DEFAULT '[]',
+    sub_token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_cf_tokens_user ON cf_tokens(user_id)`,
@@ -88,6 +111,16 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_user ON optimizer_jobs(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_sub_groups_user ON sub_groups(user_id)`,
+]
+
+// Column additions for databases created before these fields existed.
+// Each ALTER fails harmlessly when the column is already present.
+const MIGRATIONS = [
+  `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`,
+  `ALTER TABLE users ADD COLUMN max_deployments INTEGER NOT NULL DEFAULT 100`,
+  `ALTER TABLE bot_config ADD COLUMN chat_id TEXT`,
 ]
 
 let ready: Promise<void> | null = null
@@ -97,6 +130,9 @@ export function ensureSchema(env: Env): Promise<void> {
     ready = (async () => {
       for (const stmt of SCHEMA_STATEMENTS) {
         await env.DB.prepare(stmt).run()
+      }
+      for (const stmt of MIGRATIONS) {
+        await env.DB.prepare(stmt).run().catch(() => null)
       }
     })().catch((err) => {
       // Allow retry on the next request if bootstrap failed transiently.

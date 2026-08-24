@@ -1,5 +1,6 @@
 import type { Env } from './env'
 import { nowIso, genId } from './util'
+import { notifyDeployment } from './telegram'
 
 // ── Ported 1:1 from the original cf-deploy function (Supabase → D1) ────────
 // The deploy steps, source URLs, bindings and fallbacks are identical to the
@@ -441,5 +442,14 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     const msg = err instanceof Error ? err.message : 'unknown error'
     await appendLog(env, deployment_id, `✗ ${msg}`)
     await updateDeployment(env, deployment_id, 'failed', { error_message: msg })
+  } finally {
+    // Telegram notification (never blocks or breaks the deployment flow).
+    const row = await env.DB.prepare('SELECT user_id, name, status, worker_url, panel_url, error_message FROM deployments WHERE id = ?')
+      .bind(deployment_id)
+      .first<{ user_id: string; name: string; status: string; worker_url: string | null; panel_url: string | null; error_message: string | null }>()
+    if (row && (row.status === 'deployed' || row.status === 'failed')) {
+      await notifyDeployment(env, row.user_id, row.name, row.status as 'deployed' | 'failed', row.worker_url, row.panel_url, row.error_message)
+        .catch(() => null)
+    }
   }
 }

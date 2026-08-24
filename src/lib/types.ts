@@ -59,3 +59,50 @@ export interface BotConfig {
   created_at: string
   updated_at: string
 }
+
+export interface OptimizerJob {
+  id: string
+  name: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  nodes_total: number
+  nodes_alive: number
+  sub_token: string
+  error_message: string | null
+  result_nodes?: OptimizerNode[]
+  created_at: string
+  updated_at: string
+}
+
+export interface OptimizerNode {
+  name: string
+  proto: string
+  host: string
+  port: number
+  latencyMs: number
+}
+
+export interface SubGroup {
+  id: string
+  name: string
+  deployment_ids: string[]
+  sub_token: string
+  created_at: string
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  role: 'admin' | 'user'
+  max_deployments: number
+  deployments: number
+  created_at: string
+}
+
+export interface ScanResultItem {
+  ip: string
+  port?: number
+  latencyMs: number | null
+  status: 'ok' | 'timeout' | 'error'
+  region?: string
+  source?: string
+}

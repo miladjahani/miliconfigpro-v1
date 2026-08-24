@@ -4,6 +4,7 @@ import { api, setToken, clearToken, getToken } from './api'
 export interface User {
   id: string
   email: string
+  role?: string
 }
 
 interface AuthContextType {

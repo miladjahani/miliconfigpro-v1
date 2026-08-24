@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,           -- pbkdf2$iterations$saltB64$hashB64
+  role TEXT NOT NULL DEFAULT 'user',     -- first account becomes 'admin'
+  max_deployments INTEGER NOT NULL DEFAULT 100,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
   webhook_url TEXT,
   is_active INTEGER NOT NULL DEFAULT 1,
   welcome_message TEXT NOT NULL DEFAULT 'سلام! به ربات miliconfig خوش آمدید. برای شروع /start را بفرستید.',
+  chat_id TEXT,                          -- owner chat for push notifications
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -93,6 +96,33 @@ CREATE TABLE IF NOT EXISTS activity_logs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Config optimizer jobs (real TCP-tested optimized subscriptions)
+CREATE TABLE IF NOT EXISTS optimizer_jobs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  input TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+  result_nodes TEXT NOT NULL DEFAULT '[]',
+  result_sub TEXT NOT NULL DEFAULT '',
+  sub_token TEXT NOT NULL UNIQUE,
+  nodes_total INTEGER NOT NULL DEFAULT 0,
+  nodes_alive INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Group subscriptions (merge several workers into one sub link)
+CREATE TABLE IF NOT EXISTS sub_groups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  deployment_ids TEXT NOT NULL DEFAULT '[]',
+  sub_token TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_cf_tokens_user ON cf_tokens(user_id);
@@ -101,3 +131,5 @@ CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
 CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_user ON optimizer_jobs(user_id);
+CREATE INDEX IF NOT EXISTS idx_sub_groups_user ON sub_groups(user_id);

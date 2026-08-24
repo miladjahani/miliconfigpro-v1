@@ -14,6 +14,7 @@ interface BotConfigRow {
   bot_token: string
   is_active: number
   welcome_message: string
+  chat_id?: string | null
 }
 
 function tgPost(token: string, method: string, body: Record<string, unknown>): Promise<unknown> {
@@ -31,8 +32,55 @@ async function sendMsg(token: string, chatId: string | number, text: string, key
 }
 
 async function getActiveConfig(env: Env): Promise<BotConfigRow | null> {
-  return env.DB.prepare('SELECT id, user_id, bot_token, is_active, welcome_message FROM bot_config WHERE is_active = 1 ORDER BY created_at LIMIT 1')
+  return env.DB.prepare('SELECT id, user_id, bot_token, is_active, welcome_message, chat_id FROM bot_config WHERE is_active = 1 ORDER BY created_at LIMIT 1')
     .first<BotConfigRow>()
+}
+
+async function saveOwnerChat(env: Env, cfg: BotConfigRow, chatId: number | string): Promise<void> {
+  if (String(cfg.chat_id ?? '') === String(chatId)) return
+  await env.DB.prepare('UPDATE bot_config SET chat_id = ?, updated_at = ? WHERE id = ?')
+    .bind(String(chatId), nowIso(), cfg.id)
+    .run()
+  cfg.chat_id = String(chatId)
+}
+
+/** Push a deployment result to the bot owner (if the bot is set up). */
+export async function notifyDeployment(env: Env, userId: string, workerName: string, status: 'deployed' | 'failed', workerUrl: string | null, panelUrl: string | null, error?: string | null): Promise<void> {
+  try {
+    const cfg = await env.DB.prepare('SELECT id, bot_token, chat_id FROM bot_config WHERE user_id = ? AND is_active = 1 LIMIT 1')
+      .bind(userId)
+      .first<{ id: string; bot_token: string; chat_id: string | null }>()
+    if (!cfg?.chat_id) return
+    const ok = status === 'deployed'
+    let msg = ok
+      ? `✅ <b>استقرار موفق</b>\n\n📦 <code>${workerName}</code>`
+      : `❌ <b>استقرار ناموفق</b>\n\n📦 <code>${workerName}</code>${error ? `\n⚠️ ${error}` : ''}`
+    const keyboard: Record<string, unknown> = { inline_keyboard: [] as unknown[] }
+    if (ok && workerUrl) {
+      msg += `\n🔗 <code>${workerUrl}</code>`
+      ;(keyboard.inline_keyboard as Array<Array<{ text: string; url: string }>>).push([
+        { text: '🔗 باز کردن ورکر', url: workerUrl },
+        ...(panelUrl ? [{ text: '🔐 پنل', url: panelUrl }] : []),
+      ])
+    }
+    await sendMsg(cfg.bot_token, cfg.chat_id, msg, keyboard)
+  } catch {
+    // notifications must never break deployments
+  }
+}
+
+/** Push optimizer completion to the bot owner. */
+export async function notifyOptimizer(env: Env, userId: string, jobName: string, alive: number, total: number, subUrl: string | null): Promise<void> {
+  try {
+    const cfg = await env.DB.prepare('SELECT bot_token, chat_id FROM bot_config WHERE user_id = ? AND is_active = 1 LIMIT 1')
+      .bind(userId)
+      .first<{ bot_token: string; chat_id: string | null }>()
+    if (!cfg?.chat_id) return
+    const msg = `⚡ <b>بهینه‌سازی کامل شد</b>\n\n📋 ${jobName}\n🟢 سالم: ${alive} از ${total}${subUrl ? `\n\n🔗 ساب بهینه:\n<code>${subUrl}</code>` : ''}`
+    await sendMsg(cfg.bot_token, cfg.chat_id, msg)
+  } catch {
+    // ignore
+  }
 }
 
 async function trackUser(env: Env, cfg: BotConfigRow, tgId: string, username: string | null, firstName: string | null, lastName: string | null): Promise<void> {
@@ -73,13 +121,12 @@ async function sendStatus(env: Env, bt: string, chatId: number | string, userId:
 async function sendWorkers(env: Env, bt: string, chatId: number | string, userId: string): Promise<void> {
   const ws = await env.DB.prepare('SELECT name, status, worker_url FROM deployments WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').bind(userId).all<{ name: string; status: string; worker_url: string | null }>()
   if (!ws.results.length) { await sendMsg(bt, chatId, 'هنوز ورکری مستقر نشده.'); return }
-  let m = '🚀 <b>ورکرها:</b>\n\n'
-  for (const w of ws.results) {
+  const rows = ws.results.map((w) => {
     const e = w.status === 'deployed' ? '✅' : w.status === 'failed' ? '❌' : '⏳'
-    m += `${e} <code>${w.name}</code>\n`
-    if (w.worker_url) m += `   🔗 <code>${w.worker_url}</code>\n`
-  }
-  await sendMsg(bt, chatId, m)
+    return [{ text: `${e} ${w.name}`, callback_data: `w:${w.name}` }]
+  })
+  rows.push([{ text: '🔄 بروزرسانی', callback_data: 'workers' }])
+  await sendMsg(bt, chatId, '🚀 <b>ورکرها</b> — روی یکی بزنید تا ساب و پنلش را ببینید:', { inline_keyboard: rows })
 }
 
 async function sendConfigs(env: Env, bt: string, chatId: number | string, userId: string): Promise<void> {
@@ -90,6 +137,28 @@ async function sendConfigs(env: Env, bt: string, chatId: number | string, userId
     const p = w.custom_path || w.uuid || ''
     m += `📦 <code>${w.name}</code>\nساب: <code>${w.worker_url}/${p}</code>\n\n`
   }
+  await sendMsg(bt, chatId, m)
+}
+
+/** One message per worker with tappable sub/panel URL buttons. */
+async function sendWorkerDetail(env: Env, bt: string, chatId: number | string, userId: string, rawName: string): Promise<void> {
+  const w = await findWorker(env, userId, rawName)
+  if (!w) { await sendMsg(bt, chatId, `❌ <code>${rawName}</code> پیدا نشد.`); return }
+  if (w.status !== 'deployed') { await sendMsg(bt, chatId, `⏳ <code>${w.name}</code> هنوز مستقر نشده.`); return }
+  const subUrl = w.worker_url ? `${w.worker_url}/${w.custom_path || w.uuid || ''}` : null
+  const buttons: Array<Array<{ text: string; url: string }>> = []
+  if (subUrl) buttons.push([{ text: '🔗 دریافت ساب', url: subUrl }])
+  if (w.panel_url) buttons.push([{ text: '🔐 باز کردن پنل', url: w.panel_url }])
+  await sendMsg(bt, chatId, `📦 <b>${w.name}</b>\n${subUrl ? `🔗 ساب:\n<code>${subUrl}</code>\n\n` : ''}${w.panel_url ? `🔐 پنل:\n<code>${w.panel_url}</code>` : ''}`, buttons.length ? { inline_keyboard: buttons } : undefined)
+}
+
+async function sendOptimizerList(env: Env, bt: string, chatId: number | string, userId: string): Promise<void> {
+  const jobs = await env.DB.prepare(
+    "SELECT name, status, nodes_alive, nodes_total, sub_token FROM optimizer_jobs WHERE user_id = ? AND status = 'done' ORDER BY created_at DESC LIMIT 10",
+  ).bind(userId).all<{ name: string; status: string; nodes_alive: number; nodes_total: number; sub_token: string }>()
+  if (!jobs.results.length) { await sendMsg(bt, chatId, '⚡ هنوز بهینه‌سازی‌ای انجام نشده. از پنل وب شروع کنید.'); return }
+  let m = '⚡ <b>ساب‌های بهینه:</b>\n\n'
+  for (const j of jobs.results) m += `📋 <b>${j.name}</b> — ${j.nodes_alive}/${j.nodes_total} سالم\n🔗 <code>${j.sub_token}</code>\n\n`
   await sendMsg(bt, chatId, m)
 }
 
@@ -120,6 +189,10 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     if (cq.data === 'status') ctx.waitUntil(sendStatus(env, cfg.bot_token, chatId, cfg.user_id, true))
     else if (cq.data === 'workers') ctx.waitUntil(sendWorkers(env, cfg.bot_token, chatId, cfg.user_id))
     else if (cq.data === 'configs') ctx.waitUntil(sendConfigs(env, cfg.bot_token, chatId, cfg.user_id))
+    else if (cq.data === 'optimizer') ctx.waitUntil(sendOptimizerList(env, cfg.bot_token, chatId, cfg.user_id))
+    else if (cq.data?.startsWith('w:')) {
+      ctx.waitUntil(sendWorkerDetail(env, cfg.bot_token, chatId, cfg.user_id, cq.data.slice(2)))
+    }
     return ok()
   }
 
@@ -145,10 +218,12 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     inline_keyboard: [
       [{ text: '🚀 استقرار ورکر', callback_data: 'deploy' }, { text: '📊 وضعیت', callback_data: 'status' }],
       [{ text: '📋 ورکرها', callback_data: 'workers' }, { text: '🔗 کانفیگ‌ها', callback_data: 'configs' }],
+      [{ text: '⚡ ساب‌های بهینه', callback_data: 'optimizer' }],
     ],
   }
 
   if (text === '/start') {
+    ctx.waitUntil(saveOwnerChat(env, cfg, chatId))
     await sendMsg(bt, chatId, cfg.welcome_message, mainKeyboard)
   } else if (text.startsWith('/status')) {
     await sendStatus(env, bt, chatId, cfg.user_id, true)

@@ -12,23 +12,31 @@ import {
   Menu,
   X,
   UserPlus,
+  Zap,
+  Shield,
 } from 'lucide-react'
 import { useState } from 'react'
 
-const navItems = [
+interface NavItem { to: string; label: string; icon: typeof LayoutDashboard; end?: boolean }
+
+const baseNavItems: NavItem[] = [
   { to: '/', label: 'داشبورد', icon: LayoutDashboard, end: true },
   { to: '/tokens', label: 'توکن‌ها', icon: KeyRound },
   { to: '/deploy', label: 'استقرار جدید', icon: UserPlus },
   { to: '/deployments', label: 'ورکرها', icon: Cloud },
+  { to: '/optimizer', label: 'بهینه‌ساز', icon: Zap },
   { to: '/bot-config', label: 'ربات تلگرام', icon: Bot },
   { to: '/bot-users', label: 'کاربران ربات', icon: Users },
   { to: '/logs', label: 'لاگ‌ها', icon: ScrollText },
 ]
 
+const adminNavItem: NavItem = { to: '/admin', label: 'مدیریت کاربران', icon: Shield }
+
 export default function Layout() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const navItems = user?.role === 'admin' ? [...baseNavItems, adminNavItem] : baseNavItems
 
   const handleSignOut = async () => {
     await signOut()

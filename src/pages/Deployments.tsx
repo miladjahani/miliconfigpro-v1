@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api, ApiError } from '../lib/api'
-import type { Deployment, CFToken } from '../lib/types'
+import type { Deployment, CFToken, SubGroup } from '../lib/types'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
   KeyRound, Rocket, Database, Copy, Check, Smartphone, Settings2,
   Power, PowerOff, AlertTriangle, Save, Eye, EyeOff, RefreshCw,
   Globe, Shield, Network, Server, Radar, ScanLine, Wifi, Github,
-  ArrowRight, ChevronDown, ChevronUp, Lock,
+  ArrowRight, ChevronDown, ChevronUp, Lock, Layers,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -312,6 +312,8 @@ function WorkersTab() {
 
   return (
     <div className="space-y-4">
+      <GroupSubPanel deployments={deployments.filter((d) => d.status === 'deployed')} onChanged={load} />
+
       {tokens.length === 0 && (
         <div className="glass-card p-4 border-warning-500/30 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-warning-400 shrink-0 mt-0.5" />
@@ -455,6 +457,118 @@ function InfoCell({ icon, label, children }: { icon: React.ReactNode; label: str
     <div className="bg-slate-800/40 rounded-xl p-3 border border-slate-700/30">
       <div className="flex items-center gap-1.5 mb-1">{icon}<span className="text-xs text-slate-400">{label}</span></div>
       {children}
+    </div>
+  )
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// GROUP SUBSCRIPTION — merge several deployed workers into one sub link
+// ═════════════════════════════════════════════════════════════════════════
+function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; onChanged: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [groups, setGroups] = useState<SubGroup[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api<{ data: SubGroup[] }>('/subgroups')
+      setGroups(data ?? [])
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { if (open) load() }, [open, load])
+
+  const toggle = (id: string) =>
+    setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+
+  const create = async () => {
+    if (selected.size === 0) return
+    setBusy(true)
+    try {
+      await api('/subgroups', { method: 'POST', body: { name: name.trim(), deployment_ids: Array.from(selected) } })
+      setSelected(new Set()); setName(''); await load(); onChanged()
+    } catch { /* ignore */ }
+    setBusy(false)
+  }
+
+  const remove = async (id: string) => {
+    await api(`/subgroups/${id}`, { method: 'DELETE' }).catch(() => null)
+    await load()
+  }
+
+  const copy = async (text: string, key: string) => {
+    await navigator.clipboard.writeText(text).catch(() => null)
+    setCopied(key); setTimeout(() => setCopied(null), 1500)
+  }
+
+  const groupUrl = (token: string) => `${window.location.origin}/api/sub/group/${token}`
+
+  if (deployments.length === 0) return null
+
+  return (
+    <div className="glass-card p-4">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Layers className="w-5 h-5 text-brand-400" />
+          <div className="text-right">
+            <p className="text-sm font-bold text-white">ساب گروهی</p>
+            <p className="text-xs text-slate-500">چند ورکر را انتخاب کن — یک لینک ساب ترکیبی بگیر</p>
+          </div>
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {deployments.map((d) => (
+              <button key={d.id} onClick={() => toggle(d.id)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm transition-all ${
+                  selected.has(d.id) ? 'bg-brand-500/15 border-brand-500/40 text-brand-200' : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-white'
+                }`}>
+                <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                  selected.has(d.id) ? 'bg-brand-500 border-brand-500' : 'border-slate-600'
+                }`}>
+                  {selected.has(d.id) && <Check className="w-3 h-3 text-white" />}
+                </span>
+                <span className="truncate" dir="ltr">{d.name}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-2 flex-wrap">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="نام گروه (اختیاری)" className="input-field text-sm flex-1 min-w-[160px]" />
+            <button onClick={create} disabled={busy || selected.size === 0} className="btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
+              <Layers className="w-4 h-4" />
+              ساخت ساب گروهی ({selected.size})
+            </button>
+          </div>
+
+          {groups.length > 0 && (
+            <div className="space-y-2">
+              {groups.map((g) => (
+                <div key={g.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/40 border border-slate-800">
+                  <div className="min-w-0">
+                    <p className="text-sm text-white truncate">{g.name} <span className="text-xs text-slate-500">({g.deployment_ids.length} ورکر)</span></p>
+                    <p className="text-xs text-slate-500 font-mono truncate" dir="ltr">{groupUrl(g.sub_token)}</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => copy(groupUrl(g.sub_token), g.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300" title="کپی لینک">
+                      {copied === g.id ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                    <button onClick={() => remove(g.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -781,6 +895,9 @@ function ConfigModal({ dep, onClose, onSaved }: {
 // ═══════════════════════════════════════════════════════════════════════════
 function ScannerTab() {
   const [scanType, setScanType] = useState<'cloudflare' | 'clean'>('cloudflare')
+  const [scanMode, setScanMode] = useState<'list' | 'ranges'>('list')
+  const [ranges, setRanges] = useState('')
+  const [ports, setPorts] = useState('443')
   const [includeProxies, setIncludeProxies] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [results, setResults] = useState<ScanResult[]>([])
@@ -801,9 +918,11 @@ function ScannerTab() {
   const runScan = async () => {
     setScanning(true); setError(null); setResults([]); setProxies([]); setSelectedIPs(new Set())
     try {
-      const data = await api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string }>('/ip-scanner', {
+      const data = await api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string; scanned?: number }>('/ip-scanner', {
         method: 'POST',
-        body: { type: scanType, count: 30, includeProxies },
+        body: scanMode === 'ranges'
+          ? { mode: 'ranges', ranges, ports, count: 50, timeout: 2500 }
+          : { type: scanType, count: 30, includeProxies },
       })
       if (data.success && data.results && data.results.length > 0) {
         setResults(data.results as ScanResult[])
@@ -863,6 +982,36 @@ function ScannerTab() {
           IPهای اعمال‌شده در فیلد <span className="font-mono text-brand-300">ADD.txt</span> ورکر قرار می‌گیرند و ظرف ۳۰ ثانیه در ساب‌لینک ظاهر می‌شوند.
         </p>
 
+        {/* Scan mode: curated lists or real TCP scan over CIDR ranges */}
+        <div className="flex items-center gap-2 flex-wrap mb-4">
+          {[
+            { k: 'list', label: 'لیست‌های منتخب', icon: <Wifi className="w-4 h-4" /> },
+            { k: 'ranges', label: 'اسکن واقعی بازه IP', icon: <ScanLine className="w-4 h-4" /> },
+          ].map((t) => (
+            <button key={t.k} onClick={() => setScanMode(t.k as typeof scanMode)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 border ${scanMode === t.k ? 'bg-brand-500/20 text-brand-300 border-brand-500/30' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
+              {t.icon}{t.label}
+            </button>
+          ))}
+        </div>
+
+        {scanMode === 'ranges' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+            <div>
+              <label className="text-xs text-slate-400 mb-1 block">بازه‌های IP (CIDR — هر خط یکی، حداکثر ۵۱۲ IP)</label>
+              <textarea value={ranges} onChange={(e) => setRanges(e.target.value)} rows={3} dir="ltr"
+                placeholder={'104.16.0.0/24\n172.64.0.0/24'} className="input-field text-sm font-mono" />
+            </div>
+            <div>
+              <label className="text-xs text-slate-400 mb-1 block">پورت‌ها (با کاما — حداکثر ۵ تا)</label>
+              <input value={ports} onChange={(e) => setPorts(e.target.value)} dir="ltr"
+                placeholder="443, 2053, 2083, 2087" className="input-field text-sm font-mono" />
+              <p className="text-[11px] text-slate-500 mt-2">اتصال TCP واقعی به هر IP:port زده می‌شود و تأخیر handshake اندازه‌گیری می‌شود.</p>
+            </div>
+          </div>
+        )}
+
+        {scanMode === 'list' && (
         <div className="flex items-center gap-2 flex-wrap mb-4">
           {[
             { k: 'cloudflare', label: 'پشت Cloudflare (CDN)', icon: <Cloud className="w-4 h-4" /> },
@@ -874,6 +1023,7 @@ function ScannerTab() {
             </button>
           ))}
         </div>
+        )}
 
         <div className="mb-4">
           <Toggle checked={includeProxies} onChange={() => setIncludeProxies(!includeProxies)} label="دریافت لیست پروکسی از EDT-Pages/Proxy-List (HTTPS, SOCKS5, HTTP)" />

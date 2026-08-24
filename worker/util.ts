@@ -78,6 +78,8 @@ const SESSION_DAYS = 30
 export interface UserRow {
   id: string
   email: string
+  role: string
+  max_deployments: number
 }
 
 export async function createSession(env: Env, userId: string): Promise<{ token: string; expiresAt: string }> {
@@ -94,7 +96,7 @@ export async function getUserFromRequest(env: Env, request: Request): Promise<Us
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
   if (!token) return null
   const row = await env.DB.prepare(
-    `SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT u.id, u.email, u.role, u.max_deployments FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token = ? AND s.expires_at > ?`,
   )
     .bind(token, nowIso())
