@@ -5,4 +5,5 @@ dist
 .wrangler
 isolate
 tsconfig.tsbuildinfo
+wrangler.deploy.toml
 *.local

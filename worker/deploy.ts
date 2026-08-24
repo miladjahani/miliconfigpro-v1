@@ -243,7 +243,11 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     }).catch(() => null)
 
     let workerUrl: string
-    const panelKey = custom_path || uuid
+    // edgetunnel: panel lives at the custom path (login page asking for the
+    // password); without a custom path it falls back to /{uuid}.
+    // Default (custom) worker: UUID is always part of the URL and bypasses
+    // the login page entirely.
+    const panelKey = configFormat === 'edgetunnel' ? (custom_path || uuid) : uuid
 
     if (method === 'workers') {
       // ── Upload worker script ──────────────────────────────────────────
