@@ -6,11 +6,14 @@ compatibility_flags = ["nodejs_compat"]
 # Only API routes and member status pages invoke the worker; every static
 # asset (JS/CSS/HTML/icons) is served directly by Cloudflare's edge asset
 # layer — no worker invocation, no cold start, much faster loads.
-# NOTE: The D1 binding is intentionally NOT declared here so that Cloudflare
-# Builds can always deploy automatically (a declared-but-invalid database_id
-# fails the whole deployment). Attach the database once from the dashboard:
-# Workers & Pages → miliconfigpro-v1 → Settings → Bindings → Add → D1 DB,
-# variable name: DB. The worker self-initializes its schema on first use.
+# The panel's D1 database is declared here so EVERY deploy path (Cloudflare
+# Builds' plain `npx wrangler deploy`, deploy.sh, manual) always carries the
+# binding — it can never be wiped by a deploy again.
+[[d1_databases]]
+binding = "DB"
+database_name = "db"
+database_id = "6c89686c-97cc-4ea5-a053-7e6acd5b9051"
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"

@@ -12,6 +12,13 @@ set -eu
 DB_NAME="miliconfigpro-v1"
 CONFIG_OUT="wrangler.deploy.toml"
 
+# wrangler.toml now declares the D1 binding itself, so a plain deploy always
+# carries it. The fallback below only runs for older checkouts without it.
+if grep -q '^\[\[d1_databases\]\]' wrangler.toml; then
+  echo "── D1 binding found in wrangler.toml — deploying directly ──"
+  exec npx wrangler deploy
+fi
+
 echo "── resolving D1 database (${DB_NAME}) ──"
 
 DB_ID=$(npx wrangler d1 list --json 2>/dev/null | node -e '
