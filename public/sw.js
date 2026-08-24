@@ -2,7 +2,7 @@
 // • Cache-first ONLY for versioned build assets (/assets/*) and icons.
 // • Never touches /api/* (always network).
 // • Navigation requests go to the network; offline falls back to the shell.
-const CACHE = 'miliconfig-v1'
+const CACHE = 'miliconfig-v2'
 const SHELL = ['./', '/index.html', '/manifest.webmanifest', '/pwa-icon-192.png', '/pwa-icon-512.png']
 
 self.addEventListener('install', (e) => {

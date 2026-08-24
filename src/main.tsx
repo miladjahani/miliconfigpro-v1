@@ -26,6 +26,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 // PWA: register the service worker (production only, never blocks startup).
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => null)
+    navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => null)
   })
 }
