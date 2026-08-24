@@ -10,18 +10,22 @@
 - **استقرار ورکرها:** موتور استقرار (`worker/deploy.ts`) با API کلودفلر: ساخت KV، آپلود اسکریپت و فعال‌سازی workers.dev
 - **ربات تلگرام:** وب‌هوک روی `/api/webhooks/telegram`
 
-## راه‌اندازی
+## راه‌اندازی / استقرار خودکار (Cloudflare Builds)
+
+مخزن به Cloudflare Workers Builds متصل است — با هر push به `main` به‌صورت خودکار بیلد و مستقر می‌شود.
+فقط یک بار لازم است:
 
 ```bash
-bun install
-# ساخت دیتابیس D1 و اعمال اسکیما:
 npx wrangler d1 create miliconfig-pro
-# سپس database_id را در wrangler.toml جای‌گزین کنید و:
-npx wrangler d1 execute miliconfig-pro --remote --file=d1/schema.sql
+# → مقدار database_id خروجی را در wrangler.toml جایگزین REPLACE_WITH_YOUR_D1_DATABASE_ID کنید
+```
 
-# اجرای محلی:
-npm run dev        # فقط فرانت (API نیاز به wrangler dev دارد)
-npm run build && npm run deploy   # استقرار روی کلودفلر
+از این به بعد `npm run deploy` (یا هر push) همه‌کار را انجام می‌دهد: بیلد فرانت، اعمال اسکیمای D1 (idempotent)، و استقرار ورکر.
+
+اجرای محلی:
+
+```bash
+npm run dev:full   # بیلد + D1 محلی + wrangler dev روی 0.0.0.0:5173
 ```
 
 ## احراز هویت

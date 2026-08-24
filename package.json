@@ -10,9 +10,10 @@
     "dev": "vite",
     "dev:full": "vite build && wrangler d1 execute miliconfig-pro --local --file=d1/schema.sql -y && wrangler dev --ip 0.0.0.0 --port ${PORT:-5173}",
     "db:init": "wrangler d1 execute miliconfig-pro --local --file=d1/schema.sql -y",
+    "db:init:remote": "wrangler d1 execute miliconfig-pro --remote --file=d1/schema.sql -y",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "deploy": "wrangler deploy"
+    "deploy": "npm run build && npm run db:init:remote && wrangler deploy"
   },
   "dependencies": {
     "lucide-react": "^0.441.0",
