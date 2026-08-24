@@ -462,13 +462,16 @@ export default {
       // with a clear one-time setup hint instead of crashing.
       if (path.startsWith('/api')) {
         if (!env.DB) {
-          return json(
-            {
-              error:
-                'اتصال دیتابیس هنوز برقرار نیست. در داشبورد کلودفلر: Workers & Pages → miliconfigpro-v1 → Settings → Bindings → Add → D1 database، نام متغیر: DB',
-              setup_required: 'd1_binding',
-            },
-            503,
+          return withCors(
+            json(
+              {
+                error:
+                  'اتصال دیتابیس هنوز برقرار نیست. در داشبورد کلودفلر: Workers & Pages → miliconfigpro-v1 → Settings → Bindings → Add → D1 database، نام متغیر: DB',
+                setup_required: 'd1_binding',
+              },
+              503,
+            ),
+            cors,
           )
         }
         await ensureSchema(env)
