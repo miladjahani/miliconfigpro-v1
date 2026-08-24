@@ -40,6 +40,7 @@ function validPath(p: string) {
 
 export default function DeployWizard() {
   const navigate = useNavigate()
+  const [error, setError] = useState<string | null>(null)
   const [step, setStep] = useState(1)
   const [tokens, setTokens] = useState<CFToken[]>([])
   const [loading, setLoading] = useState(true)
@@ -85,12 +86,13 @@ export default function DeployWizard() {
 
   const startPolling = useCallback((deploymentId: string) => {
     stopPolling()
-    pollRef.current = setInterval(async () => {
+    const startedAt = Date.now()
+    const tick = async () => {
       type DepState = { status?: string; logs?: string | null; worker_url?: string | null; panel_url?: string | null; error_message?: string | null } | null
       let dep: DepState = null
       try {
         dep = (await api<{ data: DepState }>(`/deployments/${deploymentId}`)).data
-      } catch { return }
+      } catch { /* transient network error — keep polling */ }
       if (!dep) return
 
       if (dep.logs) {
@@ -111,26 +113,35 @@ export default function DeployWizard() {
         stopPolling()
         setDeploying(false)
         setDeployResult({ success: false, message: dep.error_message ?? 'استقرار ناموفق بود' })
+      } else if (Date.now() - startedAt > 4 * 60 * 1000) {
+        // Safety net: don't poll forever if the backend engine died silently.
+        stopPolling()
+        setDeploying(false)
+        setDeployResult({ success: false, message: 'استقرار بیش از حد طول کشید. وضعیت را در صفحه ورکرها بررسی کنید.' })
       }
-    }, 2000)
+    }
+    void tick()
+    pollRef.current = setInterval(tick, 2000)
   }, [stopPolling])
 
   const handleDeploy = async () => {
+    if (deploying) return
+    setError(null)
+
+    // Client-side validation before hitting the API.
+    if (!validName(name)) { setError('نام ورکر نامعتبر است — حروف کوچک انگلیسی، عدد و خط‌تیره'); return }
+    if (!uuid.trim()) { setError('UUID خالی است'); return }
+    const token = tokens.find((t) => t.id === selectedToken)
+    if (!token) { setError('ابتدا یک توکن فعال انتخاب کنید'); return }
+
     setDeploying(true)
     setDeployResult(null)
-    setDeployLogs([])
-
-    const token = tokens.find((t) => t.id === selectedToken)
-    if (!token) {
-      setDeployResult({ success: false, message: 'توکن معتبر پیدا نشد' })
-      setDeploying(false)
-      return
-    }
+    setDeployLogs(['در حال ارسال درخواست استقرار…'])
 
     try {
       // The server creates the deployment row, kicks off the deploy engine and
       // keeps status/logs updated — we just poll for the result.
-      const { data: dep } = await api<{ data: { id: string } }>('/deployments', {
+      const { data: dep } = await api<{ data: { id: string; status?: string; error_message?: string | null } }>('/deployments', {
         method: 'POST',
         body: {
           name,
@@ -144,6 +155,11 @@ export default function DeployWizard() {
         },
       })
 
+      if (dep?.status === 'failed') {
+        setDeployResult({ success: false, message: dep.error_message ?? 'استقرار بلافاصله ناموفق بود' })
+        setDeploying(false)
+        return
+      }
       if (dep?.id) {
         startPolling(dep.id)
       } else {
@@ -463,6 +479,12 @@ export default function DeployWizard() {
             {/* Deploy button */}
             {!deployResult && (
               <div className="flex flex-col items-center gap-4 py-6">
+                {error && (
+                  <div className="w-full max-w-md px-4 py-3 rounded-xl bg-error-500/10 border border-error-500/30 text-error-400 text-sm flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    {error}
+                  </div>
+                )}
                 <button
                   onClick={handleDeploy}
                   disabled={deploying}

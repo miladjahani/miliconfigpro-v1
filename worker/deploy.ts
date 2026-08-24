@@ -1,6 +1,6 @@
 import type { Env } from './env'
 import { nowIso, genId } from './util'
-import { getAccountId, createKvNamespace, uploadWorker, enableWorkersDev } from './cfapi'
+import { cfApi, getAccountId, createKvNamespace, uploadWorker } from './cfapi'
 
 export interface DeployJob {
   deployment_id: string
@@ -19,6 +19,10 @@ export interface DeployJob {
 const EDGE_TUNNEL_URLS: Record<string, string> = {
   edgetunnel: 'https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js',
   edgetunnel_kv: 'https://raw.githubusercontent.com/cmliu/edgetunnel/main/_worker.js',
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
 }
 
 async function appendLogs(env: Env, deploymentId: string, lines: string[]): Promise<void> {
@@ -41,48 +45,110 @@ async function fetchWorkerCode(job: DeployJob): Promise<{ code?: string; error?:
   const url =
     job.worker_source === 'custom' ? `${job.origin}/repo/worker-source.js` : EDGE_TUNNEL_URLS[job.worker_source]
   if (!url) return { error: `منبع ورکر نامشخص: ${job.worker_source}` }
-  try {
-    const resp = await fetch(url)
-    if (!resp.ok) return { error: `دانلود سورس ورکر ناموفق بود (HTTP ${resp.status})` }
-    const code = await resp.text()
-    if (!code || code.length < 200) return { error: 'سورس دانلودشده نامعتبر است' }
-    return { code }
-  } catch {
-    return { error: 'خطای شبکه در دانلود سورس ورکر' }
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok && attempt === 2) return { error: `دانلود سورس ورکر ناموفق بود (HTTP ${resp.status})` }
+      if (!resp.ok) { await sleep(1000); continue }
+      const code = await resp.text()
+      if (code && code.length > 200) return { code }
+      if (attempt === 2) return { error: 'سورس دانلودشده نامعتبر است' }
+      await sleep(1000)
+    } catch {
+      if (attempt === 2) return { error: 'خطای شبکه در دانلود سورس ورکر' }
+      await sleep(1000)
+    }
   }
+  return { error: 'دانلود سورس ورکر ناموفق بود' }
+}
+
+/**
+ * Resolve the account's workers.dev subdomain and make sure this worker is
+ * enabled on it. Returns the final public host or null when unavailable.
+ */
+async function resolveWorkersDevHost(
+  token: string,
+  accountId: string,
+  workerName: string,
+  logs: string[],
+): Promise<string | null> {
+  // 1. Account-level subdomain (e.g. "my-account.workers.dev")
+  const sd = await cfApi(token, `/accounts/${accountId}/workers/subdomain`)
+  const accountSubdomain =
+    ((sd.data?.result as { subdomain?: string } | undefined)?.subdomain ?? '').replace(/\.workers\.dev$/, '')
+  if (!sd.ok || !accountSubdomain) {
+    logs.push('⚠ زیردامنه workers.dev اکانت خوانده نشد — ممکن است workers.dev برای اکانت غیرفعال باشد')
+    return null
+  }
+
+  // 2. Enable this specific worker on workers.dev
+  const enable = await cfApi(token, `/accounts/${accountId}/workers/scripts/${workerName}/subdomain`, {
+    method: 'POST',
+    body: { enabled: true },
+  })
+  if (!enable.ok) {
+    logs.push(`⚠ فعال‌سازی workers.dev برای این ورکر ناموفق بود (HTTP ${enable.status})`)
+    return null
+  }
+  logs.push(`✓ ورکر روی workers.dev فعال شد`)
+  return `${workerName}.${accountSubdomain}.workers.dev`
+}
+
+/** Wait until the deployed worker actually answers on its public URL. */
+async function waitUntilReachable(url: string, tries = 12): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, { redirect: 'manual', headers: { 'User-Agent': 'miliconfig-deploy-check' } })
+      // Any HTTP response (even 4xx/5xx from the app itself) means DNS+edge is live.
+      if (r.status > 0) return true
+    } catch { /* not live yet */ }
+    await sleep(1000)
+  }
+  return false
 }
 
 export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
   const logs: string[] = []
   try {
-    // 1. Resolve Cloudflare account
+    // ── 1. Verify token & resolve account ────────────────────────────────
+    const verify = await cfApi(job.cf_token, '/user/tokens/verify')
+    const verifyResult = verify.data?.result as { status?: string } | undefined
+    if (!verify.ok || verifyResult?.status !== 'active') {
+      await failDeployment(env, job, 'توکن Cloudflare نامعتبر یا غیرفعال است — توکن را در صفحه توکن‌ها بررسی کنید')
+      return
+    }
+    logs.push('✓ توکن Cloudflare تأیید شد')
+
     const acc = await getAccountId(job.cf_token)
     if (!acc.accountId) {
       await failDeployment(env, job, acc.error ?? 'اکانت کلودفلر پیدا نشد')
       return
     }
     const accountId = acc.accountId
-    logs.push(`✓ اکانت تایید شد (${accountId.slice(0, 8)}…)`)
+    logs.push(`✓ اکانت متصل شد (${accountId.slice(0, 8)}…)`)
+
+    // ── 2. Resolve workers.dev host EARLY so we can report an accurate URL
+    const host = await resolveWorkersDevHost(job.cf_token, accountId, job.worker_name, logs)
     await appendLogs(env, job.deployment_id, logs)
     logs.length = 0
 
-    // 2. Download worker source
+    // ── 3. Download worker source ────────────────────────────────────────
     const src = await fetchWorkerCode(job)
     if (!src.code) {
       await failDeployment(env, job, src.error ?? 'سورس ورکر دریافت نشد')
       return
     }
+    logs.push('✓ سورس ورکر دانلود شد')
 
-    // 3. Provision KV namespace
-    const nsTitle = `${job.worker_name}-kv`
-    const ns = await createKvNamespace(job.cf_token, accountId, nsTitle)
+    // ── 4. Provision KV namespace ────────────────────────────────────────
+    const ns = await createKvNamespace(job.cf_token, accountId, `${job.worker_name}-kv`)
     logs.push(...ns.logs)
     if (!ns.id) {
       await failDeployment(env, job, ns.error ?? 'ساخت KV ناموفق بود')
       return
     }
 
-    // 4. Upload script with bindings
+    // ── 5. Upload script with bindings ───────────────────────────────────
     const isCustom = job.worker_source === 'custom'
     const vars: Record<string, string> = isCustom
       ? {
@@ -109,35 +175,33 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       return
     }
 
-    // 5. Enable workers.dev subdomain
-    const enabled = await enableWorkersDev(job.cf_token, accountId, job.worker_name)
-    if (!enabled) logs.push('⚠ فعال‌سازی workers.dev ممکن است نیاز به بررسی دستی داشته باشد')
-
-    // 6. Persist final state
-    const subdomainResp = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`,
-      { headers: { Authorization: `Bearer ${job.cf_token}` } },
-    )
-    let host = `${job.worker_name}.workers.dev`
-    try {
-      const sd = (await subdomainResp.json()) as { result?: { subdomain?: string } }
-      if (sd.result?.subdomain) host = `${job.worker_name}.${sd.result.subdomain}`
-    } catch {
-      /* keep default */
+    // ── 6. Make sure the public URL is live before declaring success ─────
+    let workerUrl: string
+    if (host) {
+      const reachable = await waitUntilReachable(`https://${host}`)
+      if (reachable) {
+        workerUrl = `https://${host}`
+        logs.push(`✓ آدرس عمومی تأیید شد: ${workerUrl}`)
+      } else {
+        // Propagation can lag a few seconds behind enablement.
+        workerUrl = `https://${host}`
+        logs.push('⚠ آدرس هنوز پاسخ نمی‌دهد — معمولاً ظرف چند دقیقه فعال می‌شود')
+      }
+    } else {
+      workerUrl = `https://${job.worker_name}.${accountId.slice(0, 8)}.workers.dev`
+      logs.push(`⚠ workers.dev در دسترس نبود؛ آدرس تخمینی ثبت شد: ${workerUrl}`)
     }
+    const panelUrl = `${workerUrl}/${job.custom_path || job.uuid}`
 
-    const workerUrl = `https://${host}`
-    const panelPath = job.custom_path || job.uuid
-    const panelUrl = `${workerUrl}/${panelPath}`
-    const finalStatus = 'deployed'
+    await appendLogs(env, job.deployment_id, logs)
+    logs.length = 0
 
-    logs.push(`✓ ورکر مستقر شد: ${workerUrl}`)
+    // ── 7. Persist final state + activity log ────────────────────────────
     await env.DB.prepare(
-      `UPDATE deployments SET status = ?, worker_url = ?, panel_url = ?, kv_namespace_id = ?, cf_account_id = ?,
-       config = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE deployments SET status = 'deployed', worker_url = ?, panel_url = ?, kv_namespace_id = ?,
+       cf_account_id = ?, config = ?, updated_at = ? WHERE id = ?`,
     )
       .bind(
-        finalStatus,
         workerUrl,
         panelUrl,
         ns.id,
