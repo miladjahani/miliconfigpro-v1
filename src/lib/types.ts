@@ -134,6 +134,7 @@ export interface MemberSettings {
   custom_ips: string[]
   transport: '' | 'ws' | 'grpc' | 'httpupgrade'
   fragment: boolean
+  fragment_preset?: string
   fragment_config: { packets?: string; length?: string; interval?: string }
   bypass_sanctions: boolean
 }
@@ -149,6 +150,8 @@ export interface WorkerMember {
   used_bytes: number
   used_gb: number
   quota_gb: number | null
+  used_requests: number
+  request_quota: number | null
   usage_updated_at: string | null
   settings: MemberSettings
   created_at: string

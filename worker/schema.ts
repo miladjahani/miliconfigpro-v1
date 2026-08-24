@@ -124,7 +124,9 @@ const SCHEMA_STATEMENTS = [
     enabled INTEGER NOT NULL DEFAULT 1,
     expires_at TEXT,
     quota_bytes INTEGER,
+    request_quota INTEGER,
     used_bytes INTEGER NOT NULL DEFAULT 0,
+    used_requests INTEGER NOT NULL DEFAULT 0,
     usage_updated_at TEXT,
     settings TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -153,6 +155,8 @@ const MIGRATIONS = [
   `ALTER TABLE sub_groups ADD COLUMN proxies TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE sub_groups ADD COLUMN inject INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE deployments ADD COLUMN cf_token_row_id TEXT`,
+  `ALTER TABLE worker_members ADD COLUMN request_quota INTEGER`,
+  `ALTER TABLE worker_members ADD COLUMN used_requests INTEGER NOT NULL DEFAULT 0`,
 ]
 
 let ready: Promise<void> | null = null

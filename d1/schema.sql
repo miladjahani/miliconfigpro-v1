@@ -161,7 +161,9 @@ CREATE TABLE IF NOT EXISTS worker_members (
   enabled INTEGER NOT NULL DEFAULT 1,
   expires_at TEXT,
   quota_bytes INTEGER,
+  request_quota INTEGER,
   used_bytes INTEGER NOT NULL DEFAULT 0,
+  used_requests INTEGER NOT NULL DEFAULT 0,
   usage_updated_at TEXT,
   settings TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power } from 'lucide-react'
 import { api } from '../lib/api'
+import { FRAGMENT_PRESETS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
 
 const COUNTRIES = [
@@ -57,8 +58,10 @@ export default function Members() {
   const [customIps, setCustomIps] = useState('')
   const [transport, setTransport] = useState('')
   const [fragment, setFragment] = useState(false)
+  const [preset, setPreset] = useState('')
   const [bypass, setBypass] = useState(false)
   const [quotaGb, setQuotaGb] = useState('')
+  const [reqQuota, setReqQuota] = useState('')
   const [expires, setExpires] = useState('')
 
   const load = useCallback(async () => {
@@ -89,12 +92,14 @@ export default function Members() {
           custom_ips: customIps.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
           transport,
           fragment,
+          fragment_preset: preset,
           bypass_sanctions: bypass,
           quota_gb: quotaGb ? Number(quotaGb) : null,
+          request_quota: reqQuota ? Number(reqQuota) : null,
           expires_at: expires ? new Date(expires).toISOString() : null,
         },
       })
-      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setExpires('')
+      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setExpires('')
       await load()
     } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
     setBusy(false)
@@ -148,6 +153,7 @@ export default function Members() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="نام (مثلاً علی یا US-User)" value={name} onChange={setName} placeholder="علی" />
               <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={quotaGb} onChange={setQuotaGb} placeholder="50" />
+              <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={reqQuota} onChange={setReqQuota} placeholder="100000" />
               <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={expires} onChange={setExpires} type="date" />
               <label className="block">
                 <span className="text-xs text-slate-400 mb-1 block">ترنسپورت</span>
@@ -172,6 +178,15 @@ export default function Members() {
               <Toggle checked={fragment} onChange={() => setFragment(!fragment)} label="فرگمنت (TLS split — ضد DPI)" />
               <Toggle checked={bypass} onChange={() => setBypass(!bypass)} label="دور زدن تحریم (SNI جایگزین)" />
             </div>
+            {fragment && (
+              <label className="block max-w-xs">
+                <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور (روی تنظیم دستی اولویت دارد)</span>
+                <select value={preset} onChange={(e) => setPreset(e.target.value)} className="input-field text-sm py-2 w-full">
+                  <option value="">دستی / پیش‌فرض</option>
+                  {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)}
+                </select>
+              </label>
+            )}
             {error && <p className="text-sm text-error-400">{error}</p>}
             <button onClick={create} disabled={busy} className="btn-primary flex items-center gap-2 text-sm">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}

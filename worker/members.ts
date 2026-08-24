@@ -7,6 +7,7 @@ import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
 import { resolvePool } from './countries'
+import { findPreset } from './presets'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
 
 export interface MemberSettings {
@@ -14,6 +15,7 @@ export interface MemberSettings {
   custom_ips: string[]
   transport: '' | 'ws' | 'grpc' | 'httpupgrade'
   fragment: boolean
+  fragment_preset: string
   fragment_config: { packets?: string; length?: string; interval?: string }
   bypass_sanctions: boolean
 }
@@ -35,7 +37,7 @@ export interface MemberRow {
 
 const DEFAULT_SETTINGS: MemberSettings = {
   countries: [], custom_ips: [], transport: '',
-  fragment: false, fragment_config: {}, bypass_sanctions: false,
+  fragment: false, fragment_preset: '', fragment_config: {}, bypass_sanctions: false,
 }
 
 function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
@@ -47,6 +49,7 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
     custom_ips: customIps,
     transport: transport as MemberSettings['transport'],
     fragment: !!s?.fragment,
+    fragment_preset: typeof s?.fragment_preset === 'string' ? s.fragment_preset.slice(0, 20) : '',
     fragment_config: s?.fragment_config && typeof s.fragment_config === 'object' && Object.keys(s.fragment_config).length
       ? {
           ...(s.fragment_config.packets ? { packets: String(s.fragment_config.packets).slice(0, 20) } : {}),
@@ -66,6 +69,7 @@ interface MemberBody extends Partial<MemberSettings> {
   enabled?: boolean
   expires_at?: string | null
   quota_gb?: number | null
+  request_quota?: number | null
 }
 
 export async function handleMemberCreate(env: Env, userId: string, request: Request): Promise<Response> {
@@ -80,12 +84,13 @@ export async function handleMemberCreate(env: Env, userId: string, request: Requ
   const id = genId()
   const token = genId().replace(/-/g, '')
   const quotaBytes = body.quota_gb == null || body.quota_gb <= 0 ? null : Math.round(body.quota_gb * 1024 ** 3)
+  const reqQuota = body.request_quota == null || body.request_quota <= 0 ? null : Math.round(body.request_quota)
   await env.DB.prepare(
-    `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, used_bytes, settings, created_at)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?)`,
+    `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, request_quota, used_bytes, used_requests, settings, created_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?)`,
   ).bind(
     id, userId, dep.id, body.name?.trim() || `کاربر ${dep.name}`,
-    token, body.expires_at ?? null, quotaBytes, JSON.stringify(settings), nowIso(),
+    token, body.expires_at ?? null, quotaBytes, reqQuota, JSON.stringify(settings), nowIso(),
   ).run()
   return json({ data: { id, token } }, 201)
 }
@@ -105,6 +110,8 @@ function serializeMember(row: Record<string, unknown>) {
     enabled: !!row.enabled,
     used_gb: Number((((row.used_bytes as number) ?? 0) / 1024 ** 3).toFixed(3)),
     quota_gb: row.quota_bytes ? Number((row.quota_bytes as number / 1024 ** 3).toFixed(2)) : null,
+    used_requests: (row.used_requests as number) ?? 0,
+    request_quota: row.request_quota ?? null,
   }
 }
 
@@ -120,6 +127,7 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     custom_ips: body.custom_ips ?? prevSettings.custom_ips,
     transport: body.transport ?? prevSettings.transport,
     fragment: body.fragment ?? prevSettings.fragment,
+    fragment_preset: body.fragment_preset !== undefined ? body.fragment_preset : prevSettings.fragment_preset,
     fragment_config: body.fragment_config ?? prevSettings.fragment_config,
     bypass_sanctions: body.bypass_sanctions ?? prevSettings.bypass_sanctions,
   })
@@ -128,10 +136,13 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
   const quotaBytes = body.quota_gb !== undefined
     ? (body.quota_gb == null || body.quota_gb <= 0 ? null : Math.round(body.quota_gb * 1024 ** 3))
     : (existing.quota_bytes as number | null)
+  const reqQuota = body.request_quota !== undefined
+    ? (body.request_quota == null || body.request_quota <= 0 ? null : Math.round(body.request_quota))
+    : (existing.request_quota as number | null)
 
   await env.DB.prepare(
-    'UPDATE worker_members SET settings = ?, enabled = ?, expires_at = ?, quota_bytes = ? WHERE id = ?',
-  ).bind(JSON.stringify(settings), enabled, expiresAt, quotaBytes, id).run()
+    'UPDATE worker_members SET settings = ?, enabled = ?, expires_at = ?, quota_bytes = ?, request_quota = ? WHERE id = ?',
+  ).bind(JSON.stringify(settings), enabled, expiresAt, quotaBytes, reqQuota, id).run()
   return json({ data: { id } })
 }
 
@@ -147,7 +158,7 @@ export async function handleMemberDelete(env: Env, userId: string, id: string): 
 const USAGE_QUERY = `query ($account: String!, $from: Time!, $worker: String!) {
   viewer { accounts(filter: { accountTag: $account }) {
     httpRequests1dGroups(limit: 32, filter: { date_geq: $from, scriptName: $worker }) {
-      sum { bytes }
+      sum { bytes requests }
     }
   } }
 }`
@@ -178,15 +189,16 @@ export async function refreshMemberUsage(env: Env, userId: string, id: string): 
     headers: { Authorization: `Bearer ${cf.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: USAGE_QUERY, variables: { account: cf.accountId, from, worker: cf.workerName } }),
   })
-  const body = safeJsonParse<{ data?: { viewer?: { accounts?: { httpRequests1dGroups?: { sum?: { bytes?: number } }[] }[] } }; errors?: { message: string }[] }>(await resp.text().catch(() => ''), {})
+  const body = safeJsonParse<{ data?: { viewer?: { accounts?: { httpRequests1dGroups?: { sum?: { bytes?: number; requests?: number } }[] }[] } }; errors?: { message: string }[] }>(await resp.text().catch(() => ''), {})
   if (!resp.ok || body.errors?.length) {
     return apiError(`خواندن آمار کلودفلر ناموفق بود: ${body.errors?.[0]?.message ?? resp.status}`)
   }
-  const bytes = (body.data?.viewer?.accounts?.[0]?.httpRequests1dGroups ?? [])
-    .reduce((sum, g) => sum + (g.sum?.bytes ?? 0), 0)
-  await env.DB.prepare('UPDATE worker_members SET used_bytes = ?, usage_updated_at = ? WHERE id = ?')
-    .bind(bytes, nowIso(), id).run()
-  return json({ data: { used_bytes: bytes, used_gb: Number((bytes / 1024 ** 3).toFixed(3)) } })
+  const groups = body.data?.viewer?.accounts?.[0]?.httpRequests1dGroups ?? []
+  const bytes = groups.reduce((sum, g) => sum + (g.sum?.bytes ?? 0), 0)
+  const requests = groups.reduce((sum, g) => sum + (g.sum?.requests ?? 0), 0)
+  await env.DB.prepare('UPDATE worker_members SET used_bytes = ?, used_requests = ?, usage_updated_at = ? WHERE id = ?')
+    .bind(bytes, requests, nowIso(), id).run()
+  return json({ data: { used_bytes: bytes, used_requests: requests, used_gb: Number((bytes / 1024 ** 3).toFixed(3)) } })
 }
 
 // ── Personalized sub serving ────────────────────────────────────────────────
@@ -221,6 +233,10 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   if (quota && (member.used_bytes as number) >= quota) {
     return new Response('حجم اشتراک شما به پایان رسیده است. با مدیر خود تماس بگیرید.', { status: 402 })
   }
+  const reqQuota = member.request_quota as number | null
+  if (reqQuota && ((member.used_requests as number) ?? 0) >= reqQuota) {
+    return new Response('سقف تعداد درخواست‌های شما به پایان رسیده است. با مدیر خود تماس بگیرید.', { status: 402 })
+  }
 
   const ctx = await resolveSource(env, member.owner_user_id as string, member.deployment_id as string)
   if (!ctx) return new Response('ورکر در دسترس نیست (اتصال واقعی به سورس برقرار نشد)', { status: 502 })
@@ -232,6 +248,11 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   const settings: MemberSettings = { ...DEFAULT_SETTINGS, ...parsed }
   if (settings.fragment && Object.keys(settings.fragment_config).length === 0) {
     settings.fragment_config = { packets: 'tlshello', length: '100-200', interval: '10-20' }
+  }
+  // ISP preset wins over manual fragment values when chosen.
+  if (settings.fragment && settings.fragment_preset) {
+    const preset = findPreset(settings.fragment_preset)
+    if (preset) settings.fragment_config = { ...preset.config }
   }
 
   // Base node per line (dedupe by identity, keep first).
