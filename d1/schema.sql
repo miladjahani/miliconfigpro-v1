@@ -120,7 +120,23 @@ CREATE TABLE IF NOT EXISTS sub_groups (
   name TEXT NOT NULL,
   deployment_ids TEXT NOT NULL DEFAULT '[]',
   sub_token TEXT NOT NULL UNIQUE,
+  ips TEXT NOT NULL DEFAULT '[]',       -- preferred IPs injected at serve time
+  proxies TEXT NOT NULL DEFAULT '[]',   -- http/socks5 chains injected at serve time
+  inject INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Custom injected subscriptions (miliconfig-branded)
+CREATE TABLE IF NOT EXISTS injector_jobs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  ips TEXT NOT NULL DEFAULT '[]',
+  proxies TEXT NOT NULL DEFAULT '[]',
+  sub_token TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
@@ -133,3 +149,4 @@ CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_user ON optimizer_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_sub_groups_user ON sub_groups(user_id);
+CREATE INDEX IF NOT EXISTS idx_injector_jobs_user ON injector_jobs(user_id);

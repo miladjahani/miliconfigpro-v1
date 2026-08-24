@@ -103,6 +103,17 @@ const SCHEMA_STATEMENTS = [
     sub_token TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  `CREATE TABLE IF NOT EXISTS injector_jobs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    ips TEXT NOT NULL DEFAULT '[]',
+    proxies TEXT NOT NULL DEFAULT '[]',
+    sub_token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_cf_tokens_user ON cf_tokens(user_id)`,
@@ -121,6 +132,9 @@ const MIGRATIONS = [
   `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`,
   `ALTER TABLE users ADD COLUMN max_deployments INTEGER NOT NULL DEFAULT 100`,
   `ALTER TABLE bot_config ADD COLUMN chat_id TEXT`,
+  `ALTER TABLE sub_groups ADD COLUMN ips TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE sub_groups ADD COLUMN proxies TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE sub_groups ADD COLUMN inject INTEGER NOT NULL DEFAULT 0`,
 ]
 
 let ready: Promise<void> | null = null

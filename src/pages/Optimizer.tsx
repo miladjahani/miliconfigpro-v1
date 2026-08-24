@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Zap, Play, Copy, Trash2, RefreshCw, Check } from 'lucide-react'
+import { Zap, Play, Copy, Trash2, RefreshCw, Check, Syringe } from 'lucide-react'
 import { api, API_BASE } from '../lib/api'
-import type { OptimizerJob, OptimizerNode } from '../lib/types'
+import type { OptimizerJob, OptimizerNode, InjectedSub } from '../lib/types'
 
 const statusLabel: Record<OptimizerJob['status'], string> = {
   pending: 'در صف',
@@ -18,6 +18,50 @@ export default function Optimizer() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
+
+  // ── Injection (miliconfig custom sub) ──
+  const [injName, setInjName] = useState('')
+  const [injSource, setInjSource] = useState('')
+  const [injIps, setInjIps] = useState('')
+  const [injProxies, setInjProxies] = useState('')
+  const [injections, setInjections] = useState<InjectedSub[]>([])
+  const [injBusy, setInjBusy] = useState(false)
+  const [injError, setInjError] = useState<string | null>(null)
+
+  const loadInjections = useCallback(async () => {
+    try {
+      const { data } = await api<{ data: InjectedSub[] }>('/injector')
+      setInjections(data ?? [])
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => { loadInjections() }, [loadInjections])
+
+  const runInjection = async () => {
+    if (!injSource.trim()) { setInjError('منبع را وارد کنید'); return }
+    setInjBusy(true); setInjError(null)
+    try {
+      const ips = injIps.split(/[\n,]/).map((l) => l.trim()).filter(Boolean).map((l) => {
+        const [ip, port] = l.split(':')
+        return port ? { ip, port: Number(port) } : { ip }
+      })
+      const proxies = injProxies.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+        const m = l.match(/^(https?|socks5):\/\/(?:([^:@]+)(?::([^@]*))?@)?([^:/]+):(\d+)$/i)
+        if (!m) return null
+        return {
+          type: m[1].toLowerCase() === 'socks5' ? 'socks5' : 'http',
+          server: m[4], port: Number(m[5]),
+          ...(m[2] ? { username: m[2] } : {}), ...(m[3] ? { password: m[3] } : {}),
+        }
+      }).filter(Boolean)
+      await api('/injector', { method: 'POST', body: { name: injName.trim(), source: injSource.trim(), ips, proxies } })
+      setInjSource(''); setInjIps(''); setInjProxies(''); setInjName('')
+      await loadInjections()
+    } catch (e) {
+      setInjError(e instanceof Error ? e.message : 'خطا در ساخت')
+    }
+    setInjBusy(false)
+  }
 
   const load = useCallback(async () => {
     try {
@@ -159,6 +203,74 @@ export default function Optimizer() {
             )}
           </div>
         ))}
+      </div>
+
+      {/* ── Injection: preferred IPs + HTTP/SOCKS5 chains ── */}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Syringe className="w-5 h-5 text-brand-400" />
+          <div>
+            <h2 className="text-lg font-semibold text-white">تزریق IP و پروکسی — ساب سفارشی miliconfig</h2>
+            <p className="text-xs text-slate-500">آی‌پی‌های اسکن‌شده ورودی نودها را ثابت می‌کنند و پروکسی‌های HTTP/SOCKS5 به‌صورت زنجیره خروجی ثابت (dialer-proxy در Clash Meta) اضافه می‌شوند</p>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-sm text-slate-400 mb-1 block">منبع — لینک ساب یا کانفیگ‌ها</label>
+          <textarea value={injSource} onChange={(e) => setInjSource(e.target.value)} rows={3} dir="ltr"
+            placeholder={'https://example.com/sub\nvless://...'} className="input-field font-mono text-xs" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-sm text-slate-400 mb-1 block">IPهای ترجیحی (هر خط یکی — از اسکنر کپی کنید)</label>
+            <textarea value={injIps} onChange={(e) => setInjIps(e.target.value)} rows={3} dir="ltr"
+              placeholder={'104.16.0.1\n172.64.0.1:2053'} className="input-field font-mono text-xs" />
+          </div>
+          <div>
+            <label className="text-sm text-slate-400 mb-1 block">پروکسی‌های خروجی (هر خط یکی — خروجی ثابت نود)</label>
+            <textarea value={injProxies} onChange={(e) => setInjProxies(e.target.value)} rows={3} dir="ltr"
+              placeholder={'socks5://user:pass@1.2.3.4:1080\nhttp://5.6.7.8:8080'} className="input-field font-mono text-xs" />
+            <p className="text-[11px] text-slate-500 mt-1">خروجی Clash Meta با زنجیره نود ← پروکسی ساخته می‌شود</p>
+          </div>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <input value={injName} onChange={(e) => setInjName(e.target.value)} placeholder="نام (اختیاری)" className="input-field text-sm flex-1 min-w-[160px]" />
+          <button onClick={runInjection} disabled={injBusy} className="btn-primary text-sm flex items-center gap-2">
+            <Syringe className="w-4 h-4" />{injBusy ? 'در حال ساخت...' : 'ساخت ساب تزریق‌شده'}
+          </button>
+        </div>
+        {injError && <p className="text-sm text-error-400">{injError}</p>}
+
+        {injections.length > 0 && (
+          <div className="space-y-2 pt-2">
+            {injections.map((inj) => {
+              const subUrl = `${window.location.origin}${API_BASE}/sub/inject/${inj.sub_token}`
+              const clashUrl = `${subUrl}?target=clash`
+              return (
+                <div key={inj.id} className="p-3 rounded-xl bg-slate-900/40 border border-slate-800">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="min-w-0">
+                      <p className="text-sm text-white font-medium">{inj.name}</p>
+                      <p className="text-xs text-slate-500">{inj.ips.length} IP · {inj.proxies.length} پروکسی</p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => copy(subUrl, inj.id)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                        {copied === inj.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
+                      </button>
+                      <button onClick={() => copy(clashUrl, inj.id + '-c')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                        {copied === inj.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
+                      </button>
+                      <button onClick={async () => { await api(`/injector/${inj.id}`, { method: 'DELETE' }).catch(() => null); loadInjections() }} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-500 font-mono truncate mt-2" dir="ltr">{subUrl}</p>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Node latency detail */}

@@ -86,6 +86,9 @@ export interface SubGroup {
   name: string
   deployment_ids: string[]
   sub_token: string
+  ips?: PreferredIP[]
+  proxies?: ProxySpec[]
+  inject?: boolean
   created_at: string
 }
 
@@ -105,4 +108,23 @@ export interface ScanResultItem {
   status: 'ok' | 'timeout' | 'error'
   region?: string
   source?: string
+}
+
+export interface PreferredIP { ip: string; port?: number }
+
+export interface ProxySpec {
+  type: 'http' | 'socks5'
+  server: string
+  port: number
+  username?: string
+  password?: string
+}
+
+export interface InjectedSub {
+  id: string
+  name: string
+  ips: PreferredIP[]
+  proxies: ProxySpec[]
+  sub_token: string
+  created_at: string
 }

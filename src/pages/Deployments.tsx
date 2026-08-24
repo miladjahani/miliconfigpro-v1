@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api, ApiError } from '../lib/api'
 import type { Deployment, CFToken, SubGroup } from '../lib/types'
+import type { PreferredIP, ProxySpec } from '../lib/types'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
   KeyRound, Rocket, Database, Copy, Check, Smartphone, Settings2,
@@ -471,6 +472,24 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  const [injIps, setInjIps] = useState('')
+  const [injProxies, setInjProxies] = useState('')
+  const [inject, setInject] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editIps, setEditIps] = useState('')
+  const [editProxies, setEditProxies] = useState('')
+
+  const parseIps = (text: string): PreferredIP[] =>
+    text.split(/[\n,]/).map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [ip, port] = l.split(':')
+      return port ? { ip, port: Number(port) } : { ip }
+    })
+  const parseProxies = (text: string): ProxySpec[] =>
+    text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      const m = l.match(/^(https?|socks5):\/\/(?:([^:@]+)(?::([^@]*))?@)?([^:/]+):(\d+)$/i)
+      if (!m) return null
+      return { type: m[1].toLowerCase() === 'socks5' ? 'socks5' : 'http', server: m[4], port: Number(m[5]), ...(m[2] ? { username: m[2] } : {}), ...(m[3] ? { password: m[3] } : {}) } as ProxySpec
+    }).filter(Boolean) as ProxySpec[]
 
   const load = useCallback(async () => {
     try {
@@ -488,7 +507,13 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
     if (selected.size === 0) return
     setBusy(true)
     try {
-      await api('/subgroups', { method: 'POST', body: { name: name.trim(), deployment_ids: Array.from(selected) } })
+      await api('/subgroups', {
+        method: 'POST',
+        body: {
+          name: name.trim(), deployment_ids: Array.from(selected),
+          inject, ips: parseIps(injIps), proxies: parseProxies(injProxies),
+        },
+      })
       setSelected(new Set()); setName(''); await load(); onChanged()
     } catch { /* ignore */ }
     setBusy(false)
@@ -539,6 +564,24 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
             ))}
           </div>
 
+          <div className="p-3 rounded-xl bg-slate-900/40 border border-slate-800 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-slate-300">تزریق خودکار — ساب گروهی هر بار که خوانده شود با همین تنظیمات و آخرین کانفیگ ورکرها ساخته می‌شود</span>
+              <button type="button" onClick={() => setInject(!inject)}
+                className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${inject ? 'bg-brand-500' : 'bg-slate-600'}`}>
+                <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${inject ? 'right-0.5' : 'left-0.5'}`} />
+              </button>
+            </div>
+            {inject && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <textarea value={injIps} onChange={(e) => setInjIps(e.target.value)} rows={2} dir="ltr"
+                  placeholder={'IPهای ترجیحی\n104.16.0.1\n172.64.0.1:2053'} className="input-field text-xs font-mono" />
+                <textarea value={injProxies} onChange={(e) => setInjProxies(e.target.value)} rows={2} dir="ltr"
+                  placeholder={'پروکسی خروجی\nsocks5://user:pass@1.2.3.4:1080'} className="input-field text-xs font-mono" />
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-2 flex-wrap">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="نام گروه (اختیاری)" className="input-field text-sm flex-1 min-w-[160px]" />
             <button onClick={create} disabled={busy || selected.size === 0} className="btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
@@ -556,13 +599,41 @@ function GroupSubPanel({ deployments, onChanged }: { deployments: Deployment[]; 
                     <p className="text-xs text-slate-500 font-mono truncate" dir="ltr">{groupUrl(g.sub_token)}</p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => copy(groupUrl(g.sub_token), g.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300" title="کپی لینک">
+                    <button onClick={() => copy(groupUrl(g.sub_token), g.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300" title="کپی لینک ساب">
                       {copied === g.id ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                    <button onClick={() => copy(groupUrl(g.sub_token) + '?target=clash', g.id + '-clash')} className="px-2 py-2 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-brand-300" title="کپی لینک Clash Meta">
+                      Clash
+                    </button>
+                    <button onClick={() => { setEditingId(editingId === g.id ? null : g.id); setEditIps((g.ips ?? []).map((p) => p.port ? `${p.ip}:${p.port}` : p.ip).join('\n')); setEditProxies((g.proxies ?? []).map((p) => `${p.type}://${p.username ? p.username + (p.password ? ':' + p.password : '') + '@' : ''}${p.server}:${p.port}`).join('\n')) }}
+                      className="px-2 py-2 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-brand-300" title="تنظیم تزریق">
+                      تزریق
                     </button>
                     <button onClick={() => remove(g.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
+                  {editingId === g.id && (
+                    <div className="w-full mt-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800 space-y-2">
+                      <p className="text-xs text-slate-400">تنظیمات تزریق — بلافاصله روی لینک همین گروه اعمال می‌شود (لینک تغییر نمی‌کند)</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <textarea value={editIps} onChange={(e) => setEditIps(e.target.value)} rows={2} dir="ltr"
+                          placeholder={'IPهای ترجیحی\n104.16.0.1'} className="input-field text-xs font-mono" />
+                        <textarea value={editProxies} onChange={(e) => setEditProxies(e.target.value)} rows={2} dir="ltr"
+                          placeholder={'پروکسی خروجی\nsocks5://user:pass@1.2.3.4:1080'} className="input-field text-xs font-mono" />
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={async () => {
+                          await api(`/subgroups/${g.id}`, { method: 'PATCH', body: { ips: parseIps(editIps), proxies: parseProxies(editProxies), inject: true } }).catch(() => null)
+                          setEditingId(null); await load()
+                        }} className="btn-primary text-xs px-3 py-2">ذخیره تزریق</button>
+                        <button onClick={async () => {
+                          await api(`/subgroups/${g.id}`, { method: 'PATCH', body: { inject: false } }).catch(() => null)
+                          setEditingId(null); await load()
+                        }} className="btn-ghost text-xs px-3 py-2">غیرفعال‌سازی</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

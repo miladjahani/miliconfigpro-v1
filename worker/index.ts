@@ -7,7 +7,8 @@ import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleTelegramWebhook } from './telegram'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
-import { handleGroupCreate, handleGroupList, handleGroupDelete, serveGroupSub } from './subgroups'
+import { handleGroupCreate, handleGroupList, handleGroupDelete, handleGroupPatch, serveGroupSub } from './subgroups'
+import { handleInjectorCreate, handleInjectorList, handleInjectorDelete, serveInjectedSub } from './injector'
 
 interface DeploymentBody {
   name?: string
@@ -306,8 +307,10 @@ async function handleRouted(
   // Public subscription endpoints (token in URL acts as the credential)
   if (path.startsWith('/api/sub/') && method === 'GET') {
     const token = path.split('/')[4] ?? ''
+    const target = url.searchParams.get('target')
     if (path.startsWith('/api/sub/opt/')) return await serveOptimizerSub(env, token)
-    if (path.startsWith('/api/sub/group/')) return await serveGroupSub(env, token)
+    if (path.startsWith('/api/sub/group/')) return await serveGroupSub(env, token, target)
+    if (path.startsWith('/api/sub/inject/')) return await serveInjectedSub(env, token, target)
   }
 
   // Everything below requires a session
@@ -360,7 +363,13 @@ async function handleRouted(
     // ── Group subscriptions ───────────────────────────────────────────
     if (path === '/api/subgroups' && method === 'GET') return await handleGroupList(env, user.id)
     if (path === '/api/subgroups' && method === 'POST') return await handleGroupCreate(env, user.id, request)
+    if (path.match(/^\/api\/subgroups\/[^/]+$/) && method === 'PATCH') return await handleGroupPatch(env, user.id, path.split('/')[3], request)
     if (path.match(/^\/api\/subgroups\/[^/]+$/) && method === 'DELETE') return await handleGroupDelete(env, user.id, path.split('/')[3])
+
+    // ── Custom injected subscriptions (miliconfig) ────────────────────
+    if (path === '/api/injector' && method === 'GET') return await handleInjectorList(env, user.id)
+    if (path === '/api/injector' && method === 'POST') return await handleInjectorCreate(env, user.id, request)
+    if (path.match(/^\/api\/injector\/[^/]+$/) && method === 'DELETE') return await handleInjectorDelete(env, user.id, path.split('/')[3])
 
     // ── Admin: user & quota management ─────────────────────────────────
     if (path.startsWith('/api/admin')) {

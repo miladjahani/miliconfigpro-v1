@@ -30,7 +30,7 @@ function hostPortFromUri(uri: string): { host: string; port: number } | null {
   }
 }
 
-function parseNodeLine(line: string): ParsedNode | null {
+export function parseNodeLine(line: string): ParsedNode | null {
   const trimmed = line.trim()
   if (!trimmed) return null
   const proto = trimmed.split('://')[0]
