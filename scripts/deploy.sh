@@ -51,3 +51,25 @@ echo "✓ database_id: ${DB_ID}"
 
 echo "── deploying worker ──"
 npx wrangler deploy --config "$CONFIG_OUT"
+
+# Enable Smart Placement so the worker runs next to its D1 database — the
+# panel does many sequential D1 round-trips, this cuts real-world latency.
+# Uses the CI token when available (Cloudflare Builds); silently skipped otherwise.
+echo "── enabling Smart Placement ──"
+node -e '
+const t = process.env.CLOUDFLARE_API_TOKEN;
+if (!t) { console.log("skip (no CLOUDFLARE_API_TOKEN)"); process.exit(0); }
+(async () => {
+  try {
+    const h = { Authorization: `Bearer ${t}` };
+    const a = await fetch("https://api.cloudflare.com/client/v4/accounts?per_page=1", { headers: h }).then(r => r.json());
+    const acc = a?.result?.[0]?.id;
+    if (!acc) throw new Error("no account");
+    const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc}/workers/scripts/miliconfigpro-v1/settings`, {
+      method: "PATCH", headers: { ...h, "Content-Type": "application/json" },
+      body: JSON.stringify({ placements: [{ mode: "smart" }] }),
+    });
+    console.log(r.ok ? "✓ Smart Placement enabled" : `⚠ Smart Placement skipped (HTTP ${r.status})`);
+  } catch (e) { console.log(`⚠ Smart Placement skipped (${e.message})`); }
+})();
+' || true

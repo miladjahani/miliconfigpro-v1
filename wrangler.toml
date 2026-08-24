@@ -3,7 +3,9 @@ main = "worker/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Worker runs first for every request; non-API paths are served from ASSETS.
+# Only API routes and member status pages invoke the worker; every static
+# asset (JS/CSS/HTML/icons) is served directly by Cloudflare's edge asset
+# layer — no worker invocation, no cold start, much faster loads.
 # NOTE: The D1 binding is intentionally NOT declared here so that Cloudflare
 # Builds can always deploy automatically (a declared-but-invalid database_id
 # fails the whole deployment). Attach the database once from the dashboard:
@@ -13,7 +15,11 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = true
+run_worker_first = ["/api/*", "/status/*"]
+
+# Move the worker close to the D1 database — the panel does many sequential
+# D1 round-trips per request, so co-locating them cuts real-world latency.
+# (Enabled programmatically per-deploy via the script settings API in deploy.ts.)
 
 [observability]
 enabled = true

@@ -23,22 +23,25 @@ const CF_TOKENS_PAGE = 'https://dash.cloudflare.com/profile/api-tokens'
 
 // Permission keys for the prefill URL — Cloudflare accepts simple key/type pairs,
 // no need to fetch permission group IDs from the API.
-// 12+ permissions — all with read+edit where applicable, zone-scoped where relevant.
-// This ensures the token never hits a permission error when deploying or managing workers.
+// 15 permissions — all with read+edit where applicable, zone-scoped where relevant.
+// Includes R2 (free object storage bound to deployed workers) and zone_settings
+// (enables gRPC/WebSockets on the user's zones during deployment).
 const CF_PERM_KEYS = [
   { key: 'workers_scripts', type: 'edit' },
   { key: 'workers_kv_storage', type: 'edit' },
   { key: 'workers_routes', type: 'edit' },
+  { key: 'workers_r2', type: 'edit' }, // R2 buckets: created + bound to every deployed worker
   { key: 'page', type: 'edit' },
   { key: 'dns', type: 'edit' },
   { key: 'zone', type: 'read' },
+  { key: 'zone_settings', type: 'edit' }, // enables gRPC + WebSockets for grpc/xhttp transports
   { key: 'dns_records', type: 'edit' },
   { key: 'ssl_and_certificate', type: 'edit' },
   { key: 'cache_purge', type: 'edit' },
   { key: 'user_details', type: 'read' },
   { key: 'account', type: 'read' },
   { key: 'workers_tail', type: 'read' },
-  { key: 'd1', type: 'edit' }, // needed by D1-backed worker sources (e.g. misub_d1)
+  { key: 'd1', type: 'edit' }, // needed by D1-backed worker sources (e.g. miliconfigzeus)
 ]
 
 function buildPrefillUrl(): string {
@@ -185,7 +188,7 @@ export default function Tokens() {
               <span className="text-xs font-mono text-slate-500">۳</span>
             </div>
             <h3 className="text-sm font-bold text-white mb-1">ساخت توکن API</h3>
-            <p className="text-xs text-slate-400 leading-relaxed">توکن با ۱۲ دسترسی کامل (Workers، KV، DNS، Zone، SSL، Cache و...) ساخته می‌شود — همه با دسترسی خواندن و نوشتن. دیگر هیچ ارور توکن نخواهید داشت.</p>
+            <p className="text-xs text-slate-400 leading-relaxed">توکن با ۱۵ دسترسی کامل (Workers، KV، R2، DNS، Zone Settings، SSL، Cache و...) ساخته می‌شود — همه با دسترسی خواندن و نوشتن. R2 و تنظیمات gRPC/Zone هم پوشش داده شده‌اند تا هیچ ارور توکنی در استقرار نداشته باشید.</p>
             <span className="inline-flex items-center gap-1 text-xs text-brand-300 mt-3 group-hover:gap-2 transition-all">
               ساخت توکن <ExternalLink className="w-3 h-3" />
             </span>

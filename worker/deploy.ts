@@ -216,6 +216,34 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     await appendLog(env, deployment_id, `✓ KV namespace created: ${kvNamespaceId.slice(0, 8)}...`)
     }
 
+    // ── Provision R2 bucket (free tier: 10 GB + zero egress) ────────────
+    // Bound as R2 on every deployed worker — heavy data (logs, scan results,
+    // IP lists, sub caches) can live here instead of slowing D1/KV down.
+    // Non-fatal: if the token lacks R2 permission we just log and continue.
+    let r2BucketName = ''
+    await appendLog(env, deployment_id, 'creating R2 bucket...')
+    const r2Name = `${worker_name}-r2`
+    const r2Resp = await fetch(`${API_BASE}/accounts/${accountId}/r2/buckets`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: r2Name }),
+    })
+    const r2Data = (await r2Resp.json().catch(() => ({}))) as { success?: boolean; result?: { name?: string }; errors?: Array<{ message: string }> }
+    if (r2Data.success && r2Data.result?.name) {
+      r2BucketName = r2Data.result.name
+      await appendLog(env, deployment_id, `✓ R2 bucket created: ${r2BucketName} (free tier)`)
+    } else {
+      // Already exists? Reuse it.
+      const r2ListResp = await fetch(`${API_BASE}/accounts/${accountId}/r2/buckets?per_page=100`, { headers })
+      const r2ListData = (await r2ListResp.json().catch(() => ({}))) as { result?: { buckets?: Array<{ name?: string }> } }
+      r2BucketName = r2ListData.result?.buckets?.find((b) => b.name === r2Name)?.name ?? ''
+      if (r2BucketName) {
+        await appendLog(env, deployment_id, `✓ R2 bucket reused: ${r2BucketName}`)
+      } else {
+        await appendLog(env, deployment_id, `⚠ R2 bucket unavailable (${r2Data.errors?.[0]?.message ?? 'no permission'}) — continuing without R2`)
+      }
+    }
+
     // ── Write initial config to KV (KV sources only; zeus self-manages) ─
     let initialConfig: Record<string, unknown>
     const addTxtKey = 'ADD.txt'
@@ -313,12 +341,14 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
         compatibility_flags: ['nodejs_compat'],
         bindings: sourceConfig.kind === 'zeus' ? [
           { type: 'd1', name: 'DB', id: d1DatabaseId },
+          ...(r2BucketName ? [{ type: 'r2_bucket', name: 'R2', bucket_name: r2BucketName }] : []),
           { type: 'plain_text', name: 'CF_API_TOKEN', text: cf_token },
           { type: 'plain_text', name: 'CF_ACCOUNT_ID', text: accountId },
           { type: 'plain_text', name: 'WORKER_NAME', text: worker_name },
           { type: 'plain_text', name: 'WIZARD_URL', text: job.origin },
         ] : [
           { type: 'kv_namespace', name: kvBindingName, namespace_id: kvNamespaceId },
+          ...(r2BucketName ? [{ type: 'r2_bucket', name: 'R2', bucket_name: r2BucketName }] : []),
           { type: 'plain_text', name: uuidEnv, text: uuid },
           ...(configFormat === 'edgetunnel' ? [
             { type: 'plain_text', name: 'PATH', text: panelPath },
@@ -377,11 +407,41 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       }
 
       await fetch(`${API_BASE}/accounts/${accountId}/workers/scripts/${worker_name}/settings`, {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workers_dev: true, preview_version_id: null }),
+        body: JSON.stringify({ workers_dev: true, preview_version_id: null, placements: [{ mode: 'smart' }] }),
       }).catch(() => null)
-      await appendLog(env, deployment_id, '✓ workers.dev route enabled')
+      await appendLog(env, deployment_id, '✓ workers.dev route enabled + Smart Placement ON (worker co-located with D1)')
+
+      // ── Enable gRPC + WebSockets on all zones of the account ───────────
+      // Required for gRPC transport nodes to pass through Cloudflare without
+      // conflicts. XHTTP needs no zone switch (plain HTTP/2 streams), but
+      // WebSockets must be ON for ws/xhttp fallbacks. Non-fatal per zone.
+      try {
+        const zonesResp = await fetch(`${API_BASE}/zones?per_page=50`, { headers })
+        const zonesData = (await zonesResp.json().catch(() => ({}))) as { success?: boolean; result?: Array<{ id: string; name: string }> }
+        const zones = zonesData.result ?? []
+        if (zones.length === 0) {
+          await appendLog(env, deployment_id, 'ℹ no zones on token — workers.dev only (gRPC works natively there)')
+        }
+        for (const zone of zones) {
+          const grpcResp = await fetch(`${API_BASE}/zones/${zone.id}/settings/grpc`, {
+            method: 'PATCH',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: 'on' }),
+          }).catch(() => null)
+          const wsResp = await fetch(`${API_BASE}/zones/${zone.id}/settings/websockets`, {
+            method: 'PATCH',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: 'on' }),
+          }).catch(() => null)
+          const okGrpc = grpcResp?.ok ?? false
+          const okWs = wsResp?.ok ?? false
+          await appendLog(env, deployment_id, `${okGrpc && okWs ? '✓' : '⚠'} zone ${zone.name}: gRPC ${okGrpc ? 'ON' : 'skip (permission?)'} · WebSockets ${okWs ? 'ON' : 'skip'}`)
+        }
+      } catch {
+        await appendLog(env, deployment_id, '⚠ zone settings step skipped (no zone access)')
+      }
 
       // ── Read workers.dev subdomain & build final URL ──────────────────
       await appendLog(env, deployment_id, 'reading workers.dev subdomain...')
@@ -422,6 +482,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
             compatibility_date: compatDate,
             compatibility_flags: ['nodejs_compat'],
             kv_namespaces: { [kvBindingName]: { namespace_id: kvNamespaceId } },
+            ...(r2BucketName ? { r2_buckets: { R2: { bucket_name: r2BucketName } } } : {}),
             environment_variables: configFormat === 'edgetunnel' ? {
               [uuidEnv]: { value: uuid, type: 'plain_text' },
               PATH: { value: panelPath, type: 'plain_text' },

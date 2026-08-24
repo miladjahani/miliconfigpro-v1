@@ -222,7 +222,7 @@ export default function DeployWizard() {
                 <span className="text-xs font-mono text-slate-500">۳</span>
               </div>
               <h3 className="text-sm font-bold text-white mb-1">ساخت توکن API</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">توکن با دسترسی Workers و KV بسازید.</p>
+              <p className="text-xs text-slate-400 leading-relaxed">توکن با دسترسی Workers، KV و R2 بسازید (دکمهٔ «ساخت خودکار توکن» در تب توکن‌ها همهٔ ۱۵ دسترسی لازم را از قبل پر می‌کند — شامل R2 و تنظیمات gRPC).</p>
               <span className="inline-flex items-center gap-1 text-xs text-brand-300 mt-3 group-hover:gap-2 transition-all">ساخت توکن <ExternalLink className="w-3 h-3" /></span>
             </a>
           </div>

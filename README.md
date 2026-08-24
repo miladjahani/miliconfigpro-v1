@@ -16,6 +16,10 @@
 
 [⭐ ستاره بدهید](https://github.com/miladjahani/miliconfigpro-v1/stargazers) · [🍴 فورک کنید](https://github.com/miladjahani/miliconfigpro-v1/fork) · [🐞 گزارش باگ](https://github.com/miladjahani/miliconfigpro-v1/issues/new) · [🚀 استقرار سریع](#-شروع-سریع)
 
+[![Deploy Pages](https://github.com/miladjahani/miliconfigpro-v1/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/miladjahani/miliconfigpro-v1/actions/workflows/deploy-pages.yml)
+[![R2 Ready](https://img.shields.io/badge/R2-Ready%20(free%20tier)-f38020?style=flat-square&labelColor=1a1a2e&logo=cloudflare)](https://developers.cloudflare.com/r2/)
+[![Smart Placement](https://img.shields.io/badge/Smart%20Placement-ON-8b5cf6?style=flat-square&labelColor=1a1a2e)](https://developers.cloudflare.com/workers/configuration/smart-placement/)
+
 </div>
 
 ---
@@ -52,6 +56,9 @@
 - 🤖 **ربات تلگرام** — هشدار مصرف و مدیریت از داخل تلگرام
 - 📊 **سهمیه‌بندی** — سقف گیگ ماهانه، سقف درخواست، حد دستگاه همزمان، انقضا و ریست دوره‌ای برای هر کاربر
 - 💡 **راهنمای زنده** — اولین کلیک روی هر دکمه، خودش را توضیح می‌دهد
+- 📦 **R2 رایگان خودکار** — با هر استقرار، باکت R2 ساخته و متصل می‌شود (۱۰ گیگ رایگان + egress صفر)
+- ⚙️ **gRPC/XHTTP بدون دردسر** — موقع استقرار، gRPC و WebSockets روی همهٔ زون‌ها خودکار روشن می‌شوند
+- ⚡ **سرعت** — فایل‌های استاتیک مستقیم از CDN لبه (بدون اجرای ورکر)، Smart Placement کنار D1، کش immutable یک‌ساله
 
 ---
 
@@ -120,6 +127,9 @@ npm run deploy     # بیلد فرانت + اسکیمای D1 (idempotent) + wran
 <tr><td><b>📱 تحویل</b></td><td>صفحهٔ وضعیت عمومی هر کاربر با QR کد، دکمه‌های افزودن مستقیم به ۶ کلاینت، تشخیص خودکار فرمت از User-Agent، هدر Subscription-Userinfo</td></tr>
 <tr><td><b>🤖 ربات</b></td><td>وب‌هوک تلگرام، هشدار مصرف، مدیریت کاربران از تلگرام</td></tr>
 <tr><td><b>💡 راهنما</b></td><td>Coach-mark زندهٔ اولین کلیک روی همهٔ دکمه‌های پنل + راهنمای متنی کامل مسیر کاربری</td></tr>
+<tr><td><b>📦 R2</b></td><td>باکت R2 رایگان با هر استقرار خودکار ساخته و به ورکر متصل می‌شود — داده‌های سنگین از D1 خارج می‌شوند</td></tr>
+<tr><td><b>⚙️ gRPC/XHTTP</b></td><td>روشن‌کردن خودکار gRPC + WebSockets روی زون‌ها موقع استقرار — نودها بدون تداخل با کلودفلر کار می‌کنند</td></tr>
+<tr><td><b>⚡ سرعت</b></td><td>استاتیک‌ها از CDN لبه بدون اجرای ورکر + Smart Placement کنار D1 + کش immutable یک‌ساله</td></tr>
 </table>
 
 ---
