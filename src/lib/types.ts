@@ -128,3 +128,28 @@ export interface InjectedSub {
   sub_token: string
   created_at: string
 }
+
+export interface MemberSettings {
+  countries: string[]
+  custom_ips: string[]
+  transport: '' | 'ws' | 'grpc' | 'httpupgrade'
+  fragment: boolean
+  fragment_config: { packets?: string; length?: string; interval?: string }
+  bypass_sanctions: boolean
+}
+
+export interface WorkerMember {
+  id: string
+  deployment_id: string
+  name: string
+  token: string
+  enabled: boolean
+  expires_at: string | null
+  quota_bytes: number | null
+  used_bytes: number
+  used_gb: number
+  quota_gb: number | null
+  usage_updated_at: string | null
+  settings: MemberSettings
+  created_at: string
+}

@@ -9,6 +9,7 @@ import BotUsers from './pages/BotUsers'
 import BotConfig from './pages/BotConfig'
 import ActivityLogs from './pages/ActivityLogs'
 import Optimizer from './pages/Optimizer'
+import Members from './pages/Members'
 import Admin from './pages/Admin'
 import Layout from './components/Layout'
 
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="bot-config" element={<BotConfig />} />
         <Route path="logs" element={<ActivityLogs />} />
         <Route path="optimizer" element={<Optimizer />} />
+        <Route path="members" element={<Members />} />
         <Route path="admin" element={<Admin />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

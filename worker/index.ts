@@ -9,6 +9,7 @@ import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
 import { handleGroupCreate, handleGroupList, handleGroupDelete, handleGroupPatch, serveGroupSub } from './subgroups'
 import { handleInjectorCreate, handleInjectorList, handleInjectorPatch, handleInjectorDelete, serveInjectedSub } from './injector'
+import { handleMemberCreate, handleMemberList, handleMemberPatch, handleMemberDelete, refreshMemberUsage, serveMemberSub } from './members'
 
 interface DeploymentBody {
   name?: string
@@ -311,6 +312,7 @@ async function handleRouted(
     if (path.startsWith('/api/sub/opt/')) return await serveOptimizerSub(env, token)
     if (path.startsWith('/api/sub/group/')) return await serveGroupSub(env, token, target)
     if (path.startsWith('/api/sub/inject/')) return await serveInjectedSub(env, token, target)
+    if (path.startsWith('/api/sub/member/')) return await serveMemberSub(env, token, target)
   }
 
   // Everything below requires a session
@@ -371,6 +373,13 @@ async function handleRouted(
     if (path === '/api/injector' && method === 'POST') return await handleInjectorCreate(env, user.id, request)
     if (path.match(/^\/api\/injector\/[^/]+$/) && method === 'PATCH') return await handleInjectorPatch(env, user.id, path.split('/')[3], request)
     if (path.match(/^\/api\/injector\/[^/]+$/) && method === 'DELETE') return await handleInjectorDelete(env, user.id, path.split('/')[3])
+
+    // ── Per-worker members (end users with private settings) ──────────
+    if (path === '/api/members' && method === 'GET') return await handleMemberList(env, user.id, url.searchParams.get('deployment_id'))
+    if (path === '/api/members' && method === 'POST') return await handleMemberCreate(env, user.id, request)
+    if (path.match(/^\/api\/members\/[^/]+\/usage$/) && method === 'POST') return await refreshMemberUsage(env, user.id, path.split('/')[3])
+    if (path.match(/^\/api\/members\/[^/]+$/) && method === 'PATCH') return await handleMemberPatch(env, user.id, path.split('/')[3], request)
+    if (path.match(/^\/api\/members\/[^/]+$/) && method === 'DELETE') return await handleMemberDelete(env, user.id, path.split('/')[3])
 
     // ── Admin: user & quota management ─────────────────────────────────
     if (path.startsWith('/api/admin')) {

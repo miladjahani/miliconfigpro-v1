@@ -150,3 +150,21 @@ CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at
 CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_user ON optimizer_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_sub_groups_user ON sub_groups(user_id);
 CREATE INDEX IF NOT EXISTS idx_injector_jobs_user ON injector_jobs(user_id);
+
+CREATE TABLE IF NOT EXISTS worker_members (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  deployment_id TEXT NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  expires_at TEXT,
+  quota_bytes INTEGER,
+  used_bytes INTEGER NOT NULL DEFAULT 0,
+  usage_updated_at TEXT,
+  settings TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_worker_members_owner ON worker_members(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_worker_members_dep ON worker_members(deployment_id);
