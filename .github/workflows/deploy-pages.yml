@@ -39,8 +39,12 @@ jobs:
       - name: Typecheck
         run: bun x tsc -b --noEmit
 
-      - name: Build (Pages base path)
+      - name: Build (Pages base path + real panel API)
         run: bun x vite build --base=/miliconfigpro-v1/
+        env:
+          # Demo on Pages talks to the real Cloudflare worker backend.
+          # Override anytime with a repository variable named PAGES_API_BASE.
+          VITE_API_BASE: ${{ vars.PAGES_API_BASE || 'https://miliconfigpro-v1.ms1rbxcr2ag5.workers.dev/api' }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
