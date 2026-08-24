@@ -15,6 +15,7 @@ import {
   Bot,
   Zap,
 } from 'lucide-react'
+import { Gauge } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 interface Stats {
@@ -38,6 +39,7 @@ export default function Dashboard() {
   const { user } = useAuth()
   const [stats, setStats] = useState<Stats | null>(null)
   const [logs, setLogs] = useState<RecentLog[]>([])
+  const [quota, setQuota] = useState<{ used_today: number; limit: number } | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -56,11 +58,11 @@ export default function Dashboard() {
           recentLogs: 0,
         })
         setLogs(s.recentLogs ?? [])
-      } catch {
-        if (!cancelled) {
-          setStats({ tokens: 0, deployments: 0, deployed: 0, failed: 0, botUsers: 0, activeBotUsers: 0, recentLogs: 0 })
-        }
-      }
+      } catch { /* stats unavailable */ }
+      try {
+        const q = await api<{ data: { used_today: number; limit: number } }>('/cf-quota')
+        if (!cancelled) setQuota(q.data ?? null)
+      } catch { /* cf-quota unavailable */ }
       if (!cancelled) setLoading(false)
     }
     load()
@@ -106,6 +108,25 @@ export default function Dashboard() {
         </Link>
       </div>
 
+
+      {/* Cloudflare daily-request quota monitor */}
+      {quota && (
+        <div className="glass-card p-5">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-brand-400" /> سهمیه درخواست کلودفلر (امروز)
+            </h2>
+            <span className={`text-xs font-mono ${quota.used_today / quota.limit > 0.8 ? 'text-error-400' : 'text-slate-400'}`} dir="ltr">
+              {quota.used_today.toLocaleString()} / {quota.limit.toLocaleString()}
+            </span>
+          </div>
+          <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+            <div className={`h-full rounded-full ${quota.used_today / quota.limit > 0.8 ? 'bg-error-500' : 'bg-brand-500'}`}
+              style={{ width: `${Math.min(100, (quota.used_today / quota.limit) * 100)}%` }} />
+          </div>
+          <p className="text-xs text-slate-500 mt-2">مجموع درخواست‌های همه ورکرهای اکانت شما امروز — نزدیک شدن به سقف رایگان ۱۰۰ هزار را پیش‌بینی کنید.</p>
+        </div>
+      )}
       {/* Stat cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {statCards.map((card, i) => {

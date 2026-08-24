@@ -96,6 +96,8 @@ interface MemberBody extends Partial<MemberSettings> {
   quota_gb?: number | null
   request_quota?: number | null
   ip_limit?: number | null
+  start_on_connect?: boolean
+  reset_period_days?: number | null
 }
 
 export async function handleMemberCreate(env: Env, userId: string, request: Request): Promise<Response> {
@@ -112,12 +114,14 @@ export async function handleMemberCreate(env: Env, userId: string, request: Requ
   const quotaBytes = body.quota_gb == null || body.quota_gb <= 0 ? null : Math.round(body.quota_gb * 1024 ** 3)
   const reqQuota = body.request_quota == null || body.request_quota <= 0 ? null : Math.round(body.request_quota)
   const ipLimit = body.ip_limit == null || body.ip_limit <= 0 ? null : Math.round(body.ip_limit)
+  const resetDays = body.reset_period_days == null || body.reset_period_days <= 0 ? null : Math.round(body.reset_period_days)
   await env.DB.prepare(
-    `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, request_quota, ip_limit, used_bytes, used_requests, recent_ips, settings, created_at)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, 0, '[]', ?, ?)`,
+    `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, request_quota, ip_limit, used_bytes, used_requests, recent_ips, start_on_connect, reset_period_days, settings, created_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, 0, '[]', ?, ?, ?, ?)`,
   ).bind(
     id, userId, dep.id, body.name?.trim() || `کاربر ${dep.name}`,
-    token, body.expires_at ?? null, quotaBytes, reqQuota, ipLimit, JSON.stringify(settings), nowIso(),
+    token, body.expires_at ?? null, quotaBytes, reqQuota, ipLimit,
+    body.start_on_connect ? 1 : 0, resetDays, JSON.stringify(settings), nowIso(),
   ).run()
   return json({ data: { id, token } }, 201)
 }
@@ -141,6 +145,10 @@ function serializeMember(row: Record<string, unknown>) {
     request_quota: row.request_quota ?? null,
     ip_limit: row.ip_limit ?? null,
     active_devices: safeJsonParse<{ ip: string }[]>(row.recent_ips as string ?? '[]', []).length,
+    start_on_connect: !!row.start_on_connect,
+    activated_at: row.activated_at ?? null,
+    reset_period_days: row.reset_period_days ?? null,
+    last_reset_at: row.last_reset_at ?? null,
   }
 }
 
@@ -174,11 +182,48 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
   const ipLimit = body.ip_limit !== undefined
     ? (body.ip_limit == null || body.ip_limit <= 0 ? null : Math.round(body.ip_limit))
     : (existing.ip_limit as number | null)
+  const resetDays = body.reset_period_days !== undefined
+    ? (body.reset_period_days == null || body.reset_period_days <= 0 ? null : Math.round(body.reset_period_days))
+    : (existing.reset_period_days as number | null)
+  const startOnConnect = body.start_on_connect !== undefined ? (body.start_on_connect ? 1 : 0) : (existing.start_on_connect as number)
 
   await env.DB.prepare(
-    'UPDATE worker_members SET settings = ?, enabled = ?, expires_at = ?, quota_bytes = ?, request_quota = ?, ip_limit = ? WHERE id = ?',
-  ).bind(JSON.stringify(settings), enabled, expiresAt, quotaBytes, reqQuota, ipLimit, id).run()
+    'UPDATE worker_members SET settings = ?, enabled = ?, expires_at = ?, quota_bytes = ?, request_quota = ?, ip_limit = ?, reset_period_days = ?, start_on_connect = ? WHERE id = ?',
+  ).bind(JSON.stringify(settings), enabled, expiresAt, quotaBytes, reqQuota, ipLimit, resetDays, startOnConnect, id).run()
   return json({ data: { id } })
+}
+
+/** POST /api/members/bulk — batch actions on the owner's members. */
+export async function handleMemberBulk(env: Env, userId: string, request: Request): Promise<Response> {
+  const body = safeJsonParse<{ ids?: string[]; action?: string }>(await request.text().catch(() => ''), {})
+  const ids = (body.ids ?? []).filter((i) => typeof i === 'string').slice(0, 200)
+  if (!ids.length) return apiError('حداقل یک عضو انتخاب کنید')
+  const ph = ids.map(() => '?').join(',')
+
+  switch (body.action) {
+    case 'enable':
+      await env.DB.prepare(`UPDATE worker_members SET enabled = 1 WHERE owner_user_id = ? AND id IN (${ph})`).bind(userId, ...ids).run()
+      break
+    case 'disable':
+      await env.DB.prepare(`UPDATE worker_members SET enabled = 0 WHERE owner_user_id = ? AND id IN (${ph})`).bind(userId, ...ids).run()
+      break
+    case 'delete':
+      await env.DB.prepare(`DELETE FROM worker_members WHERE owner_user_id = ? AND id IN (${ph})`).bind(userId, ...ids).run()
+      break
+    case 'reset_quota':
+      await env.DB.prepare(
+        `UPDATE worker_members SET used_bytes = 0, used_requests = 0, recent_ips = '[]', last_reset_at = ? WHERE owner_user_id = ? AND id IN (${ph})`,
+      ).bind(nowIso(), userId, ...ids).run()
+      break
+    case 'reset_time':
+      await env.DB.prepare(
+        `UPDATE worker_members SET activated_at = NULL WHERE owner_user_id = ? AND id IN (${ph})`,
+      ).bind(userId, ...ids).run()
+      break
+    default:
+      return apiError('action نامعتبر است')
+  }
+  return json({ success: true, affected: ids.length, action: body.action })
 }
 
 export async function handleMemberDelete(env: Env, userId: string, id: string): Promise<Response> {
@@ -236,6 +281,41 @@ export async function refreshMemberUsage(env: Env, userId: string, id: string): 
   return json({ data: { used_bytes: bytes, used_requests: requests, used_gb: Number((bytes / 1024 ** 3).toFixed(3)) } })
 }
 
+// ── Cloudflare 100k daily-request monitor ──────────────────────────────────
+
+const TODAY_QUERY = `query ($account: String!, $day: Date!) {
+  viewer { accounts(filter: { accountTag: $account }) {
+    httpRequests1dGroups(limit: 1, filter: { date_geq: $day, date_leq: $day }) {
+      sum { requests }
+    }
+  } }
+}`
+
+/** GET /api/cf-quota — total requests across all workers today vs the 100k free limit. */
+export async function handleCfQuota(env: Env, userId: string): Promise<Response> {
+  const tok = await env.DB.prepare(
+    `SELECT token FROM cf_tokens WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1`,
+  ).bind(userId).first<{ token: string }>()
+  const dep = await env.DB.prepare(
+    'SELECT cf_account_id FROM deployments WHERE user_id = ? AND cf_account_id IS NOT NULL ORDER BY updated_at DESC LIMIT 1',
+  ).bind(userId).first<{ cf_account_id: string | null }>()
+  if (!tok?.token || !dep?.cf_account_id) return apiError('توکن فعال یا اکانت متصل یافت نشد', 400)
+
+  const day = new Date().toISOString().slice(0, 10)
+  const resp = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${tok.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: TODAY_QUERY, variables: { account: dep.cf_account_id, day } }),
+  })
+  const body = safeJsonParse<{ data?: { viewer?: { accounts?: { httpRequests1dGroups?: { sum?: { requests?: number } }[] }[] } }; errors?: { message: string }[] }>(await resp.text().catch(() => ''), {})
+  if (!resp.ok || body.errors?.length) {
+    return apiError(`خواندن آمار کلودفلر ناموفق بود: ${body.errors?.[0]?.message ?? resp.status}`)
+  }
+  const usedToday = body.data?.viewer?.accounts?.[0]?.httpRequests1dGroups?.[0]?.sum?.requests ?? 0
+  return json({ data: { used_today: usedToday, limit: 100_000, day } })
+}
+
+
 // ── Personalized sub serving ────────────────────────────────────────────────
 
 /** Rewrite or insert a single URI query param in a node link (before the #-name). */
@@ -273,8 +353,39 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     .first<Record<string, unknown>>()
   if (!member) return new Response('یافت نشد', { status: 404 })
   if (!member.enabled) return new Response('این اشتراک غیرفعال شده است. با مدیر خود تماس بگیرید.', { status: 403 })
-  if (member.expires_at && String(member.expires_at) < nowIso()) {
+
+  // ── Start-on-first-connect: activate on first successful fetch ────────
+  let activatedAt = member.activated_at as string | null
+  const startOnConnect = !!member.start_on_connect
+  if (startOnConnect && !activatedAt) {
+    activatedAt = nowIso()
+    await env.DB.prepare('UPDATE worker_members SET activated_at = ? WHERE id = ?').bind(activatedAt, member.id as string).run()
+  }
+
+  // ── Expiry — counted from first connection when start-on-connect is on
+  let effectiveExpiry = member.expires_at as string | null
+  if (effectiveExpiry && startOnConnect && activatedAt) {
+    const span = new Date(effectiveExpiry).getTime() - new Date(member.created_at as string).getTime()
+    if (span > 0) {
+      effectiveExpiry = new Date(new Date(activatedAt).getTime() + span).toISOString()
+    }
+  }
+  if (effectiveExpiry && effectiveExpiry < nowIso()) {
     return new Response('این اشتراک منقضی شده است. با مدیر خود تماس بگیرید.', { status: 403 })
+  }
+
+  // ── Scheduled automatic quota/volume reset ───────────────────────────
+  const resetDays = member.reset_period_days as number | null
+  if (resetDays && resetDays > 0) {
+    const anchor = new Date((member.last_reset_at as string | null) ?? (member.created_at as string)).getTime()
+    if (Date.now() - anchor >= resetDays * 86_400_000) {
+      await env.DB.prepare(
+        'UPDATE worker_members SET used_bytes = 0, used_requests = 0, recent_ips = \'[]\', last_reset_at = ? WHERE id = ?',
+      ).bind(nowIso(), member.id as string).run()
+      member.used_bytes = 0
+      member.used_requests = 0
+      member.recent_ips = '[]'
+    }
   }
   const quota = member.quota_bytes as number | null
   if (quota && (member.used_bytes as number) >= quota) {

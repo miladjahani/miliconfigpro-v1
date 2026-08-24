@@ -157,6 +157,10 @@ export interface WorkerMember {
   request_quota: number | null
   ip_limit: number | null
   active_devices: number
+  start_on_connect?: boolean
+  activated_at?: string | null
+  reset_period_days?: number | null
+  last_reset_at?: string | null
   usage_updated_at: string | null
   settings: MemberSettings
   created_at: string

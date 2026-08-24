@@ -70,6 +70,9 @@ export default function Members() {
   const [sniMask, setSniMask] = useState('')
   const [hostMask, setHostMask] = useState('')
   const [ipLimit, setIpLimit] = useState('')
+  const [startOnConnect, setStartOnConnect] = useState(false)
+  const [resetDays, setResetDays] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bypass, setBypass] = useState(false)
   const [quotaGb, setQuotaGb] = useState('')
   const [reqQuota, setReqQuota] = useState('')
@@ -115,10 +118,12 @@ export default function Members() {
           quota_gb: quotaGb ? Number(quotaGb) : null,
           request_quota: reqQuota ? Number(reqQuota) : null,
           ip_limit: ipLimit ? Number(ipLimit) : null,
+          start_on_connect: startOnConnect,
+          reset_period_days: resetDays ? Number(resetDays) : null,
           expires_at: expires ? new Date(expires).toISOString() : null,
         },
       })
-      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setIpLimit(''); setExpires(''); setFm(''); setCs(''); setFingerprint(''); setSniMask(''); setHostMask('')
+      setName(''); setCountries([]); setCustomIps(''); setQuotaGb(''); setReqQuota(''); setIpLimit(''); setExpires(''); setStartOnConnect(false); setResetDays(''); setSelected(new Set()); setFm(''); setCs(''); setFingerprint(''); setSniMask(''); setHostMask('')
       await load()
     } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
     setBusy(false)
@@ -128,6 +133,19 @@ export default function Members() {
     await api(`/members/${id}`, { method: 'PATCH', body }).catch(() => null)
     await load()
   }
+
+  const bulk = async (action: string) => {
+    if (!selected.size) return
+    setBusy(true); setError(null)
+    try {
+      await api('/members/bulk', { method: 'POST', body: { ids: [...selected], action } })
+      await load()
+      if (action === 'delete') setSelected(new Set())
+    } catch (e) { setError(e instanceof Error ? e.message : 'خطا') }
+    setBusy(false)
+  }
+
+  const toggleSel = (id: string) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n })
 
   const refreshUsage = async (id: string) => {
     setBusy(true); setError(null)
@@ -174,6 +192,10 @@ export default function Members() {
               <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={quotaGb} onChange={setQuotaGb} placeholder="50" />
               <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={reqQuota} onChange={setReqQuota} placeholder="100000" />
               <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={ipLimit} onChange={setIpLimit} placeholder="2" />
+              <div className="flex items-end">
+                <Toggle checked={startOnConnect} onChange={() => setStartOnConnect(!startOnConnect)} label="شمارش از اولین اتصال" />
+              </div>
+              <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={resetDays} onChange={setResetDays} placeholder="30" />
               <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={expires} onChange={setExpires} type="date" />
               <label className="block">
                 <span className="text-xs text-slate-400 mb-1 block">ترنسپورت</span>
@@ -238,13 +260,30 @@ export default function Members() {
 
       {members.length > 0 && (
         <div className="space-y-3">
+          <div className="glass-card p-4 flex items-center gap-2 flex-wrap">
+            <button onClick={() => setSelected(selected.size === members.length ? new Set() : new Set(members.map((m) => m.id)))}
+              className="btn-secondary text-xs px-3 py-1.5">
+              {selected.size === members.length ? 'لغو انتخاب' : 'انتخاب همه'}
+            </button>
+            {selected.size > 0 && <>
+              <span className="text-xs text-slate-400">{selected.size} انتخاب‌شده</span>
+              <button onClick={() => bulk('enable')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">فعال‌سازی</button>
+              <button onClick={() => bulk('disable')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">غیرفعال</button>
+              <button onClick={() => bulk('reset_quota')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">ریست سهمیه</button>
+              <button onClick={() => bulk('reset_time')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">ریست زمان</button>
+              <button onClick={() => bulk('delete')} disabled={busy}
+                className="text-xs px-3 py-1.5 rounded-lg bg-error-500/15 border border-error-500/30 text-error-400 hover:bg-error-500/25">حذف</button>
+            </>}
+          </div>
           {members.map((m) => {
             const pct = m.quota_gb ? Math.min(100, (m.used_gb / m.quota_gb) * 100) : 0
             const expired = m.expires_at && m.expires_at < new Date().toISOString()
             return (
               <div key={m.id} className={`glass-card p-5 ${!m.enabled || expired ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleSel(m.id)}
+                      className="w-4 h-4 accent-brand-500" />
                     <p className="text-white font-medium">{m.name}</p>
                     <p className="text-xs text-slate-500 mt-0.5">
                       {m.settings.countries.map((c) => COUNTRIES.find((x) => x.code === c)?.label ?? c).join('، ') || 'IP پیش‌فرض'}

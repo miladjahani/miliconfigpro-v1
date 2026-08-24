@@ -129,6 +129,10 @@ const SCHEMA_STATEMENTS = [
     used_bytes INTEGER NOT NULL DEFAULT 0,
     used_requests INTEGER NOT NULL DEFAULT 0,
     recent_ips TEXT NOT NULL DEFAULT '[]',
+    start_on_connect INTEGER NOT NULL DEFAULT 0,
+    activated_at TEXT,
+    reset_period_days INTEGER,
+    last_reset_at TEXT,
     usage_updated_at TEXT,
     settings TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -161,6 +165,10 @@ const MIGRATIONS = [
   `ALTER TABLE worker_members ADD COLUMN used_requests INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE worker_members ADD COLUMN ip_limit INTEGER`,
   `ALTER TABLE worker_members ADD COLUMN recent_ips TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE worker_members ADD COLUMN start_on_connect INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE worker_members ADD COLUMN activated_at TEXT`,
+  `ALTER TABLE worker_members ADD COLUMN reset_period_days INTEGER`,
+  `ALTER TABLE worker_members ADD COLUMN last_reset_at TEXT`,
 ]
 
 let ready: Promise<void> | null = null

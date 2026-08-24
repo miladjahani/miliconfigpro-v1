@@ -166,6 +166,10 @@ CREATE TABLE IF NOT EXISTS worker_members (
   used_bytes INTEGER NOT NULL DEFAULT 0,
   used_requests INTEGER NOT NULL DEFAULT 0,
   recent_ips TEXT NOT NULL DEFAULT '[]',
+  start_on_connect INTEGER NOT NULL DEFAULT 0,
+  activated_at TEXT,
+  reset_period_days INTEGER,
+  last_reset_at TEXT,
   usage_updated_at TEXT,
   settings TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
