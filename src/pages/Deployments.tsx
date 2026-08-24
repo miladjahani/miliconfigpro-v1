@@ -1200,7 +1200,7 @@ function ScannerTab() {
             { k: 'list', label: 'لیست‌های منتخب', icon: <Wifi className="w-4 h-4" /> },
             { k: 'ranges', label: 'اسکن واقعی بازه IP', icon: <ScanLine className="w-4 h-4" /> },
           ].map((t) => (
-            <button key={t.k} onClick={() => setScanMode(t.k as typeof scanMode)}
+            <button key={t.k} data-guide="d-scan-mode" onClick={() => setScanMode(t.k as typeof scanMode)}
               className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 border ${scanMode === t.k ? 'bg-brand-500/20 text-brand-300 border-brand-500/30' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
               {t.icon}{t.label}
             </button>
@@ -1229,7 +1229,7 @@ function ScannerTab() {
             { k: 'cloudflare', label: 'پشت Cloudflare (CDN)', icon: <Cloud className="w-4 h-4" /> },
             { k: 'clean', label: 'کلین (Clean IP)', icon: <Wifi className="w-4 h-4" /> },
           ].map((t) => (
-            <button key={t.k} onClick={() => setScanType(t.k as typeof scanType)}
+            <button key={t.k} data-guide="d-scan-type" onClick={() => setScanType(t.k as typeof scanType)}
               className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 border ${scanType === t.k ? 'bg-brand-500/20 text-brand-300 border-brand-500/30' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
               {t.icon}{t.label}
             </button>
@@ -1259,7 +1259,7 @@ function ScannerTab() {
           )}
         </div>
 
-        <button onClick={runScan} disabled={scanning} className="btn-primary flex items-center gap-2">
+        <button onClick={runScan} disabled={scanning} data-guide="d-scan-run" className="btn-primary flex items-center gap-2">
           {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanLine className="w-4 h-4" />}
           {scanning ? 'در حال دریافت IPها...' : 'شروع اسکن'}
         </button>
@@ -1287,7 +1287,7 @@ function ScannerTab() {
                 <option value="">انتخاب ورکر هدف...</option>
                 {deployments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
-              <button onClick={applyToWorker} disabled={!targetDep || selectedIPs.size === 0 || applying}
+              <button onClick={applyToWorker} disabled={!targetDep || selectedIPs.size === 0 || applying} data-guide="d-apply-worker"
                 className="btn-primary flex items-center gap-2 text-sm">
                 {applying ? <Loader2 className="w-4 h-4 animate-spin" /> : applied ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
                 {applied ? 'اعمال شد ✓' : `اعمال روی ورکر${selectedIPs.size > 0 ? ` (${selectedIPs.size})` : ''}`}
@@ -1298,7 +1298,7 @@ function ScannerTab() {
                     <option value="">تزریق به ساب سفارشی...</option>
                     {injections.map((inj) => <option key={inj.id} value={inj.id}>{inj.name}</option>)}
                   </select>
-                  <button onClick={injectToSub} disabled={!targetInj || selectedIPs.size === 0 || injecting}
+                  <button onClick={injectToSub} disabled={!targetInj || selectedIPs.size === 0 || injecting} data-guide="d-inject-sub"
                     className="btn-primary flex items-center gap-2 text-sm">
                     {injecting ? <Loader2 className="w-4 h-4 animate-spin" /> : injected ? <CheckCircle2 className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
                     {injected ? 'تزریق شد ✓' : `تزریق به ساب${selectedIPs.size > 0 ? ` (${selectedIPs.size})` : ''}`}

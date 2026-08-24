@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X } from 'lucide-react'
 import { api } from '../lib/api'
-import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS, KNOWN_SNIS } from '../../worker/presets'
+import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
 
 const COUNTRIES = [
@@ -47,6 +47,14 @@ interface FormState {
   sniCustom: string
   hostMask: string
   sanctionsMode: string
+  // EDT advanced
+  proxyip: string
+  chainProto: string
+  chainCred: string
+  ech: boolean
+  ed0rtt: boolean
+  randomPath: boolean
+  fragmentClient: string
 }
 
 const EMPTY_FORM: FormState = {
@@ -54,10 +62,12 @@ const EMPTY_FORM: FormState = {
   resetDays: '', rotateMin: '', expires: '', transport: '', countries: [],
   customIps: '', fragment: false, preset: '', fm: '', cs: '',
   fingerprint: '', sniChoice: '', sniCustom: '', hostMask: '', sanctionsMode: '',
+  proxyip: '', chainProto: '', chainCred: '', ech: false, ed0rtt: false, randomPath: false, fragmentClient: '',
 }
 
 function formToBody(f: FormState) {
   const sni = f.sniChoice === '' ? f.sniCustom.trim() : f.sniChoice === 'none' ? '' : f.sniChoice
+  const chainProxy = f.chainProto && f.chainCred.trim() ? `${f.chainProto}://${f.chainCred.trim()}` : ''
   return {
     countries: f.countries,
     custom_ips: f.customIps.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
@@ -72,6 +82,12 @@ function formToBody(f: FormState) {
     custom_sni: sni,
     custom_host: f.hostMask.trim(),
     sanctions_mode: f.sanctionsMode,
+    proxyip: f.proxyip.trim(),
+    chain_proxy: chainProxy,
+    ech: f.ech,
+    ed_0rtt: f.ed0rtt,
+    random_path: f.randomPath,
+    fragment_client: f.fragmentClient,
     ip_rotation_minutes: f.rotateMin ? Number(f.rotateMin) : 0,
     quota_gb: f.quotaGb ? Number(f.quotaGb) : null,
     request_quota: f.reqQuota ? Number(f.reqQuota) : null,
@@ -102,14 +118,19 @@ function memberToForm(m: WorkerMember): FormState {
     sniCustom: KNOWN_SNIS.includes(sni) ? '' : sni,
     hostMask: s.custom_host ?? '',
     sanctionsMode: s.sanctions_mode ?? (s.bypass_sanctions ? 'sni' : ''),
+    proxyip: s.proxyip ?? '',
+    chainProto: (s.chain_proxy ?? '').match(/^(socks5|http|https|turn|sstp):\/\//i)?.[1]?.toLowerCase() ?? '',
+    chainCred: (s.chain_proxy ?? '').replace(/^[a-z0-9]+:\/\//i, ''),
+    ech: !!s.ech, ed0rtt: !!s.ed_0rtt, randomPath: !!s.random_path,
+    fragmentClient: s.fragment_client ?? '',
   }
 }
 
-function Field({ label, value, onChange, placeholder, type = 'text', textarea, rows = 2 }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; textarea?: boolean; rows?: number
+function Field({ label, value, onChange, placeholder, type = 'text', textarea, rows = 2, guide }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; textarea?: boolean; rows?: number; guide?: string
 }) {
   return (
-    <label className="block">
+    <label className="block" data-guide={guide}>
       <span className="text-xs text-slate-400 mb-1 block">{label}</span>
       {textarea ? (
         <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
@@ -122,12 +143,12 @@ function Field({ label, value, onChange, placeholder, type = 'text', textarea, r
   )
 }
 
-function Select({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void
+function Select({ label, value, onChange, options, guide }: {
+  label: string; value: string; onChange: (v: string) => void; guide?: string
   options: { v: string; label: string }[]
 }) {
   return (
-    <label className="block">
+    <label className="block" data-guide={guide}>
       <span className="text-xs text-slate-400 mb-1 block">{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
         {options.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
@@ -136,9 +157,9 @@ function Select({ label, value, onChange, options }: {
   )
 }
 
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
+function Toggle({ checked, onChange, label, guide }: { checked: boolean; onChange: () => void; label: string; guide?: string }) {
   return (
-    <button onClick={onChange} className="flex items-center gap-2 text-sm text-slate-300">
+    <button onClick={onChange} data-guide={guide} className="flex items-center gap-2 text-sm text-slate-300">
       <span className={`w-9 h-5 rounded-full transition-colors relative ${checked ? 'bg-brand-500' : 'bg-slate-700'}`}>
         <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${checked ? 'right-0.5' : 'right-4.5'}`}
           style={{ right: checked ? '2px' : '18px' }} />
@@ -255,19 +276,19 @@ export default function Members() {
 
       <div className="glass-card p-6 space-y-4">
         <div className="flex items-center gap-2 flex-wrap">
-          <select value={depId} onChange={(e) => setDepId(e.target.value)} className="input-field text-sm py-2 min-w-[220px]">
+          <select value={depId} onChange={(e) => setDepId(e.target.value)} data-guide="m-worker-select" className="input-field text-sm py-2 min-w-[220px]">
             <option value="">انتخاب ورکر...</option>
             {deployments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
           {depId && (
-            <button onClick={quickCreate} disabled={busy} title="ساخت کاربر با تنظیمات پیش‌فرض، بدون فرم"
+            <button onClick={quickCreate} disabled={busy} data-guide="m-quick-create" title="ساخت کاربر با تنظیمات پیش‌فرض، بدون فرم"
               className="btn-secondary text-sm px-3 py-2 flex items-center gap-1.5">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-amber-400" />}
               ساخت سریع کاربر
             </button>
           )}
           {depId && !formOpen && (
-            <button onClick={() => { setEditingId(null); setForm(EMPTY_FORM); setFormOpen(true) }}
+            <button onClick={() => { setEditingId(null); setForm(EMPTY_FORM); setFormOpen(true) }} data-guide="m-advanced-create"
               className="btn-primary text-sm px-3 py-2 flex items-center gap-1.5">
               <Plus className="w-4 h-4" /> کاربر پیشرفته
             </button>
@@ -284,20 +305,20 @@ export default function Members() {
                 className="p-1.5 rounded-lg text-slate-500 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="نام (مثلاً علی یا US-User)" value={form.name} onChange={(v) => set('name', v)} placeholder="علی" />
-              <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={form.quotaGb} onChange={(v) => set('quotaGb', v)} placeholder="50" />
-              <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={form.reqQuota} onChange={(v) => set('reqQuota', v)} placeholder="100000" />
-              <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={form.ipLimit} onChange={(v) => set('ipLimit', v)} placeholder="2" />
+              <Field label="نام (مثلاً علی یا US-User)" value={form.name} onChange={(v) => set('name', v)} placeholder="علی" guide="m-name" />
+              <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={form.quotaGb} onChange={(v) => set('quotaGb', v)} placeholder="50" guide="m-quota" />
+              <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={form.reqQuota} onChange={(v) => set('reqQuota', v)} placeholder="100000" guide="m-req-quota" />
+              <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={form.ipLimit} onChange={(v) => set('ipLimit', v)} placeholder="2" guide="m-ip-limit" />
               <div className="flex items-end">
-                <Toggle checked={form.startOnConnect} onChange={() => set('startOnConnect', !form.startOnConnect)} label="شمارش از اولین اتصال" />
+                <Toggle checked={form.startOnConnect} onChange={() => set('startOnConnect', !form.startOnConnect)} label="شمارش از اولین اتصال" guide="m-start-on-connect" />
               </div>
-              <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={form.resetDays} onChange={(v) => set('resetDays', v)} placeholder="30" />
-              <Field label="چرخش خودکار IP هر N دقیقه (خالی = خاموش)" value={form.rotateMin} onChange={(v) => set('rotateMin', v)} placeholder="30" />
-              <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={form.expires} onChange={(v) => set('expires', v)} type="date" />
-              <Select label="ترنسپورت" value={form.transport} onChange={(v) => set('transport', v)} options={TRANSPORTS} />
-              <Select label="دور زدن تحریم (جمنی/OpenAI)" value={form.sanctionsMode} onChange={(v) => set('sanctionsMode', v)} options={SANCTIONS_MODES} />
+              <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={form.resetDays} onChange={(v) => set('resetDays', v)} placeholder="30" guide="m-reset-days" />
+              <Field label="چرخش خودکار IP هر N دقیقه (خالی = خاموش)" value={form.rotateMin} onChange={(v) => set('rotateMin', v)} placeholder="30" guide="m-rotate-min" />
+              <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={form.expires} onChange={(v) => set('expires', v)} type="date" guide="m-expires" />
+              <Select label="ترنسپورت" value={form.transport} onChange={(v) => set('transport', v)} options={TRANSPORTS} guide="m-transport" />
+              <Select label="دور زدن تحریم (جمنی/OpenAI)" value={form.sanctionsMode} onChange={(v) => set('sanctionsMode', v)} options={SANCTIONS_MODES} guide="m-sanctions" />
             </div>
-            <div>
+            <div data-guide="m-countries">
               <span className="text-xs text-slate-400 mb-1 block">کشور IP — IP واقعی و تست‌شده، زنده از مخزن EDT بارگیری می‌شود</span>
               <div className="flex items-center gap-2 flex-wrap">
                 {COUNTRIES.map((c) => (
@@ -309,13 +330,13 @@ export default function Members() {
                 ))}
               </div>
             </div>
-            <Field label="IPهای سفارشی ثابت (هر خط یک IP — اولویت با این‌هاست)" value={form.customIps} onChange={(v) => set('customIps', v)} placeholder="104.16.1.1" />
+            <Field label="IPهای سفارشی ثابت (هر خط یک IP — اولویت با این‌هاست)" value={form.customIps} onChange={(v) => set('customIps', v)} placeholder="104.16.1.1" guide="m-custom-ips" />
             <div className="flex items-center gap-5 flex-wrap">
-              <Toggle checked={form.fragment} onChange={() => set('fragment', !form.fragment)} label="فرگمنت (TLS split — ضد DPI)" />
+              <Toggle checked={form.fragment} onChange={() => set('fragment', !form.fragment)} label="فرگمنت (TLS split — ضد DPI)" guide="m-fragment" />
             </div>
             {form.fragment && (
               <div className="space-y-3">
-                <label className="block max-w-xs">
+                <label className="block max-w-xs" data-guide="m-isp-preset">
                   <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور (روی تنظیم دستی اولویت دارد)</span>
                   <select value={form.preset} onChange={(e) => set('preset', e.target.value)} className="input-field text-sm py-2 w-full">
                     <option value="">دستی / پیش‌فرض</option>
@@ -332,9 +353,9 @@ export default function Members() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Field label="فرگمنت JSON — fm= (عیناً تزریق می‌شود)" value={form.fm} onChange={(v) => set('fm', v)}
-                    placeholder='{"tcp":[{"type":"fragment",...}]}' textarea rows={3} />
+                    placeholder='{"tcp":[{"type":"fragment",...}]}' textarea rows={3} guide="m-fm" />
                   <Field label="Cipher Suiteها — cs= (عیناً تزریق می‌شود)" value={form.cs} onChange={(v) => set('cs', v)}
-                    placeholder="TLS_AES_256_GCM_SHA384:..." textarea rows={3} />
+                    placeholder="TLS_AES_256_GCM_SHA384:..." textarea rows={3} guide="m-cs" />
                 </div>
                 <div className="flex gap-1.5 flex-wrap">
                   {CS_PRESETS.map((p) => (
@@ -347,12 +368,12 @@ export default function Members() {
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Select label="اثرانگشت ClientHello (fp)" value={form.fingerprint} onChange={(v) => set('fingerprint', v)}
+              <Select label="اثرانگشت ClientHello (fp)" value={form.fingerprint} onChange={(v) => set('fingerprint', v)} guide="m-fingerprint"
                 options={[
                   { v: '', label: 'پیش‌فرض ورکر' },
                   ...['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'].map((f) => ({ v: f, label: f })),
                 ]} />
-              <Select label="SNI واقعی (تست‌شده — ماسک TLS)" value={form.sniChoice} onChange={(v) => set('sniChoice', v)}
+              <Select label="SNI واقعی (تست‌شده — ماسک TLS)" value={form.sniChoice} onChange={(v) => set('sniChoice', v)} guide="m-sni"
                 options={[
                   { v: 'none', label: 'پیش‌فرض ورکر' },
                   ...KNOWN_SNIS.map((s) => ({ v: s, label: s })),
@@ -363,10 +384,49 @@ export default function Members() {
               )}
               {form.sniChoice !== '' && <div />}
             </div>
-            <Field label="Host سفارشی (ماسک)" value={form.hostMask} onChange={(v) => set('hostMask', v)} placeholder="example.com" />
+            <Field label="Host سفارشی (ماسک)" value={form.hostMask} onChange={(v) => set('hostMask', v)} placeholder="example.com" guide="m-host" />
+            {form.fragment && (
+              <div className="sm:col-span-3" data-guide="m-client-fragment">
+                <span className="text-xs text-slate-400 mb-1 block">فرگمنت مخصوص کلاینت (فرمت edgetunnel — جایگزین fm می‌شود)</span>
+                <div className="flex gap-1.5 flex-wrap">
+                  <button onClick={() => set('fragmentClient', '')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${!form.fragmentClient ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700'}`}>
+                    خاموش
+                  </button>
+                  {CLIENT_FRAGMENT_PRESETS.map((p) => (
+                    <button key={p.code} onClick={() => set('fragmentClient', form.fragmentClient === p.code ? '' : p.code)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${form.fragmentClient === p.code ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-white'}`}>
+                      🧩 {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* ── edgetunnel advanced per-member params ── */}
+            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
+              <p className="text-xs font-medium text-slate-300 mb-2">⚙️ تنظیمات پیشرفته edgetunnel — مستقیم روی ورکر اعمال می‌شود (پارامترهای URL)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="ProxyIP اختصاصی (خروجی ورکر از IP دیگر)" value={form.proxyip} onChange={(v) => set('proxyip', v)} placeholder="1.2.3.4 یا domain:port" guide="m-proxyip" />
+                <label className="block" data-guide="m-chain-proto">
+                  <span className="text-xs text-slate-400 mb-1 block">پروتکل زنجیره (Chain Proxy)</span>
+                  <select value={form.chainProto} onChange={(e) => set('chainProto', e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
+                    <option value="">خاموش</option>
+                    {CHAIN_PROTOCOLS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </label>
+                {form.chainProto && (
+                  <Field label={`اعتبار ${form.chainProto} (user:pass@host:port)`} value={form.chainCred} onChange={(v) => set('chainCred', v)} placeholder="user:pass@1.2.3.4:1080" guide="m-chain-cred" />
+                )}
+              </div>
+              <div className="flex items-center gap-5 flex-wrap mt-3">
+                <Toggle checked={form.ech} onChange={() => set('ech', !form.ech)} label="ECH (TLS رمزنگاری SNI)" guide="m-ech" />
+                <Toggle checked={form.ed0rtt} onChange={() => set('ed0rtt', !form.ed0rtt)} label="0-RTT (ed=2560)" guide="m-ed0rtt" />
+                <Toggle checked={form.randomPath} onChange={() => set('randomPath', !form.randomPath)} label="مسیر تصادفی (ضد DPI)" guide="m-random-path" />
+              </div>
+            </div>
             {error && <p className="text-sm text-error-400">{error}</p>}
             <div className="flex gap-2">
-              <button onClick={saveForm} disabled={busy} className="btn-primary flex items-center gap-2 text-sm">
+              <button onClick={saveForm} disabled={busy} data-guide="m-save" className="btn-primary flex items-center gap-2 text-sm">
                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : editingId ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
                 {editingId ? 'ذخیره تغییرات' : 'ساخت کاربر'}
               </button>
@@ -415,29 +475,29 @@ export default function Members() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => openEdit(m)} title="ویرایش تنظیمات"
+                    <button onClick={() => openEdit(m)} data-guide="m-row-edit" title="ویرایش تنظیمات"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
                       <Pencil className="w-4 h-4" />
                     </button>
-                    <button onClick={() => copy(m)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                    <button onClick={() => copy(m)} data-guide="m-row-sub" className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === m.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
                     </button>
-                    <button onClick={() => copy(m, true)} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                    <button onClick={() => copy(m, true)} data-guide="m-row-clash" className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === m.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
                     </button>
-                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" title="صفحه وضعیت + QR + افزودن به کلاینت"
+                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" data-guide="m-row-status" title="صفحه وضعیت + QR + افزودن به کلاینت"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
                       <Activity className="w-4 h-4" />
                     </a>
-                    <button onClick={() => refreshUsage(m.id)} disabled={busy} title="به‌روزرسانی مصرف"
+                    <button onClick={() => refreshUsage(m.id)} disabled={busy} data-guide="m-row-usage" title="به‌روزرسانی مصرف"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
                       <RefreshCw className="w-4 h-4" />
                     </button>
-                    <button onClick={() => patch(m.id, { enabled: !m.enabled })} title={m.enabled ? 'غیرفعال کردن' : 'فعال کردن'}
+                    <button onClick={() => patch(m.id, { enabled: !m.enabled })} data-guide="m-row-power" title={m.enabled ? 'غیرفعال کردن' : 'فعال کردن'}
                       className={`p-2 rounded-lg bg-slate-800/60 ${m.enabled ? 'text-emerald-400' : 'text-slate-500'} hover:text-white`}>
                       <Power className="w-4 h-4" />
                     </button>
-                    <button onClick={async () => { await api(`/members/${m.id}`, { method: 'DELETE' }).catch(() => null); load() }}
+                    <button onClick={async () => { await api(`/members/${m.id}`, { method: 'DELETE' }).catch(() => null); load() }} data-guide="m-row-delete"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
                       <Trash2 className="w-4 h-4" />
                     </button>

@@ -1,7 +1,8 @@
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
-import { b64encodeUtf8, probeBatch, tryDecodeSub } from './net'
-import { configJsonToLines, fetchSubLines, renderSubscription } from './formats'
+import { b64encodeUtf8, probeBatch } from './net'
+import { fetchMultiSubLines, renderSubscription } from './formats'
+import { extractNodes } from './parser'
 
 // ── Config parsing ──────────────────────────────────────────────────────
 
@@ -59,16 +60,17 @@ export function parseNodeLine(line: string): ParsedNode | null {
 
 async function collectInputLines(input: string): Promise<string[]> {
   const trimmed = input.trim()
-  if (/^https?:\/\//i.test(trimmed)) {
-    // Robust fetch: base64 / plain / JSON, with smart URL fallbacks on 404.
-    const lines = await fetchSubLines(trimmed)
-    if (!lines.length) throw new Error('دریافت لینک ساب ناموفق بود — هیچ نود معتبری در هیچ آدرس جایگزین پیدا نشد')
+  // One or MANY subscription URLs — all fetched in parallel and merged.
+  if (/https?:\/\//i.test(trimmed)) {
+    const lines = await fetchMultiSubLines(trimmed)
+    if (!lines.length) throw new Error('دریافت لینک ساب ناموفق بود — هیچ نود معتبری در هیچ آدرسی پیدا نشد (همهٔ فرمت‌ها و آدرس‌های جایگزین امتحان شد)')
     return lines
   }
-  // Raw pasted content — sing-box JSON, base64 blob, or plain links
-  const fromConfig = configJsonToLines(trimmed)
-  if (fromConfig.length) return fromConfig
-  return tryDecodeSub(trimmed).split('\n')
+  // Raw pasted content — sing-box JSON, Clash YAML, base64 blob, plain links,
+  // HTML pages containing links… the universal parser handles them all.
+  const lines = extractNodes(trimmed)
+  if (!lines.length) throw new Error('هیچ نود معتبری در محتوای ورودی پیدا نشد (فرمت‌های پشتیبانی‌شده: vless/vmess/trojan/ss/hysteria2/tuic، base64، sing-box JSON، Clash YAML)')
+  return lines
 }
 
 // ── Job runner ──────────────────────────────────────────────────────────
@@ -191,6 +193,6 @@ export async function handleOptimizerDelete(env: Env, userId: string, id: string
 export async function serveOptimizerSub(env: Env, token: string, target: string | null): Promise<Response> {
   const row = await env.DB.prepare('SELECT result_sub, status FROM optimizer_jobs WHERE sub_token = ?').bind(token).first<{ result_sub: string; status: string }>()
   if (!row || !row.result_sub) return new Response('یافت نشد یا هنوز آماده نیست', { status: 404 })
-  const lines = tryDecodeSub(row.result_sub).split('\n').map((l) => l.trim()).filter(Boolean)
+  const lines = row.result_sub.split('\n').map((l) => l.trim()).filter(Boolean)
   return renderSubscription(lines, target)
 }

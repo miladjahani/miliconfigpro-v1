@@ -15,7 +15,7 @@
 import type { Env } from './env'
 import { apiError, json, safeJsonParse } from './util'
 import { kvGet, kvPut } from './cfapi'
-import { tryDecodeSub } from './net'
+import { extractNodes } from './parser'
 
 export type SourceType = 'edgetunnel' | 'custom'
 
@@ -114,10 +114,10 @@ const NODE_RE = /^(vless|vmess|trojan|hysteria2?|ss|socks):\/\//
 export async function fetchSourceNodes(ctx: SourceCtx): Promise<{ lines: string[]; live: boolean }> {
   for (const url of subCandidates(ctx)) {
     try {
-      const resp = await fetchWithTimeout(url)
+      const resp = await fetchWithTimeout(url, 30_000)
       if (!resp.ok) continue
-      const text = tryDecodeSub(await resp.text())
-      const lines = text.split('\n').map((l) => l.trim()).filter((l) => NODE_RE.test(l))
+      // Universal parser: base64 / plain / sing-box JSON / Clash YAML / HTML
+      const lines = extractNodes(await resp.text())
       if (lines.length) return { lines: dedupe(lines), live: true }
     } catch {
       // next candidate

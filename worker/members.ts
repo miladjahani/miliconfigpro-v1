@@ -9,7 +9,7 @@ import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
 import { renderSubscription } from './formats'
 import { resolvePool } from './countries'
 import { fetchCountryIps } from './edtips'
-import { findPreset, KNOWN_SNIS } from './presets'
+import { findPreset, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from './presets'
 import { filterAlive, rotate } from './rotation'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
 import { notifyQuotaLevel } from './telegram'
@@ -59,6 +59,22 @@ export interface MemberSettings {
   sanctions_mode: '' | 'sni' | 'warp'
   /** Rotate the preferred-IP entry order every N minutes (0 = off). */
   ip_rotation_minutes: number
+  // ── edgetunnel per-request URL params (applied to every node link) ──
+  /** Per-member ProxyIP override — emitted as `proxyip=` query param. */
+  proxyip: string
+  /** Chain-proxy egress, e.g. `socks5://user:pass@host:1080` — emitted as
+   *  `<proto>=` + `globalproxy` query params the EDT worker understands. */
+  chain_proxy: string
+  /** TLS Encrypted Client Hello — emitted as `ech=<sni>+<dns>` param. */
+  ech: boolean
+  ech_sni: string
+  ech_dns: string
+  /** WebSocket 0-RTT — appends `ed=2560` inside the node path. */
+  ed_0rtt: boolean
+  /** Randomize the ws path prefix on every sub fetch (anti-DPI). */
+  random_path: boolean
+  /** Client-specific fragment param: '' | 'shadowrocket' | 'happ'. */
+  fragment_client: string
 }
 
 export interface MemberRow {
@@ -84,6 +100,9 @@ const DEFAULT_SETTINGS: MemberSettings = {
   fingerprint: '', custom_sni: '', custom_host: '', bypass_sanctions: false,
   sanctions_mode: '',
   ip_rotation_minutes: 0,
+  proxyip: '', chain_proxy: '',
+  ech: false, ech_sni: 'cloudflare-ech.com', ech_dns: 'https://dns.alidns.com/dns-query',
+  ed_0rtt: false, random_path: false, fragment_client: '',
 }
 
 function cleanParam(v: unknown, max = 400): string {
@@ -119,6 +138,15 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
       ? (s?.sanctions_mode ?? '') as MemberSettings['sanctions_mode']
       : (s?.bypass_sanctions ? 'sni' : ''),
     ip_rotation_minutes: Math.min(1440, Math.max(0, Math.round(Number(s?.ip_rotation_minutes) || 0))),
+    proxyip: cleanParam(s?.proxyip, 200),
+    chain_proxy: /^(socks5|http|https|turn|sstp):\/\/[^\s]+$/.test(String(s?.chain_proxy ?? '').trim())
+      ? String(s?.chain_proxy).trim().slice(0, 300) : '',
+    ech: !!s?.ech,
+    ech_sni: cleanParam(s?.ech_sni, 120) || 'cloudflare-ech.com',
+    ech_dns: cleanParam(s?.ech_dns, 200) || 'https://dns.alidns.com/dns-query',
+    ed_0rtt: !!s?.ed_0rtt,
+    random_path: !!s?.random_path,
+    fragment_client: CLIENT_FRAGMENT_PRESETS.some((p) => p.code === s?.fragment_client) ? String(s?.fragment_client) : '',
   }
 }
 
@@ -207,6 +235,14 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     custom_host: body.custom_host !== undefined ? body.custom_host : prevSettings.custom_host,
     bypass_sanctions: body.bypass_sanctions ?? prevSettings.bypass_sanctions,
     sanctions_mode: body.sanctions_mode !== undefined ? body.sanctions_mode : prevSettings.sanctions_mode,
+    proxyip: body.proxyip !== undefined ? body.proxyip : prevSettings.proxyip,
+    chain_proxy: body.chain_proxy !== undefined ? body.chain_proxy : prevSettings.chain_proxy,
+    ech: body.ech ?? prevSettings.ech,
+    ech_sni: body.ech_sni !== undefined ? body.ech_sni : prevSettings.ech_sni,
+    ech_dns: body.ech_dns !== undefined ? body.ech_dns : prevSettings.ech_dns,
+    ed_0rtt: body.ed_0rtt ?? prevSettings.ed_0rtt,
+    random_path: body.random_path ?? prevSettings.random_path,
+    fragment_client: body.fragment_client !== undefined ? body.fragment_client : prevSettings.fragment_client,
     ip_rotation_minutes: body.ip_rotation_minutes !== undefined ? body.ip_rotation_minutes : prevSettings.ip_rotation_minutes,
   })
   const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : (existing.enabled as number)
@@ -402,6 +438,36 @@ function applyWarpPath(line: string): string {
   return setQueryParam(line, 'path', '/warp?ed=2560')
 }
 
+/** Map the node's path value through `fn` (vmess JSON or URI param aware). */
+function mapPathParam(line: string, fn: (p: string) => string): string {
+  if (line.startsWith('vmess://')) {
+    try {
+      const json = JSON.parse(atob(line.slice('vmess://'.length))) as Record<string, unknown>
+      if (String(json.net ?? '') === 'ws') json.path = fn(String(json.path ?? '/'))
+      return 'vmess://' + btoa(JSON.stringify(json))
+    } catch {
+      return line
+    }
+  }
+  const hashIdx = line.indexOf('#')
+  const qIdx = line.indexOf('?')
+  const queryEnd = hashIdx > -1 ? hashIdx : line.length
+  if (qIdx === -1) return line
+  const params = new URLSearchParams(line.slice(qIdx + 1, queryEnd))
+  params.set('path', fn(params.get('path') ?? '/'))
+  return line.slice(0, qIdx + 1) + params.toString() + (hashIdx > -1 ? line.slice(hashIdx) : '')
+}
+
+/** Common web directories for random-path obfuscation (edgetunnel-style). */
+const RANDOM_DIRS = ['about', 'api', 'app', 'blog', 'cdn', 'chat', 'docs', 'download', 'forum', 'help', 'img', 'live', 'news', 'shop', 'static', 'video', 'watch', 'web']
+
+function randomPathPrefix(): string {
+  const count = 1 + Math.floor(Math.random() * 3)
+  const parts: string[] = []
+  for (let i = 0; i < count; i++) parts.push(RANDOM_DIRS[Math.floor(Math.random() * RANDOM_DIRS.length)]!)
+  return '/' + parts.join('/')
+}
+
 /** Public endpoint — GET /api/sub/member/:token[?target=clash] */
 export async function serveMemberSub(env: Env, token: string, target: string | null, request?: Request): Promise<Response> {
   const member = await env.DB.prepare('SELECT * FROM worker_members WHERE token = ?').bind(token)
@@ -529,6 +595,30 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     if (fc.fm) out = out.map((l) => setQueryParam(l, 'fm', fc.fm!))
     if (fc.cs) out = out.map((l) => setQueryParam(l, 'cs', fc.cs!))
   }
+  // Client-specific fragment param (edgetunnel format) — overrides the
+  // generic xray-style fragment when chosen.
+  if (settings.fragment_client) {
+    const cf = CLIENT_FRAGMENT_PRESETS.find((p) => p.code === settings.fragment_client)
+    if (cf) out = out.map((l) => setQueryParam(l, 'fragment', cf.value))
+  }
+
+  // ── edgetunnel per-request params — the deployed EDT worker reads these
+  // from every node link, giving each member a unique worker behaviour.
+  if (settings.proxyip) out = out.map((l) => setQueryParam(l, 'proxyip', settings.proxyip))
+  if (settings.chain_proxy) {
+    const proto = settings.chain_proxy.match(/^(socks5|http|https|turn|sstp):\/\//i)?.[1]?.toLowerCase() ?? 'socks5'
+    const cred = settings.chain_proxy.replace(/^[a-z0-9]+:\/\//i, '')
+    out = out.map((l) => setQueryParam(setQueryParam(l, proto, cred), 'globalproxy', '1'))
+  }
+  if (settings.ech) {
+    out = out.map((l) => setQueryParam(l, 'ech', `${settings.ech_sni}+${settings.ech_dns}`))
+  }
+  if (settings.random_path) {
+    out = out.map((l) => mapPathParam(l, (p) => randomPathPrefix() + (p === '/' ? '' : p.startsWith('/') ? p : '/' + p)))
+  }
+  if (settings.ed_0rtt) {
+    out = out.map((l) => mapPathParam(l, (p) => p + (p.includes('?') ? '&' : '?') + 'ed=2560'))
+  }
 
   // Preferred-IP pool: LIVE real IPs per country from the EDT ecosystem
   // (ipdb bestcf/bestproxy), with the static CIDR pools as offline fallback.
@@ -569,7 +659,27 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     return `${m[1]}#${encodeURIComponent(`${namePrefix} | ${decoded}`)}`
   })
 
-  if (target === 'clash') {
+  // ── Response format: explicit ?target= wins, otherwise auto-detect from
+  // the client's User-Agent (edgetunnel behaviour).
+  const ua = (request?.headers.get('user-agent') ?? '').toLowerCase()
+  let fmt = target
+  if (!fmt) {
+    if (/clash|mihomo|meta/.test(ua)) fmt = 'clash'
+    else if (/singbox|sing-box|sfa/.test(ua)) fmt = 'singbox'
+  }
+  const isBrowser = ua.includes('mozilla')
+
+  // Subscription-Userinfo: real quota/expiry shown by v2rayNG, Clash, Hiddify…
+  const expireUnix = effectiveExpiry ? Math.floor(Date.parse(effectiveExpiry) / 1000) : 0
+  const subHeaders: Record<string, string> = {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'profile-update-interval': '1',
+    'subscription-userinfo': `upload=0; download=${(member.used_bytes as number) ?? 0}; total=${quota ?? 0}; expire=${expireUnix}`,
+  }
+  if (request) subHeaders['profile-web-page-url'] = new URL(request.url).origin + `/status/${token}`
+  if (!isBrowser && ua) subHeaders['Content-Disposition'] = `attachment; filename*=utf-8''${encodeURIComponent(String(member.name ?? 'miliconfig'))}`
+
+  if (fmt === 'clash') {
     const result = applyInjection(named, pool, [])
     const proxies = result.clashProxies.map((p) => {
       let q = p
@@ -578,12 +688,14 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
       return q
     })
     const yaml = buildClashYaml({ ...result, clashProxies: proxies })
-    return new Response(yaml, { headers: { 'Content-Type': 'text/yaml; charset=utf-8', 'profile-update-interval': '1' } })
+    return new Response(yaml, { headers: { ...subHeaders, 'Content-Type': 'text/yaml; charset=utf-8' } })
   }
 
-  if (target === 'singbox' || target === 'plain') return renderSubscription(named, target)
+  if (fmt === 'singbox' || fmt === 'plain') {
+    const resp = renderSubscription(named, fmt)
+    for (const [k, v] of Object.entries(subHeaders)) if (k !== 'Content-Type') resp.headers.set(k, v)
+    return resp
+  }
 
-  return new Response(b64encodeUtf8(named.join('\n')), {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8', 'profile-update-interval': '1' },
-  })
+  return new Response(b64encodeUtf8(named.join('\n')), { headers: subHeaders })
 }

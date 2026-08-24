@@ -1,5 +1,6 @@
 import { NavLink, useNavigate, Outlet } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
+import LiveGuide from './LiveGuide'
 import {
   LayoutDashboard,
   KeyRound,
@@ -19,22 +20,22 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 
-interface NavItem { to: string; label: string; icon: typeof LayoutDashboard; end?: boolean }
+interface NavItem { to: string; label: string; icon: typeof LayoutDashboard; end?: boolean; guide?: string }
 
 const baseNavItems: NavItem[] = [
-  { to: '/', label: 'داشبورد', icon: LayoutDashboard, end: true },
-  { to: '/tokens', label: 'توکن‌ها', icon: KeyRound },
-  { to: '/deploy', label: 'استقرار جدید', icon: UserPlus },
-  { to: '/deployments', label: 'ورکرها', icon: Cloud },
-  { to: '/optimizer', label: 'بهینه‌ساز', icon: Zap },
-  { to: '/members', label: 'کاربران ورکر', icon: UsersRound },
-  { to: '/bot-config', label: 'ربات تلگرام', icon: Bot },
-  { to: '/bot-users', label: 'کاربران ربات', icon: Users },
-  { to: '/logs', label: 'لاگ‌ها', icon: ScrollText },
-  { to: '/guide', label: 'راهنما', icon: BookOpen },
+  { to: '/', label: 'داشبورد', icon: LayoutDashboard, end: true, guide: 'nav-dashboard' },
+  { to: '/tokens', label: 'توکن‌ها', icon: KeyRound, guide: 'nav-tokens' },
+  { to: '/deploy', label: 'استقرار جدید', icon: UserPlus, guide: 'nav-deploy' },
+  { to: '/deployments', label: 'ورکرها', icon: Cloud, guide: 'nav-deployments' },
+  { to: '/optimizer', label: 'بهینه‌ساز', icon: Zap, guide: 'nav-optimizer' },
+  { to: '/members', label: 'کاربران ورکر', icon: UsersRound, guide: 'nav-members' },
+  { to: '/bot-config', label: 'ربات تلگرام', icon: Bot, guide: 'nav-bot-config' },
+  { to: '/bot-users', label: 'کاربران ربات', icon: Users, guide: 'nav-bot-users' },
+  { to: '/logs', label: 'لاگ‌ها', icon: ScrollText, guide: 'nav-logs' },
+  { to: '/guide', label: 'راهنما', icon: BookOpen, guide: 'nav-guide' },
 ]
 
-const adminNavItem: NavItem = { to: '/admin', label: 'مدیریت کاربران', icon: Shield }
+const adminNavItem: NavItem = { to: '/admin', label: 'مدیریت کاربران', icon: Shield, guide: 'nav-admin' }
 
 export default function Layout() {
   const { user, signOut } = useAuth()
@@ -48,6 +49,7 @@ export default function Layout() {
   }
 
   return (
+    <LiveGuide>
     <div className="min-h-screen bg-slate-950 bg-grid">
       <div className="fixed inset-0 bg-radial-glow pointer-events-none" />
 
@@ -89,6 +91,7 @@ export default function Layout() {
                   key={item.to}
                   to={item.to}
                   end={item.end}
+                  data-guide={item.guide}
                   onClick={() => setSidebarOpen(false)}
                   className={({ isActive }) =>
                     `flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group ${
@@ -116,7 +119,7 @@ export default function Layout() {
                 <p className="text-xs text-slate-500">مدیر</p>
               </div>
             </div>
-            <button onClick={handleSignOut} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/50 text-slate-300 hover:bg-error-500/10 hover:text-error-400 transition-all duration-200 text-sm font-medium">
+            <button onClick={handleSignOut} data-guide="signout" className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800/50 text-slate-300 hover:bg-error-500/10 hover:text-error-400 transition-all duration-200 text-sm font-medium">
               <LogOut className="w-4 h-4" />
               خروج
             </button>
@@ -134,5 +137,6 @@ export default function Layout() {
         </div>
       </main>
     </div>
+    </LiveGuide>
   )
 }

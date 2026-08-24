@@ -4,20 +4,18 @@
 // • configJsonToLines()     — sing-box JSON configs parsed as node sources
 // Clash Meta already has buildClashYaml.
 
-import { b64encodeUtf8, tryDecodeSub } from './net'
+import { b64encodeUtf8 } from './net'
 import { buildClashYaml, linesToResult } from './inject'
+import { extractNodes, singboxJsonToLinks } from './parser'
 
 /** Fetch node lines from ANY subscription URL, tolerating every real-world
- * shape: base64 blobs, plain link lists, sing-box JSON, error pages with
- * partial content, and wrong paths. If the exact URL fails (404 etc.) we
- * retry smart fallback variants — e.g. a pasted `worker/uuid/sub?target=x`
- * still resolves to the working `worker/uuid` direct subscription. */
-export async function fetchSubLines(url: string, timeoutMs = 8000): Promise<string[]> {
-  const toLines = (text: string): string[] => {
-    const fromConfig = configJsonToLines(text.trim())
-    if (fromConfig.length) return fromConfig
-    return tryDecodeSub(text).split('\n').map((l) => l.trim()).filter(Boolean)
-  }
+ * shape: base64 blobs, plain link lists, sing-box JSON, Clash YAML, HTML
+ * pages, error pages with partial content, and wrong paths. If the exact
+ * URL fails (404 etc.) we retry smart fallback variants — e.g. a pasted
+ * `worker/uuid/sub?target=x` still resolves to the working `worker/uuid`
+ * direct subscription. */
+export async function fetchSubLines(url: string, timeoutMs = 30_000): Promise<string[]> {
+  const toLines = (text: string): string[] => extractNodes(text)
 
   const u = url.trim()
   const variants: string[] = [u]
@@ -50,12 +48,38 @@ export async function fetchSubLines(url: string, timeoutMs = 8000): Promise<stri
       } finally {
         clearTimeout(t)
       }
-      const lines = toLines(text).filter((l) => /^(vless|vmess|trojan|ss|hysteria2?|tuic):\/\//i.test(l))
+      const lines = toLines(text)
       if (lines.length) return lines
       if (!ok) continue // 404/5xx with no usable content → next variant
     } catch { /* network error → next variant */ }
   }
   return []
+}
+
+/** Fetch nodes from MULTIPLE subscription URLs at once (pasted together,
+ *  separated by newlines, commas or spaces) and merge + dedupe the result. */
+export async function fetchMultiSubLines(input: string, timeoutMs = 30_000): Promise<string[]> {
+  const urls = input
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => /^https?:\/\//i.test(s))
+    .slice(0, 10)
+  if (!urls.length) return []
+
+  const results = await Promise.all(
+    urls.map((u) => fetchSubLines(u, timeoutMs).catch(() => [] as string[])),
+  )
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const list of results) {
+    for (const line of list) {
+      const key = line.split('#')[0]!
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(line)
+    }
+  }
+  return out
 }
 
 /** Serialize node lines in the requested output format.
@@ -71,74 +95,10 @@ export function renderSubscription(lines: string[], format: string | null | unde
   if (fmt === 'singbox') return new Response(buildSingboxJson(lines), { headers })
   if (fmt === 'plain') return new Response(lines.join('\n'), { headers })
   return new Response(b64encodeUtf8(lines.join('\n')), { headers })
-}
-
-/** Detect a sing-box style JSON config and convert its outbounds back into
- * standard share links so any JSON source can feed a subscription. */
+}/** Detect a sing-box style JSON config and convert its outbounds back into
+ *  standard share links — now powered by the universal parser engine. */
 export function configJsonToLines(text: string): string[] {
-  try {
-    const cfg = JSON.parse(text) as { outbounds?: Array<Record<string, unknown>> }
-    if (!Array.isArray(cfg.outbounds)) return []
-    return cfg.outbounds.map(outboundToLine).filter((l): l is string => !!l)
-  } catch {
-    return []
-  }
-}
-
-function outboundToLine(o: Record<string, unknown>): string | null {
-  try {
-    const type = String(o.type ?? '')
-    const server = String(o.server ?? '')
-    const port = Number(o.server_port ?? 0)
-    const tag = String(o.tag ?? `${type}-${server}`)
-    if (!server || !port) return null
-
-    const transport = o.transport as Record<string, unknown> | undefined
-    const network = transport ? String(transport.type ?? 'tcp') : 'tcp'
-    const path = transport ? String(transport.path ?? '') : ''
-    const wsHost = transport && typeof transport.headers === 'object' && transport.headers !== null
-      ? String((transport.headers as Record<string, unknown>).Host ?? '') : ''
-    const tls = o.tls as Record<string, unknown> | undefined
-    const security = type === 'trojan' ? 'tls' : tls?.enabled ? (tls.reality && (tls.reality as Record<string, unknown>).enabled ? 'reality' : 'tls') : 'none'
-    const sni = tls ? String(tls.server_name ?? '') : ''
-    const fp = tls && typeof tls.utls === 'object' ? String((tls.utls as Record<string, unknown>).fingerprint ?? '') : ''
-
-    const q = new URLSearchParams()
-    if (security !== 'none') {
-      q.set('security', security)
-      if (sni) q.set('sni', sni)
-      if (fp) q.set('fp', fp)
-      if (security === 'reality') {
-        const r = (tls!.reality ?? {}) as Record<string, unknown>
-        if (r.public_key) q.set('pbk', String(r.public_key))
-        if (r.short_id) q.set('sid', String(r.short_id))
-      }
-    }
-    if (network === 'ws' || network === 'grpc') {
-      q.set('type', network)
-      if (path) q.set('path', path)
-      if (wsHost) q.set('host', wsHost)
-    }
-    const qs = q.toString()
-
-    if (type === 'vless') {
-      const flow = o.flow ? `&flow=${encodeURIComponent(String(o.flow))}` : ''
-      return `vless://${o.uuid}@${server}:${port}?encryption=none${qs ? '&' + qs : ''}${flow}#${encodeURIComponent(tag)}`
-    }
-    if (type === 'vmess') {
-      const json = { v: '2', ps: tag, add: server, port, id: o.uuid, aid: o.alter_id ?? 0, scy: o.security ?? 'auto', net: network === 'grpc' ? 'grpc' : network === 'ws' ? 'ws' : 'tcp', host: wsHost, path, tls: security === 'tls' || security === 'reality' ? 'tls' : '', sni }
-      return `vmess://${btoa(JSON.stringify(json))}`
-    }
-    if (type === 'trojan') {
-      return `trojan://${encodeURIComponent(String(o.password ?? ''))}@${server}:${port}?${qs}#${encodeURIComponent(tag)}`
-    }
-    if (type === 'shadowsocks') {
-      return `ss://${btoa(`${o.method}:${o.password}`)}@${server}:${port}#${encodeURIComponent(tag)}`
-    }
-    return null
-  } catch {
-    return null
-  }
+  return singboxJsonToLinks(text)
 }
 
 export function buildSingboxJson(lines: string[]): string {

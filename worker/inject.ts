@@ -2,7 +2,8 @@
 // preferred IPs (fixed entry) and builds Clash Meta configs with HTTP/SOCKS5
 // dialer-proxy chains (fixed egress) — the part cf-optimizor lacks.
 
-import { b64encodeUtf8, tryDecodeSub } from './net'
+import { b64encodeUtf8 } from './net'
+import { extractNodes } from './parser'
 import { parseNodeLine, type ParsedNode } from './optimizer'
 
 export interface PreferredIP { ip: string; port?: number }
@@ -18,12 +19,14 @@ export interface ProxySpec {
 
 export async function collectNodeLines(source: string): Promise<string[]> {
   const trimmed = source.trim()
-  if (/^https?:\/\//i.test(trimmed)) {
-    const resp = await fetch(trimmed, { redirect: 'follow' })
-    if (!resp.ok) throw new Error(`دریافت لینک ساب ناموفق بود (HTTP ${resp.status})`)
-    return tryDecodeSub(await resp.text()).split('\n')
+  if (/https?:\/\//i.test(trimmed)) {
+    // Multi-URL + universal parser (base64 / JSON / Clash YAML / plain / HTML).
+    const { fetchMultiSubLines } = await import('./formats')
+    const lines = await fetchMultiSubLines(trimmed)
+    if (lines.length) return lines
+    throw new Error(`دریافت لینک ساب ناموفق بود — هیچ نود معتبری پیدا نشد`)
   }
-  return tryDecodeSub(trimmed).split('\n')
+  return extractNodes(trimmed)
 }
 
 // ── Entry-IP injection (base64 sub) ─────────────────────────────────────

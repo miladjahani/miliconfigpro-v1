@@ -144,6 +144,15 @@ export interface MemberSettings {
   bypass_sanctions: boolean
   sanctions_mode?: '' | 'sni' | 'warp'
   ip_rotation_minutes?: number
+  // edgetunnel per-request params
+  proxyip?: string
+  chain_proxy?: string
+  ech?: boolean
+  ech_sni?: string
+  ech_dns?: string
+  ed_0rtt?: boolean
+  random_path?: boolean
+  fragment_client?: string
 }
 
 export interface WorkerMember {

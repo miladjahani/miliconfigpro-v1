@@ -141,12 +141,13 @@ export default function Optimizer() {
             onChange={(e) => setInput(e.target.value)}
             rows={6}
             dir="ltr"
+            data-guide="o-input"
             placeholder={'https://example.com/sub\nvless://...\nvmess://...'}
             className="input-field font-mono text-xs"
           />
         </div>
         {error && <p className="text-sm text-error-400">{error}</p>}
-        <button onClick={run} disabled={busy} className="btn-primary w-full flex items-center justify-center gap-2">
+        <button onClick={run} disabled={busy} data-guide="o-start" className="btn-primary w-full flex items-center justify-center gap-2">
           <Play className="w-4 h-4" />
           {busy ? 'در حال ارسال...' : 'شروع بهینه‌سازی'}
         </button>
@@ -189,6 +190,7 @@ export default function Optimizer() {
                   <>
                     {([['', 'ساب'], ['clash', 'Clash'], ['singbox', 'Sing-box'], ['plain', 'Plain']] as const).map(([t, label]) => (
                       <button key={label} onClick={() => copy(fmtUrl(subUrl(job.sub_token), t), job.id + (t || '-b'))}
+                        data-guide="o-format"
                         className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300"
                         title={`کپی لینک ${label}`}>
                         {copied === job.id + (t || '-b') ? <Check className="w-3 h-3 text-emerald-400 inline" /> : null} {label}

@@ -3,8 +3,9 @@ import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, linesToResult, type PreferredIP, type ProxySpec } from './inject'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
-import { configJsonToLines, renderSubscription } from './formats'
-import { expandRanges, tryDecodeSub } from './net'
+import { renderSubscription } from './formats'
+import { expandRanges } from './net'
+import { extractNodes } from './parser'
 
 // ── Group subscriptions: merge several deployed workers into one sub link ──
 // With injection enabled, preferred IPs and HTTP/SOCKS5 chains are applied at
@@ -142,30 +143,24 @@ async function fetchWorkerSub(env: Env, deploymentId: string): Promise<string[]>
 }
 
 /** Fetch nodes from an arbitrary subscription URL or raw pasted content.
- * Accepts any format that contains share links: plain link lists, base64
- * blobs, sing-box JSON configs, or a mix — everything is normalized to one
- * share-link line per node. */
+ * Accepts any format that contains nodes — plain link lists, base64 blobs,
+ * sing-box JSON, Clash YAML, HTML with embedded links — via the universal
+ * parser engine. */
 async function fetchExtraLink(link: string): Promise<string[]> {
-  const toLines = (text: string): string[] => {
-    // JSON configs (sing-box style with outbounds) → converted share links
-    const fromConfig = configJsonToLines(text.trim())
-    if (fromConfig.length) return fromConfig
-    return tryDecodeSub(text).split('\n').map((l) => l.trim()).filter(Boolean)
-  }
   try {
     if (/^https?:\/\//i.test(link)) {
       const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 8000)
+      const t = setTimeout(() => ctrl.abort(), 30_000)
       try {
         const resp = await fetch(link, { redirect: 'follow', signal: ctrl.signal })
         if (!resp.ok) return []
-        return toLines(await resp.text())
+        return extractNodes(await resp.text())
       } finally {
         clearTimeout(t)
       }
     }
     // Raw content pasted directly into the group
-    return toLines(link)
+    return extractNodes(link)
   } catch {
     return []
   }

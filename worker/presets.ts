@@ -43,6 +43,16 @@ export const CS_PRESETS: Array<{ code: string; label: string; value: string }> =
   },
 ]
 
+/** Client-specific TLS-fragment presets from edgetunnel — emitted verbatim
+ *  as the `fragment=` query param (different format per client app). */
+export const CLIENT_FRAGMENT_PRESETS: Array<{ code: string; label: string; value: string }> = [
+  { code: 'shadowrocket', label: 'Shadowrocket', value: '1,40-60,30-50,tlshello' },
+  { code: 'happ', label: 'Happ', value: '3,1,tlshello' },
+]
+
+/** Chain-proxy protocols supported by edgetunnel workers (per-request egress). */
+export const CHAIN_PROTOCOLS = ['socks5', 'http', 'https', 'turn', 'sstp'] as const
+
 /** Real, permissive SNI values (community-tested from Iran) for the SNI-mask
  * dropdowns. These domains are not blocked and their TLS cert allows CDN
  * fronting — used to bypass sanction/SNI filtering (Gemini, OpenAI, ...). */
