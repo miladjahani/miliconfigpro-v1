@@ -1,7 +1,8 @@
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
-import { b64encodeUtf8, tryDecodeSub } from './net'
+import { b64encodeUtf8 } from './net'
 import { applyInjection, buildClashYaml, type PreferredIP, type ProxySpec } from './inject'
+import { fetchSourceNodes, resolveSource } from './sourcebridge'
 
 // ── Group subscriptions: merge several deployed workers into one sub link ──
 // With injection enabled, preferred IPs and HTTP/SOCKS5 chains are applied at
@@ -97,24 +98,12 @@ export async function handleGroupPatch(env: Env, userId: string, id: string, req
   return json({ data: { id, ips, proxies, inject: !!inject } })
 }
 
-/** Fetch the subscription content of a single deployed worker. */
-async function fetchWorkerSub(dep: { worker_url: string | null; panel_url: string | null; uuid: string | null; custom_path: string | null }): Promise<string[]> {
-  const candidates: string[] = []
-  if (dep.worker_url && dep.uuid) candidates.push(`${dep.worker_url}/${dep.uuid}`)
-  if (dep.worker_url && dep.custom_path) candidates.push(`${dep.worker_url}/${dep.custom_path}`)
-  if (dep.panel_url) candidates.push(`${dep.panel_url}/sub`)
-  for (const url of candidates) {
-    try {
-      const resp = await fetch(url, { redirect: 'follow' })
-      if (!resp.ok) continue
-      const text = tryDecodeSub(await resp.text())
-      const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.includes('://'))
-      if (lines.length) return lines
-    } catch {
-      // try next candidate
-    }
-  }
-  return []
+/** Fetch the live subscription content of a single deployed worker (via source bridge). */
+async function fetchWorkerSub(env: Env, deploymentId: string): Promise<string[]> {
+  const ctx = await resolveSource(env, null, deploymentId).catch(() => null)
+  if (!ctx) return []
+  const { lines } = await fetchSourceNodes(ctx)
+  return lines
 }
 
 /** Public endpoint — GET /api/sub/group/:token[?target=clash] */
@@ -127,13 +116,13 @@ export async function serveGroupSub(env: Env, token: string, target: string | nu
   if (!ids.length) return new Response('گروه خالی است', { status: 404 })
 
   const deps = await env.DB.prepare(
-    `SELECT worker_url, panel_url, uuid, custom_path FROM deployments
+    `SELECT id, user_id FROM deployments
      WHERE id IN (${ids.map(() => '?').join(',')}) AND status = 'deployed'`,
-  ).bind(...ids).all<{ worker_url: string | null; panel_url: string | null; uuid: string | null; custom_path: string | null }>()
+  ).bind(...ids).all<{ id: string; user_id: string }>()
 
   const seen = new Set<string>()
   const merged: string[] = []
-  const chunks = deps.results.map((d) => fetchWorkerSub(d))
+  const chunks = deps.results.map((d) => fetchWorkerSub(env, d.id))
   const all = (await Promise.allSettled(chunks)).flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
   for (const line of all) {
     // Dedupe by node identity (scheme+credentials+host+port+params), ignoring

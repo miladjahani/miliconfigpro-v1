@@ -10,6 +10,7 @@ import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleO
 import { handleGroupCreate, handleGroupList, handleGroupDelete, handleGroupPatch, serveGroupSub } from './subgroups'
 import { handleInjectorCreate, handleInjectorList, handleInjectorPatch, handleInjectorDelete, serveInjectedSub } from './injector'
 import { handleMemberCreate, handleMemberList, handleMemberPatch, handleMemberDelete, refreshMemberUsage, serveMemberSub } from './members'
+import { handleSourceSettings, handleSourceNodes } from './sourcebridge'
 
 interface DeploymentBody {
   name?: string
@@ -349,6 +350,15 @@ async function handleRouted(
     if (path === '/api/worker-config' && method === 'POST') {
       const body = safeJsonParse(await request.text().catch(() => ''), {})
       return await handleWorkerConfig(env, user.id, body)
+    }
+
+    // ── Real source bridge: unified settings + live node check ────────
+    if (path === '/api/source-settings' && method === 'POST') {
+      const body = safeJsonParse(await request.text().catch(() => ''), {})
+      return await handleSourceSettings(env, user.id, body)
+    }
+    if (path.match(/^\/api\/source-nodes\/[^/]+$/) && method === 'GET') {
+      return await handleSourceNodes(env, user.id, path.split('/')[3])
     }
     if (path === '/api/ip-scanner' && method === 'POST') {
       const body = safeJsonParse<{ mode?: string; ranges?: string; ports?: string; count?: number; timeout?: number }>(await request.text().catch(() => ''), {})

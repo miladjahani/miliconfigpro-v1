@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS deployments (
   method TEXT NOT NULL DEFAULT 'workers' CHECK (method IN ('workers','pages')),
   worker_source TEXT NOT NULL DEFAULT 'edgetunnel',
   cf_account_id TEXT,
+  cf_token_row_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

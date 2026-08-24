@@ -5,7 +5,7 @@ import type { PreferredIP, ProxySpec } from '../lib/types'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
   KeyRound, Rocket, Database, Copy, Check, Smartphone, Settings2,
-  Power, PowerOff, AlertTriangle, Save, Eye, EyeOff, RefreshCw,
+  Power, PowerOff, AlertTriangle, Save, Eye, EyeOff, RefreshCw, Radio,
   Globe, Shield, Network, Server, Radar, ScanLine, Wifi, Github,
   ArrowRight, ChevronDown, ChevronUp, Lock, Layers, Zap,
 } from 'lucide-react'
@@ -659,6 +659,11 @@ function ConfigModal({ dep, onClose, onSaved }: {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showUuid, setShowUuid] = useState(false)
+  const [nodes, setNodes] = useState<{ live: boolean; count: number; sample?: string[]; sub_url: string | null } | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [uProxyip, setUProxyip] = useState('')
+  const [uPath, setUPath] = useState('')
+  const [uSaved, setUSaved] = useState(false)
 
   useEffect(() => {
     let cancelled = false;
@@ -688,6 +693,44 @@ function ConfigModal({ dep, onClose, onSaved }: {
     })()
     return () => { cancelled = true }
   }, [dep])
+
+  const loadUnified = async () => {
+    try {
+      const data = await api<{ success: boolean; data?: { proxyip?: string; path?: string } }>('/source-settings', {
+        method: 'POST',
+        body: { deployment_id: dep.id, action: 'get' },
+      })
+      if (data.success && data.data) {
+        setUProxyip(data.data.proxyip ?? '')
+        setUPath(data.data.path ?? '')
+      }
+    } catch { /* unified view unavailable */ }
+  }
+  useEffect(() => { loadUnified() }, [dep.id])
+
+  const checkNodes = async () => {
+    setChecking(true)
+    try {
+      const data = await api<{ data: { live: boolean; count: number; sample?: string[]; sub_url: string | null } }>(`/source-nodes/${dep.id}`)
+      setNodes(data.data)
+    } catch {
+      setNodes({ live: false, count: 0, sub_url: null })
+    }
+    setChecking(false)
+  }
+
+  const saveUnified = async () => {
+    setSaving(true); setError(null)
+    try {
+      const data = await api<{ success: boolean; error?: string }>('/source-settings', {
+        method: 'POST',
+        body: { deployment_id: dep.id, action: 'set', settings: { proxyip: uProxyip, path: uPath, addtxt: addTxt } },
+      })
+      if (data.success) { setUSaved(true); setTimeout(() => setUSaved(false), 2500) }
+      else setError(data.error ?? 'خطا در ذخیره تنظیمات سورس')
+    } catch (e) { setError(e instanceof Error ? e.message : 'خطا در اتصال') }
+    setSaving(false)
+  }
 
   const save = async () => {
     setSaving(true); setError(null)
@@ -748,6 +791,41 @@ function ConfigModal({ dep, onClose, onSaved }: {
                 )}
               </div>
             )}
+
+            {/* Live source bridge */}
+            <Sect title="اتصال زنده به سورس ورکر" icon={<Radio className="w-4 h-4" />}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button onClick={checkNodes} disabled={checking}
+                  className="btn-secondary flex items-center gap-2 text-sm">
+                  {checking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}
+                  بررسی نودهای زنده
+                </button>
+                <button onClick={saveUnified} disabled={saving}
+                  className="btn-primary flex items-center gap-2 text-sm">
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : uSaved ? <CheckCircle2 className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+                  {uSaved ? 'روی سورس اعمال شد ✓' : 'ذخیره سریع (سورس واقعی)'}
+                </button>
+              </div>
+              {nodes && (
+                <div className={`mt-3 px-3 py-2 rounded-lg text-sm border ${nodes.live ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-warning-500/10 border-warning-500/20 text-warning-300'}`}>
+                  {nodes.live
+                    ? `✓ ${nodes.count} نود زنده مستقیماً از سورس مستقرشده خوانده شد`
+                    : nodes.count > 0
+                      ? `${nodes.count} نود از کانفیگ KV بازسازی شد (دسترسی مستقیم به آدرس ورکر ممکن نشد)`
+                      : 'هیچ نودی دریافت نشد — ورکر در دسترس نیست'}
+                  {nodes.sub_url && (
+                    <div className="mt-1 text-xs text-slate-400 break-all" dir="ltr">sub: {nodes.sub_url}</div>
+                  )}
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                <Field label="Proxy IP (واقعی روی سورس)" value={uProxyip} onChange={setUProxyip} ltr />
+                <Field label="مسیر پنل/PATH" value={uPath} onChange={setUPath} ltr />
+              </div>
+              <p className="text-xs text-slate-500 mt-2">
+                این تنظیمات بدون باز کردن پنل مستقربشده، مستقیماً داخل KV همان سورس نوشته می‌شود و بلافاصله روی ساب‌لینک واقعی اثر می‌گذارد.
+              </p>
+            </Sect>
 
             {/* Protocol */}
             <Sect title="پروتکل و انتقال — روی ساب‌لینک نهایی اثر مستقیم دارد" icon={<Shield className="w-4 h-4" />}>

@@ -4,9 +4,10 @@
 
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
-import { b64encodeUtf8, tryDecodeSub } from './net'
-import { applyInjection, buildClashYaml, type PreferredIP, type ProxySpec } from './inject'
+import { b64encodeUtf8 } from './net'
+import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
 import { resolvePool } from './countries'
+import { fetchSourceNodes, resolveSource } from './sourcebridge'
 
 export interface MemberSettings {
   countries: string[]
@@ -190,26 +191,6 @@ export async function refreshMemberUsage(env: Env, userId: string, id: string): 
 
 // ── Personalized sub serving ────────────────────────────────────────────────
 
-/** Fetch the subscription content of a single deployed worker. */
-async function fetchWorkerSub(dep: { worker_url: string | null; panel_url: string | null; uuid: string | null; custom_path: string | null }): Promise<string[]> {
-  const candidates: string[] = []
-  if (dep.worker_url && dep.uuid) candidates.push(`${dep.worker_url}/${dep.uuid}`)
-  if (dep.worker_url && dep.custom_path) candidates.push(`${dep.worker_url}/${dep.custom_path}`)
-  if (dep.panel_url) candidates.push(`${dep.panel_url}/sub`)
-  for (const url of candidates) {
-    try {
-      const resp = await fetch(url, { redirect: 'follow' })
-      if (!resp.ok) continue
-      const text = tryDecodeSub(await resp.text())
-      const lines = text.split('\n').map((l) => l.trim()).filter((l) => l.includes('://'))
-      if (lines.length) return lines
-    } catch {
-      // try next candidate
-    }
-  }
-  return []
-}
-
 /** Rewrite transport type param in a vless/vmess/trojan URI. */
 function rewriteTransport(line: string, transport: MemberSettings['transport']): string {
   if (!transport) return line
@@ -241,12 +222,10 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     return new Response('حجم اشتراک شما به پایان رسیده است. با مدیر خود تماس بگیرید.', { status: 402 })
   }
 
-  const dep = await env.DB.prepare(
-    'SELECT worker_url, panel_url, uuid, custom_path FROM deployments WHERE id = ? AND status = \'deployed\'',
-  ).bind(member.deployment_id as string).first<{ worker_url: string | null; panel_url: string | null; uuid: string | null; custom_path: string | null }>()
-  if (!dep) return new Response('ورکر در دسترس نیست', { status: 502 })
+  const ctx = await resolveSource(env, member.owner_user_id as string, member.deployment_id as string)
+  if (!ctx) return new Response('ورکر در دسترس نیست (اتصال واقعی به سورس برقرار نشد)', { status: 502 })
 
-  const lines = await fetchWorkerSub(dep)
+  const { lines } = await fetchSourceNodes(ctx)
   if (!lines.length) return new Response('کانفیگی از ورکر دریافت نشد', { status: 502 })
 
   const parsed: Partial<MemberSettings> = safeJsonParse<Partial<MemberSettings>>(member.settings as string, {})
