@@ -1,4 +1,4 @@
-name = "miliconfig-pro"
+name = "miliconfigpro-v1"
 main = "worker/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
@@ -12,7 +12,7 @@ run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "miliconfig-pro"
+database_name = "miliconfigpro-v1"
 database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
 [observability]

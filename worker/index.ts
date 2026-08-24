@@ -5,6 +5,7 @@ import { runDeployment } from './deploy'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner } from './scanner'
 import { handleTelegramWebhook } from './telegram'
+import { ensureSchema } from './schema'
 
 interface DeploymentBody {
   name?: string
@@ -359,6 +360,10 @@ export default {
     }
 
     try {
+      // Self-initialize an empty D1 database on first use.
+      if (path.startsWith('/api')) {
+        await ensureSchema(env)
+      }
       const response = await handleRouted(request, env, ctx, path, origin, method)
       return withCors(response, cors)
     } catch (err) {
