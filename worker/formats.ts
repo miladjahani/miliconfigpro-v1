@@ -34,6 +34,7 @@ export async function fetchSubLines(url: string, timeoutMs = 30_000): Promise<st
     if (seg !== '/' && seg !== parsed.pathname) variants.push(parsed.origin + seg)
   } catch { /* not a URL — caller handles raw content */ }
 
+  let saw1042 = false
   for (const candidate of [...new Set(variants)]) {
     try {
       const ctrl = new AbortController()
@@ -48,10 +49,14 @@ export async function fetchSubLines(url: string, timeoutMs = 30_000): Promise<st
       } finally {
         clearTimeout(t)
       }
+      if (text.includes('error code: 1042')) saw1042 = true
       const lines = toLines(text)
       if (lines.length) return lines
       if (!ok) continue // 404/5xx with no usable content → next variant
     } catch { /* network error → next variant */ }
+  }
+  if (saw1042) {
+    throw new Error('کلودفلر دریافت ساب از ورکر workers.dev را مسدود کرد (خطای 1042) — پرچم global_fetch_strictly_public باید روی ورکر فعال باشد')
   }
   return []
 }

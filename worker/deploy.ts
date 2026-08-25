@@ -338,7 +338,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       const meta = {
         main_module: 'worker.js',
         compatibility_date: compatDate,
-        compatibility_flags: ['nodejs_compat'],
+        compatibility_flags: ['nodejs_compat', 'global_fetch_strictly_public'],
         bindings: sourceConfig.kind === 'zeus' ? [
           { type: 'd1', name: 'DB', id: d1DatabaseId },
           ...(r2BucketName ? [{ type: 'r2_bucket', name: 'R2', bucket_name: r2BucketName }] : []),
@@ -480,7 +480,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
         deployment_configs: {
           production: {
             compatibility_date: compatDate,
-            compatibility_flags: ['nodejs_compat'],
+            compatibility_flags: ['nodejs_compat', 'global_fetch_strictly_public'],
             kv_namespaces: { [kvBindingName]: { namespace_id: kvNamespaceId } },
             ...(r2BucketName ? { r2_buckets: { R2: { bucket_name: r2BucketName } } } : {}),
             environment_variables: configFormat === 'edgetunnel' ? {
