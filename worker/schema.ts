@@ -174,6 +174,7 @@ const MIGRATIONS = [
   `ALTER TABLE worker_members ADD COLUMN last_reset_at TEXT`,
   `ALTER TABLE worker_members ADD COLUMN notified_level INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE injector_jobs ADD COLUMN rotate_minutes INTEGER`,
+  `ALTER TABLE optimizer_jobs ADD COLUMN opt_options TEXT`,
 ]
 
 let ready: Promise<void> | null = null

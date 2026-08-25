@@ -7,6 +7,7 @@ import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleTelegramWebhook } from './telegram'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
+import { handleOptProbe, handleOptPorts, handleOptScanBatch, handleOptSpeedtest } from './probe'
 import { handleGroupCreate, handleGroupList, handleGroupDelete, handleGroupPatch, serveGroupSub } from './subgroups'
 import { handleInjectorCreate, handleInjectorList, handleInjectorPatch, handleInjectorDelete, serveInjectedSub } from './injector'
 import { handleMemberCreate, handleMemberList, handleMemberPatch, handleMemberDelete, handleMemberBulk, handleCfQuota, refreshMemberUsage, serveMemberSub } from './members'
@@ -385,6 +386,12 @@ async function handleRouted(
     if (path === '/api/optimizer' && method === 'POST') return await handleOptimizerCreate(env, user.id, request, ctx)
     if (path.match(/^\/api\/optimizer\/[^/]+$/) && method === 'GET') return await handleOptimizerGet(env, user.id, path.split('/')[3])
     if (path.match(/^\/api\/optimizer\/[^/]+$/) && method === 'DELETE') return await handleOptimizerDelete(env, user.id, path.split('/')[3])
+
+    // ── Real edge probes (Sop8 engines: colo, ports, speedtest, batch) ──
+    if (path === '/api/opt/probe' && method === 'GET') return await handleOptProbe(env, request)
+    if (path === '/api/opt/ports' && method === 'GET') return await handleOptPorts(env, request)
+    if (path === '/api/opt/scan-batch' && method === 'POST') return await handleOptScanBatch(env, request)
+    if (path === '/api/opt/speedtest' && method === 'GET') return await handleOptSpeedtest(env, request)
 
     // ── Group subscriptions ───────────────────────────────────────────
     if (path === '/api/subgroups' && method === 'GET') return await handleGroupList(env, user.id)
