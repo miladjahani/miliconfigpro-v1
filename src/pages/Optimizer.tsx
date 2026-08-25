@@ -18,6 +18,7 @@ export default function Optimizer() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
+  const [keepDead, setKeepDead] = useState(false)
 
   // ── Injection (miliconfig custom sub) ──
   const [injName, setInjName] = useState('')
@@ -84,7 +85,7 @@ export default function Optimizer() {
     if (!input.trim()) { setError('لینک ساب یا کانفیگ‌ها را وارد کنید'); return }
     setBusy(true); setError(null)
     try {
-      await api('/optimizer', { method: 'POST', body: { name: name.trim(), input: input.trim() } })
+      await api('/optimizer', { method: 'POST', body: { name: name.trim(), input: input.trim(), options: { keep_dead: keepDead } } })
       setInput(''); setName('')
       await load()
     } catch (e) {
@@ -147,6 +148,15 @@ export default function Optimizer() {
           />
         </div>
         {error && <p className="text-sm text-error-400">{error}</p>}
+        <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none" data-guide="o-keep-dead">
+          <input
+            type="checkbox"
+            checked={keepDead}
+            onChange={(e) => setKeepDead(e.target.checked)}
+            className="w-4 h-4 rounded accent-brand-500"
+          />
+          نگه‌داشتن نودهای بدون پاسخ (فقط مرتب‌سازی — نودهای قطع با ✖ مشخص و بعد از نودهای سالم می‌آیند)
+        </label>
         <button onClick={run} disabled={busy} data-guide="o-start" className="btn-primary w-full flex items-center justify-center gap-2">
           <Play className="w-4 h-4" />
           {busy ? 'در حال ارسال...' : 'شروع بهینه‌سازی'}

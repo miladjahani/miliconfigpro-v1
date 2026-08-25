@@ -17,6 +17,8 @@ export interface OptOptions {
   fm?: string
   speedtest?: boolean
   colo?: boolean
+  /** Keep nodes that fail the liveness probe — sort alive-first, don't drop. */
+  keep_dead?: boolean
 }
 
 export const OPT_PRESETS: Record<string, Partial<OptOptions>> = {
@@ -166,6 +168,11 @@ export async function runOptimizerJob(env: Env, jobId: string, input: string, op
       .filter((p) => p.latencyMs !== null)
       .sort((a, b) => (a.latencyMs ?? 99999) - (b.latencyMs ?? 99999))
 
+    // keep_dead: failed nodes stay in the output, sorted after the alive ones.
+    const dead = opts.keep_dead
+      ? probed.filter((p) => p.latencyMs === null)
+      : []
+
     // ── Colo verification (real edge proof) on the fastest nodes ───────
     const coloTargets = opts.colo === false ? [] : alive.slice(0, 20)
     const coloMap = new Map<string, { colo: string | null; city: string | null; verified: boolean }>()
@@ -185,7 +192,7 @@ export async function runOptimizerJob(env: Env, jobId: string, input: string, op
       speeds.forEach((s, i) => speedMap.set(speedTargets[i]!.host, s.mbps))
     }
 
-    const resultNodes: OptimizedNode[] = alive.map((p) => {
+    const resultNodes: OptimizedNode[] = [...alive, ...dead].map((p) => {
       const colo = coloMap.get(p.node.host)
       return {
         name: p.node.name,
@@ -201,17 +208,21 @@ export async function runOptimizerJob(env: Env, jobId: string, input: string, op
     })
 
     // Rebuild lines with latency tag, sorted best-first. Speed-tested nodes
-    // get sorted by real throughput first, then latency.
+    // get sorted by real throughput first, then latency. With keep_dead,
+    // failed nodes follow the alive ones (marked ✖) instead of being dropped.
     let ordered = alive
     if (opts.speedtest && speedTargets.length) {
       ordered = [...alive].sort((a, b) => (speedMap.get(b.node.host) ?? 0) - (speedMap.get(a.node.host) ?? 0))
     }
-    const optimizedLines = ordered.map((p) => {
+    const optimizedLines = [...ordered, ...dead].map((p) => {
       const speed = speedMap.get(p.node.host)
       const colo = coloMap.get(p.node.host)?.colo
-      const tag = opts.speedtest && speed !== undefined
-        ? (speed > 0 ? `⚡ ${p.latencyMs}ms · ${speed}Mbps` : `⚡ ${p.latencyMs}ms`)
-        : `⚡ ${p.latencyMs}ms`
+      const isDead = p.latencyMs === null
+      const tag = isDead
+        ? '✖ قطع'
+        : opts.speedtest && speed !== undefined
+          ? (speed > 0 ? `⚡ ${p.latencyMs}ms · ${speed}Mbps` : `⚡ ${p.latencyMs}ms`)
+          : `⚡ ${p.latencyMs}ms`
       const coloTag = colo ? ` [${colo}]` : ''
       const baseName = p.node.name.replace(/\s*⚡.*$/, '').replace(/\s*\[[A-Z]{3}\]\s*$/, '')
       const newName = `${baseName} ${tag}${coloTag}`
@@ -236,7 +247,7 @@ export async function runOptimizerJob(env: Env, jobId: string, input: string, op
 
     await update({
       status: 'done',
-      nodes_alive: optimizedLines.length,
+      nodes_alive: alive.length,
       result_nodes: JSON.stringify(resultNodes),
       result_sub: b64encodeUtf8(optimizedLines.join('\n')),
     })
