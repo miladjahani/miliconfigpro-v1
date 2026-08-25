@@ -8,19 +8,56 @@ import { b64encodeUtf8 } from './net'
 import { buildClashYaml, linesToResult } from './inject'
 import { extractNodes, singboxJsonToLinks } from './parser'
 
+/** Decode a response body the way the EDT source does: try UTF-8 first,
+ *  and if the text contains replacement characters (wrong charset — common
+ *  with GB2312/GBK Chinese IP lists and some Persian providers), retry with
+ *  the charset from Content-Type, then GB2312, then Latin-1. */
+function decodeSmart(buffer: ArrayBuffer, contentType: string): string {
+  const charset = (contentType.match(/charset=([^\s;]+)/i)?.[1] ?? '').toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const candidates = [
+    ...(charset && charset !== 'utf-8' && charset !== 'utf8' ? [charset] : []),
+    'utf-8', 'gb2312', 'windows-1256', 'latin1',
+  ]
+  for (const enc of candidates) {
+    try {
+      const decoded = new TextDecoder(enc).decode(buffer)
+      if (decoded.length > 0 && !decoded.includes('\ufffd')) return decoded
+    } catch { /* encoding unsupported in this runtime → next */ }
+  }
+  return new TextDecoder('utf-8').decode(buffer)
+}
+
 /** Fetch node lines from ANY subscription URL, tolerating every real-world
  * shape: base64 blobs, plain link lists, sing-box JSON, Clash YAML, HTML
  * pages, error pages with partial content, and wrong paths. If the exact
  * URL fails (404 etc.) we retry smart fallback variants — e.g. a pasted
  * `worker/uuid/sub?target=x` still resolves to the working `worker/uuid`
- * direct subscription. */
+ * direct subscription. Mirrors the proven fetch hardening of the EDT
+ * source: client User-Agent, `sub://` scheme, `#remark` tagging and
+ * multi-charset decoding. */
 export async function fetchSubLines(url: string, timeoutMs = 30_000): Promise<string[]> {
-  const toLines = (text: string): string[] => extractNodes(text)
+  const raw = url.trim()
+  // EDT-style `sub://host` scheme → https (preferred-IP generator links).
+  const u = raw.replace(/^sub:\/\//i, 'https://')
+  // `#remark` suffix on pasted URLs tags every node from this source (EDT-style).
+  const hashIndex = u.indexOf('#')
+  const remark = hashIndex > -1 ? decodeURIComponent(u.slice(hashIndex + 1)).trim() : ''
+  const cleanUrl = hashIndex > -1 ? u.slice(0, hashIndex) : u
 
-  const u = url.trim()
-  const variants: string[] = [u]
+  const tag = (lines: string[]): string[] => {
+    if (!remark) return lines
+    return lines.map((l) => {
+      const h = l.indexOf('#')
+      const base = h > -1 ? l.slice(0, h) : l
+      const name = h > -1 ? decodeURIComponent(l.slice(h + 1)) : ''
+      const newName = name ? `${name} [${remark}]` : remark
+      return `${base}#${encodeURIComponent(newName)}`
+    })
+  }
+
+  const variants: string[] = [cleanUrl]
   try {
-    const parsed = new URL(u)
+    const parsed = new URL(cleanUrl)
     // 2) without query string
     if (parsed.search) variants.push(parsed.origin + parsed.pathname)
     // 3) without a trailing `/sub` segment (common wrong mix of direct-sub + panel path)
@@ -39,18 +76,26 @@ export async function fetchSubLines(url: string, timeoutMs = 30_000): Promise<st
     try {
       const ctrl = new AbortController()
       const t = setTimeout(() => ctrl.abort(), timeoutMs)
-      let text = ''
+      let buffer: ArrayBuffer = new ArrayBuffer(0)
+      let contentType = ''
       let ok = false
       try {
-        const resp = await fetch(candidate, { redirect: 'follow', signal: ctrl.signal })
+        // Client-style UA — some sub providers 403 empty/unknown UAs.
+        const resp = await fetch(candidate, {
+          redirect: 'follow',
+          signal: ctrl.signal,
+          headers: { 'User-Agent': 'v2rayNG/1.9.16' },
+        })
         ok = resp.ok
         // Even non-200 bodies sometimes contain usable node lines — read them.
-        text = await resp.text()
+        contentType = resp.headers.get('content-type') ?? ''
+        buffer = await resp.arrayBuffer()
       } finally {
         clearTimeout(t)
       }
+      const text = decodeSmart(buffer, contentType)
       if (text.includes('error code: 1042')) saw1042 = true
-      const lines = toLines(text)
+      const lines = tag(extractNodes(text))
       if (lines.length) return lines
       if (!ok) continue // 404/5xx with no usable content → next variant
     } catch { /* network error → next variant */ }
@@ -67,7 +112,7 @@ export async function fetchMultiSubLines(input: string, timeoutMs = 30_000): Pro
   const urls = input
     .split(/[\s,]+/)
     .map((s) => s.trim())
-    .filter((s) => /^https?:\/\//i.test(s))
+    .filter((s) => /^(https?|sub):\/\//i.test(s))
     .slice(0, 10)
   if (!urls.length) return []
 

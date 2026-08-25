@@ -19,7 +19,7 @@ export interface ProxySpec {
 
 export async function collectNodeLines(source: string): Promise<string[]> {
   const trimmed = source.trim()
-  if (/https?:\/\//i.test(trimmed)) {
+  if (/(https?|sub):\/\//i.test(trimmed)) {
     // Multi-URL + universal parser (base64 / JSON / Clash YAML / plain / HTML).
     const { fetchMultiSubLines } = await import('./formats')
     const lines = await fetchMultiSubLines(trimmed)
