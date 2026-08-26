@@ -36,6 +36,23 @@ async function getActiveConfig(env: Env): Promise<BotConfigRow | null> {
     .first<BotConfigRow>()
 }
 
+/** Resolve which bot_config an incoming update belongs to.
+ *  Telegram echoes back the secret_token we registered via setWebhook in the
+ *  X-Telegram-Bot-Api-Secret-Token header — use it to route precisely, so a
+ *  stale or other user's active row can never swallow this bot's updates.
+ *  Falls back to the legacy "first active row" for hooks registered before
+ *  secrets existed (they self-heal on the next save/reconnect). */
+async function resolveConfig(env: Env, request: Request): Promise<BotConfigRow | null> {
+  const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+  if (secret) {
+    const bySecret = await env.DB.prepare(
+      'SELECT id, user_id, bot_token, is_active, welcome_message, chat_id FROM bot_config WHERE webhook_secret = ? AND is_active = 1 LIMIT 1',
+    ).bind(secret).first<BotConfigRow>()
+    if (bySecret) return bySecret
+  }
+  return getActiveConfig(env)
+}
+
 async function saveOwnerChat(env: Env, cfg: BotConfigRow, chatId: number | string): Promise<void> {
   if (String(cfg.chat_id ?? '') === String(chatId)) return
   await env.DB.prepare('UPDATE bot_config SET chat_id = ?, updated_at = ? WHERE id = ?')
@@ -202,7 +219,7 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
   if (update.callback_query) {
     const cq = update.callback_query
     const chatId = cq.message?.chat?.id
-    const cfg = await getActiveConfig(env)
+    const cfg = await resolveConfig(env, request)
     if (!cfg || !chatId) return ok()
 
     ctx.waitUntil(tgPost(cfg.bot_token, 'answerCallbackQuery', { callback_query_id: cq.id }).catch(() => null))
@@ -220,7 +237,7 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
   const message = update.message
   if (!message?.text) return ok()
 
-  const cfg = await getActiveConfig(env)
+  const cfg = await resolveConfig(env, request)
   if (!cfg) return ok()
 
   const bt = cfg.bot_token

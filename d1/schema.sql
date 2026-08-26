@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
   bot_token TEXT NOT NULL,
   bot_username TEXT,
   webhook_url TEXT,
+  webhook_secret TEXT,                   -- per-bot setWebhook secret_token for exact routing
   is_active INTEGER NOT NULL DEFAULT 1,
   welcome_message TEXT NOT NULL DEFAULT 'سلام! به ربات miliconfig خوش آمدید. برای شروع /start را بفرستید.',
   chat_id TEXT,                          -- owner chat for push notifications

@@ -11,7 +11,17 @@ import {
   AlertCircle,
   Sparkles,
   Copy,
+  RefreshCw,
+  PlugZap,
 } from 'lucide-react'
+
+interface WebhookInfo {
+  url?: string
+  pending_update_count?: number
+  last_error_date?: number
+  last_error_message?: string
+  ip_address?: string
+}
 
 export default function BotConfigPage() {
   const [config, setConfig] = useState<BotConfig | null>(null)
@@ -19,6 +29,15 @@ export default function BotConfigPage() {
   const [saving, setSaving] = useState(false)
   const [webhookCopied, setWebhookCopied] = useState(false)
   const [botToken, setBotToken] = useState('')
+  const [hookInfo, setHookInfo] = useState<WebhookInfo | null>(null)
+  const [checkingHook, setCheckingHook] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
+
+  /** Strip invisible Unicode (ZWNJ/RTL marks) + whitespace + optional "bot" prefix —
+   *  Persian copy-paste often injects these and Telegram silently rejects the token. */
+  const cleanToken = (raw: string) =>
+    // eslint-disable-next-line no-misleading-character-class
+    raw.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\s]/g, '').replace(/^bot/i, '')
   const [welcomeMessage, setWelcomeMessage] = useState('سلام! به ربات miliconfig خوش آمدید. برای شروع /start را بفرستید.')
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -44,7 +63,7 @@ export default function BotConfigPage() {
       // The server validates the token via Telegram getMe and connects the webhook.
       const { data } = await api<{ data: BotConfig }>('/bot-config', {
         method: 'PUT',
-        body: { bot_token: botToken.trim(), welcome_message: welcomeMessage, is_active: true },
+        body: { bot_token: cleanToken(botToken), welcome_message: welcomeMessage, is_active: true },
       })
       setConfig(data)
       setMessage({ type: 'success', text: 'ربات با موفقیت فعال شد! وب‌هوک متصل است و ربات آماده دریافت پیام‌هاست.' })
@@ -73,6 +92,34 @@ export default function BotConfigPage() {
       setWebhookCopied(true)
       setTimeout(() => setWebhookCopied(false), 2000)
     }
+  }
+
+  const checkWebhookInfo = async () => {
+    setCheckingHook(true)
+    try {
+      const { data } = await api<{ data: WebhookInfo }>('/bot-config/webhook-info')
+      setHookInfo(data ?? null)
+    } catch (err) {
+      setHookInfo(null)
+      setMessage({ type: 'error', text: err instanceof ApiError ? err.message : 'خطا در دریافت وضعیت از تلگرام' })
+      setTimeout(() => setMessage(null), 5000)
+    }
+    setCheckingHook(false)
+  }
+
+  const reconnectWebhook = async () => {
+    setReconnecting(true)
+    setMessage(null)
+    try {
+      await api<{ data: BotConfig }>('/bot-config/reconnect', { method: 'POST' })
+      setMessage({ type: 'success', text: 'وب‌هوک دوباره وصل شد! حالا به ربات /start بدهید.' })
+      await load()
+      await checkWebhookInfo()
+    } catch (err) {
+      setMessage({ type: 'error', text: err instanceof ApiError ? err.message : 'خطا در اتصال مجدد' })
+    }
+    setReconnecting(false)
+    setTimeout(() => setMessage(null), 6000)
   }
 
   if (loading) {
@@ -120,12 +167,12 @@ export default function BotConfigPage() {
             type="text"
             required={!config}
             value={botToken}
-            onChange={(e) => setBotToken(e.target.value)}
+            onChange={(e) => setBotToken(cleanToken(e.target.value))}
             placeholder={config ? 'برای تغییر توکن، توکن جدید را وارد کنید' : '123456789:ABCdefGHIjklMNO...'}
             className="input-field font-mono text-sm"
             dir="ltr"
           />
-          <p className="text-xs text-slate-500 mt-2">توکن را از @BotFather دریافت کنید{config ? ' — برای حفظ توکن فعلی، این فیلد را خالی بگذارید' : ''}</p>
+          <p className="text-xs text-slate-500 mt-2">توکن را از @BotFather دریافت کنید{config ? ' — برای حفظ توکن فعلی، این فیلد را خالی بگذارید' : ''}. کاراکترهای نامرئی هنگام کپی خودکار پاک می‌شوند؛ کل رشتهٔ کامل (اعداد + دو‌نقطه + حروف) را یکجا کپی کنید.</p>
         </div>
 
         <div>
@@ -183,6 +230,53 @@ export default function BotConfigPage() {
               <p className="text-sm text-amber-400">وب‌هوک هنوز متصل نیست. دوباره تنظیمات را ذخیره کنید تا اتصال خودکار انجام شود.</p>
             </div>
           )}
+
+          {/* Live diagnostics straight from Telegram */}
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={checkWebhookInfo}
+                disabled={checkingHook || !config}
+                className="px-3 py-2 rounded-xl text-xs font-medium bg-brand-500/10 text-brand-300 hover:bg-brand-500/20 transition-all flex items-center gap-2 disabled:opacity-50"
+              >
+                {checkingHook ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                بررسی زنده از تلگرام
+              </button>
+              {config && (
+                <button
+                  type="button"
+                  onClick={reconnectWebhook}
+                  disabled={reconnecting}
+                  className="px-3 py-2 rounded-xl text-xs font-medium bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-all flex items-center gap-2 disabled:opacity-50"
+                >
+                  {reconnecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />}
+                  اتصال مجدد وب‌هوک (بدون نیاز به توکن)
+                </button>
+              )}
+            </div>
+
+            {hookInfo && (
+              <div className={`p-4 rounded-xl border text-sm space-y-2 ${
+                hookInfo.last_error_message
+                  ? 'bg-error-500/10 border-error-500/30'
+                  : 'bg-slate-900/50 border-slate-800/50'
+              }`} dir="ltr">
+                <p className="text-xs text-slate-500 font-bold" dir="rtl">پاسخ واقعی تلگرام (getWebhookInfo):</p>
+                <p><span className="text-slate-500">URL:</span> <code className="text-slate-300 font-mono text-xs break-all">{hookInfo.url || '—'}</code></p>
+                <p><span className="text-slate-500">Pending updates:</span> <span className="text-slate-300">{hookInfo.pending_update_count ?? 0}</span></p>
+                {hookInfo.last_error_message && (
+                  <p className="text-error-400"><span className="text-slate-500">Last error:</span> {hookInfo.last_error_message}{hookInfo.last_error_date ? ` (${new Date(hookInfo.last_error_date * 1000).toLocaleString('fa-IR')})` : ''}</p>
+                )}
+                {!hookInfo.last_error_message && hookInfo.url && (
+                  <p className="text-green-400" dir="rtl">تلگرام تأیید می‌کند وب‌هوک فعال است — اگر باز هم پاسخی نمی‌گیرید، یک بار «اتصال مجدد» را بزنید و بعد /start بفرستید.</p>
+                )}
+                {!hookInfo.url && (
+                  <p className="text-amber-400" dir="rtl">تلگرام می‌گوید هیچ وب‌هوکی تنظیم نشده — دکمهٔ «اتصال مجدد» را بزنید.</p>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

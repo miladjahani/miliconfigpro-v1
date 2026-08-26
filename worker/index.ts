@@ -139,8 +139,66 @@ async function deleteDeployment(env: Env, userId: string, id: string): Promise<R
 
 // ── Bot config & users ─────────────────────────────────────────────────────
 
+/** Shape a bot_config row for the API (never leak the secret). */
 async function botConfigRowToObj(row: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return { ...row, is_active: !!row.is_active }
+  const { webhook_secret: _secret, ...rest } = row
+  return { ...rest, is_active: !!row.is_active }
+}
+
+/** Clean a pasted bot token: strip the optional "bot" prefix, whitespace and
+ *  invisible Unicode characters (ZWNJ/RLM/LRM etc.) that Persian keyboards and
+ *  copy-paste often inject — any of these makes Telegram reject the token. */
+function sanitizeBotToken(raw: string): string {
+  return raw
+    // eslint-disable-next-line no-misleading-character-class
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\s]/g, '')
+    .replace(/^bot/i, '')
+    .trim()
+}
+
+/** Register (or re-register) the Telegram webhook for a bot.
+ *  A per-bot random secret_token rides along so the webhook handler can route
+ *  every incoming update to exactly this bot_config row. */
+async function setBotWebhook(botToken: string, origin: string, secret: string): Promise<{ ok: boolean; description?: string }> {
+  const resp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: `${origin}/api/webhooks/telegram`,
+      allowed_updates: ['message', 'callback_query'],
+      drop_pending_updates: true,
+      secret_token: secret,
+    }),
+  }).then((r) => r.json()).catch(() => null)
+  const data = resp as { ok?: boolean; description?: string } | null
+  return { ok: !!data?.ok, description: data?.description }
+}
+
+/** Live webhook diagnostics straight from Telegram (getWebhookInfo). */
+async function botWebhookInfo(env: Env, userId: string): Promise<Response> {
+  const row = await env.DB.prepare('SELECT bot_token FROM bot_config WHERE user_id = ? LIMIT 1').bind(userId).first<{ bot_token: string }>()
+  if (!row) return apiError('ربات هنوز پیکربندی نشده است', 404)
+  const info = await fetch(`https://api.telegram.org/bot${sanitizeBotToken(row.bot_token)}/getWebhookInfo`)
+    .then((r) => r.json())
+    .catch(() => null)
+  const data = info as { ok?: boolean; result?: Record<string, unknown>; description?: string } | null
+  if (!data?.ok) return apiError(`خواندن وضعیت وب‌هوک از تلگرام ناموفق بود: ${data?.description ?? 'ارتباط برقرار نشد'}`)
+  return json({ data: data.result })
+}
+
+/** Force-reconnect the webhook using the stored token (no retyping needed). */
+async function reconnectBotWebhook(env: Env, userId: string, origin: string): Promise<Response> {
+  const row = await env.DB.prepare('SELECT id, bot_token, is_active FROM bot_config WHERE user_id = ? LIMIT 1').bind(userId).first<{ id: string; bot_token: string; is_active: number }>()
+  if (!row) return apiError('ربات هنوز پیکربندی نشده است', 404)
+  if (!row.is_active) await env.DB.prepare('UPDATE bot_config SET is_active = 1 WHERE id = ?').bind(row.id).run()
+  const secret = genId().replace(/-/g, '')
+  const hook = await setBotWebhook(sanitizeBotToken(row.bot_token), origin, secret)
+  if (!hook.ok) return apiError(`اتصال مجدد وب‌هوک ناموفق بود: ${hook.description ?? 'خطای ناشناخته'}`)
+  await env.DB.prepare('UPDATE bot_config SET webhook_url = ?, webhook_secret = ?, is_active = 1, updated_at = ? WHERE id = ?')
+    .bind(`${origin}/api/webhooks/telegram`, secret, nowIso(), row.id)
+    .run()
+  await logActivity(env, userId, 'bot_webhook_reconnected', 'bot', null)
+  return getBotConfig(env, userId)
 }
 
 async function getBotConfig(env: Env, userId: string): Promise<Response> {
@@ -154,7 +212,20 @@ async function saveBotConfig(env: Env, userId: string, request: Request, origin:
   const existing = await env.DB.prepare('SELECT * FROM bot_config WHERE user_id = ? LIMIT 1').bind(userId).first<Record<string, unknown>>()
 
   // Update without a token: toggle is_active and/or edit the welcome message.
+  // Saving again also re-registers the webhook from the stored token — a safe
+  // "reconnect" that fixes silently-dropped hooks without retyping the token.
   if (!body.bot_token?.trim() && existing) {
+    const storedToken = sanitizeBotToken(existing.bot_token as string)
+    let reconnect: { ok: boolean; description?: string } | null = null
+    if ((typeof body.is_active === 'boolean' ? body.is_active : !!existing.is_active) && storedToken) {
+      const secret = genId().replace(/-/g, '')
+      reconnect = await setBotWebhook(storedToken, origin, secret)
+      if (reconnect.ok) {
+        await env.DB.prepare('UPDATE bot_config SET webhook_url = ?, webhook_secret = ? WHERE id = ?')
+          .bind(`${origin}/api/webhooks/telegram`, secret, existing.id as string)
+          .run()
+      }
+    }
     await env.DB.prepare(
       `UPDATE bot_config SET
          welcome_message = COALESCE(?, welcome_message),
@@ -169,11 +240,18 @@ async function saveBotConfig(env: Env, userId: string, request: Request, origin:
         existing.id as string,
       )
       .run()
+    if (reconnect && !reconnect.ok) {
+      const updated = await env.DB.prepare('SELECT * FROM bot_config WHERE user_id = ? LIMIT 1').bind(userId).first<Record<string, unknown>>()
+      return json({ data: updated ? await botConfigRowToObj(updated) : null, warning: `وب‌هوک دوباره وصل نشد: ${reconnect.description ?? 'خطای ناشناخته'}` })
+    }
     return getBotConfig(env, userId)
   }
 
   if (!body.bot_token?.trim() && !existing) return apiError('توکن ربات الزامی است')
-  const botToken = body.bot_token!.trim()
+  const botToken = sanitizeBotToken(body.bot_token!)
+  if (!/^\d{8,12}:[A-Za-z0-9_-]{30,}$/.test(botToken)) {
+    return apiError('قالب توکن درست نیست — توکن باید شبیه 123456789:AAH... باشد و مستقیم از BotFather کپی شود')
+  }
   const welcome = body.welcome_message?.trim()
     || ((existing?.welcome_message as string) ?? '')
     || 'سلام! به ربات miliconfig خوش آمدید. برای شروع /start را بفرستید.'
@@ -182,32 +260,33 @@ async function saveBotConfig(env: Env, userId: string, request: Request, origin:
   const meResp = await fetch(`https://api.telegram.org/bot${botToken}/getMe`).then((r) => r.json()).catch(() => null)
   const meData = meResp as { ok?: boolean; result?: { username?: string }; description?: string } | null
   if (!meData?.ok) {
-    return apiError(meData?.description ?? 'توکن ربات نامعتبر است')
+    const d = meData?.description ?? ''
+    const hint = d.includes('Unauthorized')
+      ? 'توکن از سمت تلگرام رد شد — مطمئن شوید کل رشتهٔ کامل از BotFather کپی شده و ربات با /revoke باطل نشده باشد'
+      : d
+        ? `تلگرام پاسخ داد: ${d}`
+        : 'اتصال به سرور تلگرام ناموفق بود — چند لحظه بعد دوباره تلاش کنید'
+    return apiError(`توکن ربات تأیید نشد: ${hint}`)
   }
-  const webhookUrl = `${origin}/api/webhooks/telegram`
-  const hookResp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: webhookUrl }),
-  }).then((r) => r.json()).catch(() => null)
-  const hookData = hookResp as { ok?: boolean; description?: string } | null
-  if (!hookData?.ok) {
-    return apiError(hookData?.description ?? 'اتصال وب‌هوک ناموفق بود')
-  }
-
   const botUsername = meData.result?.username ?? null
+  const webhookUrl = `${origin}/api/webhooks/telegram`
+  const webhookSecret = genId().replace(/-/g, '')
+  const hookData = await setBotWebhook(botToken, origin, webhookSecret)
+  if (!hookData.ok) {
+    return apiError(`اتصال وب‌هوک ناموفق بود: ${hookData.description ?? 'خطای ناشناخته'}`)
+  }
   if (existing) {
     await env.DB.prepare(
-      `UPDATE bot_config SET bot_token = ?, bot_username = ?, webhook_url = ?, is_active = ?, welcome_message = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE bot_config SET bot_token = ?, bot_username = ?, webhook_url = ?, webhook_secret = ?, is_active = ?, welcome_message = ?, updated_at = ? WHERE id = ?`,
     )
-      .bind(botToken, botUsername, webhookUrl, body.is_active === false ? 0 : 1, welcome, nowIso(), existing.id as string)
+      .bind(botToken, botUsername, webhookUrl, webhookSecret, body.is_active === false ? 0 : 1, welcome, nowIso(), existing.id as string)
       .run()
   } else {
     await env.DB.prepare(
-      `INSERT INTO bot_config (id, user_id, bot_token, bot_username, webhook_url, is_active, welcome_message, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      `INSERT INTO bot_config (id, user_id, bot_token, bot_username, webhook_url, webhook_secret, is_active, welcome_message, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     )
-      .bind(genId(), userId, botToken, botUsername, webhookUrl, welcome, nowIso(), nowIso())
+      .bind(genId(), userId, botToken, botUsername, webhookUrl, webhookSecret, welcome, nowIso(), nowIso())
       .run()
   }
 
@@ -352,6 +431,8 @@ async function handleRouted(
     if (path.match(/^\/api\/deployments\/[^/]+$/) && method === 'GET') return await getDeployment(env, user.id, path.split('/')[3])
     if (path.match(/^\/api\/deployments\/[^/]+$/) && method === 'DELETE') return await deleteDeployment(env, user.id, path.split('/')[3])
 
+    if (path === '/api/bot-config/webhook-info' && method === 'GET') return await botWebhookInfo(env, user.id)
+    if (path === '/api/bot-config/reconnect' && method === 'POST') return await reconnectBotWebhook(env, user.id, origin)
     if (path === '/api/bot-config' && method === 'GET') return await getBotConfig(env, user.id)
     if (path === '/api/bot-config' && (method === 'PUT' || method === 'PATCH')) return await saveBotConfig(env, user.id, request, origin)
 
