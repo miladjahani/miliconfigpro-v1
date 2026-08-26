@@ -139,10 +139,24 @@ export async function fetchSourceNodes(ctx: SourceCtx): Promise<{ lines: string[
   }
   const addresses = [...new Set([...ips, ...(proxyip ? [proxyip] : []), ...(ips.length || proxyip ? [] : [host])])]
 
+  // Read the PATH from config (edgetunnel uses this as the WS path).
+  const wsPath = cfgResp?.ok
+    ? String(safeJsonParse<Record<string, unknown>>(cfgResp.text, {}).PATH ?? '/')
+    : '/'
+
   const lines = addresses.map((ip) => {
     const name = encodeURIComponent(`${ctx.name} | ${ip === host ? 'direct' : ip}`)
-    const path = '/'
-    return `vless://${uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(host)}&fp=chrome&type=ws&host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}#${name}`
+    const params = new URLSearchParams({
+      encryption: 'none',
+      security: 'tls',
+      sni: host,
+      fp: 'chrome',
+      type: 'ws',
+      host: host,
+      path: wsPath || '/',
+    })
+    if (proxyip) params.set('proxyip', proxyip)
+    return `vless://${uuid}@${ip}:443?${params.toString()}#${name}`
   })
   return { lines: dedupe(lines), live: false }
 }

@@ -297,6 +297,12 @@ export default function Members() {
           کشور IP (آی‌پی واقعی و زنده از مخزن EDT)، ترنسپورت، فرگمنت و Cipher Suite،
           دور زدن تحریم با SNI یا WARP (باز کردن جمنی)، سقف حجم و انقضا.
         </p>
+        <div className="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/20 p-3">
+          <p className="text-xs text-amber-300 leading-relaxed">
+            💡 <b>نکته مهم برای مرورگر:</b> اگر کاربران فقط تلگرام و یوتیوب باز می‌کنند ولی سایت‌های دیگر (مثل speedtest، جمنی) باز نمی‌شود،
+            دلیلش این است که IP خروجی ورکر کلودفلر است. برای باز کردن همهٔ سایت‌ها در مرورگر، فیلد <b>ProxyIP</b> را در تنظیمات کاربر با IP یک سرور پروکسی پر کنید.
+          </p>
+        </div>
       </div>
 
       <div className="glass-card p-6 space-y-4">
@@ -431,7 +437,14 @@ export default function Members() {
             <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
               <p className="text-xs font-medium text-slate-300 mb-2">⚙️ تنظیمات پیشرفته edgetunnel — مستقیم روی ورکر اعمال می‌شود (پارامترهای URL)</p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <Field label="ProxyIP اختصاصی (خروجی ورکر از IP دیگر)" value={form.proxyip} onChange={(v) => set('proxyip', v)} placeholder="1.2.3.4 یا domain:port" guide="m-proxyip" />
+                <div data-guide="m-proxyip">
+                  <Field label="ProxyIP اختصاصی" value={form.proxyip} onChange={(v) => set('proxyip', v)} placeholder="1.2.3.4 یا domain:port" />
+                  <p className="text-[11px] text-amber-400/80 mt-1 leading-relaxed">
+                    ⚠️ بدون این تنظیم، مرورگر وب سایت‌ها را باز نمی‌کند (فقط تلگرام/یوتیوب کار می‌کند).<br/>
+                    IP خروجی ورکر کلودفلر است و سایت‌هایی مثل speedtest.net آن را مسدود می‌کنند.<br/>
+                    اینجا IP یک سرور پروکسی خارجی (مثلاً سرور شخصی خودتان) وارد کنید تا خروجی از آن IP انجام شود.
+                  </p>
+                </div>
                 <label className="block" data-guide="m-chain-proto">
                   <span className="text-xs text-slate-400 mb-1 block">پروتکل زنجیره (Chain Proxy)</span>
                   <select value={form.chainProto} onChange={(e) => set('chainProto', e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
