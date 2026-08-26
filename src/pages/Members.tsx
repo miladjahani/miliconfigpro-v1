@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X } from 'lucide-react'
+import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X, FlaskConical } from 'lucide-react'
 import { api } from '../lib/api'
 import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
@@ -169,6 +169,16 @@ function Toggle({ checked, onChange, label, guide }: { checked: boolean; onChang
   )
 }
 
+interface MemberTestResult {
+  source_live: boolean
+  source_count: number
+  output_count: number
+  tls_nodes: number
+  ws_nodes: number
+  warnings: string[]
+  sample: string[]
+}
+
 export default function Members() {
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [depId, setDepId] = useState('')
@@ -184,6 +194,8 @@ export default function Members() {
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((p) => ({ ...p, [k]: v }))
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [testResult, setTestResult] = useState<{ id: string; data: MemberTestResult } | null>(null)
+  const [testingId, setTestingId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!depId) { setMembers([]); return }
@@ -254,6 +266,19 @@ export default function Members() {
 
   const subUrl = (m: WorkerMember, clash = false) =>
     `${window.location.origin}/api/sub/member/${m.token}${clash ? '?target=clash' : ''}`
+
+  const runTest = async (m: WorkerMember) => {
+    if (!depId) return
+    setTestingId(m.id); setError(null)
+    try {
+      const { data } = await api<{ data: MemberTestResult }>(`/members/${m.id}/test`)
+      setTestResult({ id: m.id, data })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'تست ناموفق بود')
+      setTestResult(null)
+    }
+    setTestingId(null)
+  }
 
   const copy = async (m: WorkerMember, clash = false) => {
     await navigator.clipboard.writeText(subUrl(m, clash)).catch(() => null)
@@ -485,6 +510,10 @@ export default function Members() {
                     <button onClick={() => copy(m, true)} data-guide="m-row-clash" className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === m.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
                     </button>
+                    <button onClick={() => runTest(m)} disabled={testingId === m.id} data-guide="m-row-test" title="تست زنده: بررسی واقعی نودهای خروجی این ساب"
+                      className={`p-2 rounded-lg bg-slate-800/60 flex items-center ${testingId === m.id ? 'text-brand-300' : 'text-slate-400 hover:text-emerald-300'}`}>
+                      {testingId === m.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
+                    </button>
                     <a href={`/status/${m.token}`} target="_blank" rel="noopener" data-guide="m-row-status" title="صفحه وضعیت + QR + افزودن به کلاینت"
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
                       <Activity className="w-4 h-4" />
@@ -515,6 +544,29 @@ export default function Members() {
                   )}
                 </div>
                 <p className="text-xs text-slate-500 font-mono truncate mt-2" dir="ltr">{subUrl(m)}</p>
+                {testResult?.id === m.id && (
+                  <div className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3 space-y-1.5">
+                    {testResult.data.output_count > 0 ? (
+                      <>
+                        <p className="text-xs font-medium text-emerald-300">
+                          ✅ تست زنده: {testResult.data.output_count} نود آماده خروجی
+                          {testResult.data.source_live ? '' : ' (از حافظهٔ محلی — اتصال زنده به ورکر برقرار نبود)'}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          منبع: {testResult.data.source_count} نود · TLS: {testResult.data.tls_nodes} · WebSocket: {testResult.data.ws_nodes}
+                        </p>
+                        {testResult.data.sample.length > 0 && (
+                          <p className="text-[11px] text-slate-500 truncate" dir="rtl">نمونه: {testResult.data.sample.join(' | ')}</p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-xs font-medium text-error-400">❌ هیچ نودی از ورکر دریافت نشد</p>
+                    )}
+                    {testResult.data.warnings.map((w, i) => (
+                      <p key={i} className="text-[11px] text-amber-300">⚠️ {w}</p>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           })}

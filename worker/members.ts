@@ -405,10 +405,59 @@ function setQueryParam(line: string, key: string, value: string): string {
   return `${base}?${parts.join('&')}${suffix}`
 }
 
-/** Rewrite transport type param in a vless/vmess/trojan URI. */
+/** Read a single URI query param from a node link (before the #-name). */
+function getQueryParam(line: string, key: string): string {
+  const hashIdx = line.indexOf('#')
+  const qIdx = line.indexOf('?')
+  const queryEnd = hashIdx > -1 ? hashIdx : line.length
+  if (qIdx === -1) return ''
+  return new URLSearchParams(line.slice(qIdx + 1, queryEnd)).get(key) ?? ''
+}
+
+/** Parse a vmess base64-JSON link into its object (or null). */
+function parseVmess(line: string): Record<string, unknown> | null {
+  if (!line.startsWith('vmess://')) return null
+  try {
+    const json = JSON.parse(atob(line.slice('vmess://'.length))) as Record<string, unknown>
+    return json && typeof json === 'object' ? json : null
+  } catch {
+    return null
+  }
+}
+
+/** Effective transport of a node ('ws' | 'grpc' | 'httpupgrade' | …). */
+function nodeTransport(line: string): string {
+  const vm = parseVmess(line)
+  if (vm) return String(vm.net ?? '')
+  return getQueryParam(line, 'type')
+}
+
+/** True when the node negotiates TLS — the only kind fragment/SNI/ECH/
+ *  fingerprint tricks apply to (applying them elsewhere silently breaks links). */
+function isTlsNode(line: string): boolean {
+  const vm = parseVmess(line)
+  if (vm) return String(vm.tls ?? '') === 'tls'
+  if (!/^(vless|trojan|hysteria2?):\/\//.test(line)) return false // plain ss/socks
+  const security = getQueryParam(line, 'security').toLowerCase()
+  if (security === 'tls' || security === 'reality') return true
+  if (security === 'none') return false
+  // No explicit security param: treat :443 endpoints as TLS (edgetunnel default).
+  const m = line.match(/@[^:/?#]+:(\d+)/)
+  return m?.[1] === '443'
+}
+
+/** Rewrite the transport (`type=`) of vless/vmess/trojan nodes. Unlike a plain
+ *  regex swap this also works when the link has NO type param yet, and handles
+ *  vmess base64-JSON links. */
 function rewriteTransport(line: string, transport: MemberSettings['transport']): string {
   if (!transport) return line
-  return line.replace(/([?&])type=[^&]*/, `$1type=${transport}`)
+  const vm = parseVmess(line)
+  if (vm) {
+    vm.net = transport
+    return 'vmess://' + btoa(JSON.stringify(vm))
+  }
+  if (!/^(vless|trojan):\/\//.test(line)) return line
+  return setQueryParam(line, 'type', transport)
 }
 
 /** Append fragment params (xray-style) for clients that support them. */
@@ -426,14 +475,10 @@ function addFragmentParams(line: string, fc: MemberSettings['fragment_config']):
  *  unlocks Gemini/OpenAI/sanctioned sites and gives real UDP egress.
  *  Handles both vmess base64 JSON and vless/trojan URI params. */
 function applyWarpPath(line: string): string {
-  if (line.startsWith('vmess://')) {
-    try {
-      const json = JSON.parse(atob(line.slice('vmess://'.length))) as Record<string, unknown>
-      if (String(json.net ?? '') === 'ws') json.path = '/warp?ed=2560'
-      return 'vmess://' + btoa(JSON.stringify(json))
-    } catch {
-      return line
-    }
+  const vm = parseVmess(line)
+  if (vm) {
+    if (String(vm.net ?? '') === 'ws') vm.path = '/warp?ed=2560'
+    return 'vmess://' + btoa(JSON.stringify(vm))
   }
   return setQueryParam(line, 'path', '/warp?ed=2560')
 }
@@ -466,6 +511,109 @@ function randomPathPrefix(): string {
   const parts: string[] = []
   for (let i = 0; i < count; i++) parts.push(RANDOM_DIRS[Math.floor(Math.random() * RANDOM_DIRS.length)]!)
   return '/' + parts.join('/')
+}
+
+// ── Shared member-settings resolution + safe transform pipeline ────────────
+
+/** Merge stored JSON settings with defaults and ISP-preset overrides.
+ *  Used identically by sub serving and the live test endpoint. */
+function resolveMemberSettings(rawJson: string | null | undefined): MemberSettings {
+  const parsed = safeJsonParse<Partial<MemberSettings>>(rawJson ?? '', {})
+  const settings: MemberSettings = { ...DEFAULT_SETTINGS, ...parsed }
+  if (settings.fragment && Object.keys(settings.fragment_config).length === 0) {
+    settings.fragment_config = { packets: 'tlshello', length: '100-200', interval: '10-20' }
+  }
+  // ISP preset wins over manual fragment values when chosen.
+  if (settings.fragment && settings.fragment_preset) {
+    const preset = findPreset(settings.fragment_preset)
+    if (preset) {
+      settings.fragment_config = {
+        ...preset.config,
+        ...(settings.fragment_config.fm ? { fm: settings.fragment_config.fm } : {}),
+        ...(settings.fragment_config.cs ? { cs: settings.fragment_config.cs } : {}),
+      }
+    }
+  }
+  return settings
+}
+
+export interface MemberTransformResult {
+  lines: string[]
+  /** Persian explanations for settings that could NOT be applied — shown in
+   *  the panel so beginners understand why a combination does nothing. */
+  warnings: string[]
+  tls_total: number
+  ws_total: number
+}
+
+/** Apply every member setting to the base node list — but ONLY where each
+ *  trick is technically valid: TLS-level tricks (fragment/SNI/ECH/fingerprint)
+ *  go onto TLS nodes, path-level tricks (WARP/random-path/0-RTT/host-mask)
+ *  go onto WebSocket nodes. Invalid combinations are SKIPPED instead of
+ *  producing dead links, and surfaced as warnings for the UI. */
+function transformMemberNodes(base: string[], s: MemberSettings): MemberTransformResult {
+  const warnings: string[] = []
+  let out = base
+
+  const tlsTotal = out.filter((l) => isTlsNode(l)).length
+  const wsTotal = out.filter((l) => nodeTransport(l) === 'ws').length
+  const needsTls = !!s.custom_sni || !!s.fingerprint || !!s.ech || !!s.fragment
+  const needsWs = s.sanctions_mode === 'warp' || s.ed_0rtt || s.random_path || !!s.custom_host
+
+  const applyTls = (fn: (l: string) => string) => { out = out.map((l) => (isTlsNode(l) ? fn(l) : l)) }
+  const applyWs = (fn: (l: string) => string) => { out = out.map((l) => (nodeTransport(l) === 'ws' ? fn(l) : l)) }
+
+  // ── transport rewrite (vless/vmess/trojan only) ──
+  if (s.transport) {
+    const before = [...out]
+    out = out.map((l) => rewriteTransport(l, s.transport))
+    if (!before.some((l, i) => l !== out[i])) {
+      warnings.push(`ترنسپورت «${s.transport}» روی هیچ نودی اعمال نشد — سورس شما احتمالاً فقط نوع دیگری ارائه می‌دهد.`)
+    }
+  }
+
+  // ── sanctions bypass ──
+  const sanctionsMode = s.sanctions_mode || (s.bypass_sanctions ? 'sni' : '')
+  if (sanctionsMode === 'warp') {
+    applyWs(applyWarpPath)
+    if (!s.custom_sni) applyTls((l) => setQueryParam(l, 'sni', KNOWN_SNIS[0]!))
+  } else if (sanctionsMode === 'sni' && !s.custom_sni) {
+    applyTls((l) => setQueryParam(l, 'sni', KNOWN_SNIS[0]!))
+  }
+
+  // ── TLS-level overrides (never touch plain-http/ss nodes) ──
+  if (s.custom_sni) applyTls((l) => setQueryParam(l, 'sni', s.custom_sni))
+  if (s.custom_host) applyWs((l) => setQueryParam(l, 'host', s.custom_host))
+  if (s.fingerprint) applyTls((l) => setQueryParam(l, 'fp', s.fingerprint))
+  if (s.fragment) {
+    applyTls((l) => addFragmentParams(l, s.fragment_config))
+    if (s.fragment_config.fm) applyTls((l) => setQueryParam(l, 'fm', s.fragment_config.fm!))
+    if (s.fragment_config.cs) applyTls((l) => setQueryParam(l, 'cs', s.fragment_config.cs!))
+  }
+  if (s.fragment_client) {
+    const cf = CLIENT_FRAGMENT_PRESETS.find((p) => p.code === s.fragment_client)
+    if (cf) applyTls((l) => setQueryParam(l, 'fragment', cf.value))
+  }
+  if (s.ech) applyTls((l) => setQueryParam(l, 'ech', `${s.ech_sni}+${s.ech_dns}`))
+
+  // ── edgetunnel per-request params (worker reads these off any node link) ──
+  if (s.proxyip) out = out.map((l) => setQueryParam(l, 'proxyip', s.proxyip))
+  if (s.chain_proxy) {
+    const proto = s.chain_proxy.match(/^(socks5|http|https|turn|sstp):\/\//i)?.[1]?.toLowerCase() ?? 'socks5'
+    const cred = s.chain_proxy.replace(/^[a-z0-9]+:\/\//i, '')
+    out = out.map((l) => setQueryParam(setQueryParam(l, proto, cred), 'globalproxy', '1'))
+  }
+  if (s.random_path) applyWs((l) => mapPathParam(l, (p) => randomPathPrefix() + (p === '/' ? '' : p.startsWith('/') ? p : '/' + p)))
+  if (s.ed_0rtt) applyWs((l) => mapPathParam(l, (p) => p + (p.includes('?') ? '&' : '?') + 'ed=2560'))
+
+  if (needsTls && tlsTotal === 0) {
+    warnings.push('هیچ نود TLS در سورس یافت نشد — فرگمنت/SNI/ECH/اثرانگشت بی‌اثر ماندند.')
+  }
+  if (needsWs && wsTotal === 0) {
+    warnings.push('هیچ نود WebSocket در سورس یافت نشد — WARP/Host سفارشی/0-RTT/مسیر تصادفی بی‌اثر ماندند.')
+  }
+
+  return { lines: out, warnings, tls_total: tlsTotal, ws_total: wsTotal }
 }
 
 /** Public endpoint — GET /api/sub/member/:token[?target=clash] */
@@ -532,16 +680,7 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   const { lines } = await fetchSourceNodes(ctx)
   if (!lines.length) return new Response('کانفیگی از ورکر دریافت نشد', { status: 502 })
 
-  const parsed: Partial<MemberSettings> = safeJsonParse<Partial<MemberSettings>>(member.settings as string, {})
-  const settings: MemberSettings = { ...DEFAULT_SETTINGS, ...parsed }
-  if (settings.fragment && Object.keys(settings.fragment_config).length === 0) {
-    settings.fragment_config = { packets: 'tlshello', length: '100-200', interval: '10-20' }
-  }
-  // ISP preset wins over manual fragment values when chosen.
-  if (settings.fragment && settings.fragment_preset) {
-    const preset = findPreset(settings.fragment_preset)
-    if (preset) settings.fragment_config = { ...preset.config, ...(settings.fragment_config.fm ? { fm: settings.fragment_config.fm } : {}), ...(settings.fragment_config.cs ? { cs: settings.fragment_config.cs } : {}) }
-  }
+  const settings = resolveMemberSettings(member.settings as string)
 
   // ── Concurrent-device (IP) limit, enforced on sub fetch ──────────────
   const ipLimit = member.ip_limit as number | null
@@ -572,53 +711,8 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   }
 
   const namePrefix = String(member.name ?? '')
-  let out = base
-  if (settings.transport) out = out.map((l) => rewriteTransport(l, settings.transport))
-  if (settings.custom_sni) out = out.map((l) => setQueryParam(l, 'sni', settings.custom_sni))
-  if (settings.custom_host) out = out.map((l) => setQueryParam(l, 'host', settings.custom_host))
-  if (settings.fingerprint) out = out.map((l) => setQueryParam(l, 'fp', settings.fingerprint))
-  const sanctionsMode = settings.sanctions_mode || (settings.bypass_sanctions ? 'sni' : '')
-  if (sanctionsMode === 'warp') {
-    // WARP egress: unlock Gemini/OpenAI + real UDP. Permissive SNI keeps the
-    // TLS handshake alive on the CDN path.
-    out = out.map((l) => applyWarpPath(l))
-    if (!settings.custom_sni) out = out.map((l) => setQueryParam(l, 'sni', KNOWN_SNIS[0]!))
-  } else if (sanctionsMode === 'sni' && !settings.custom_sni) {
-    // TLS SNI trick: point sni at a permissive domain so sanctioned-host
-    // SNI blocking is bypassed on the CDN path.
-    out = out.map((l) => setQueryParam(l, 'sni', KNOWN_SNIS[0]!))
-  }
-  if (settings.fragment) {
-    out = out.map((l) => addFragmentParams(l, settings.fragment_config))
-    // Advanced pass-through params — appended verbatim, never rewritten.
-    const fc = settings.fragment_config
-    if (fc.fm) out = out.map((l) => setQueryParam(l, 'fm', fc.fm!))
-    if (fc.cs) out = out.map((l) => setQueryParam(l, 'cs', fc.cs!))
-  }
-  // Client-specific fragment param (edgetunnel format) — overrides the
-  // generic xray-style fragment when chosen.
-  if (settings.fragment_client) {
-    const cf = CLIENT_FRAGMENT_PRESETS.find((p) => p.code === settings.fragment_client)
-    if (cf) out = out.map((l) => setQueryParam(l, 'fragment', cf.value))
-  }
-
-  // ── edgetunnel per-request params — the deployed EDT worker reads these
-  // from every node link, giving each member a unique worker behaviour.
-  if (settings.proxyip) out = out.map((l) => setQueryParam(l, 'proxyip', settings.proxyip))
-  if (settings.chain_proxy) {
-    const proto = settings.chain_proxy.match(/^(socks5|http|https|turn|sstp):\/\//i)?.[1]?.toLowerCase() ?? 'socks5'
-    const cred = settings.chain_proxy.replace(/^[a-z0-9]+:\/\//i, '')
-    out = out.map((l) => setQueryParam(setQueryParam(l, proto, cred), 'globalproxy', '1'))
-  }
-  if (settings.ech) {
-    out = out.map((l) => setQueryParam(l, 'ech', `${settings.ech_sni}+${settings.ech_dns}`))
-  }
-  if (settings.random_path) {
-    out = out.map((l) => mapPathParam(l, (p) => randomPathPrefix() + (p === '/' ? '' : p.startsWith('/') ? p : '/' + p)))
-  }
-  if (settings.ed_0rtt) {
-    out = out.map((l) => mapPathParam(l, (p) => p + (p.includes('?') ? '&' : '?') + 'ed=2560'))
-  }
+  const transformed = transformMemberNodes(base, settings)
+  let out = transformed.lines
 
   // Preferred-IP pool: LIVE real IPs per country from the EDT ecosystem
   // (ipdb bestcf/bestproxy), with the static CIDR pools as offline fallback.
@@ -698,4 +792,57 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   }
 
   return new Response(b64encodeUtf8(named.join('\n')), { headers: subHeaders })
+}
+
+// ── Live dry-run test (beginner safety net) ─────────────────────────────────
+
+/** GET /api/members/:id/test — run the member's exact sub pipeline against the
+ *  live worker source and report node counts + warnings WITHOUT changing
+ *  anything. Lets the panel tell beginners immediately whether their settings
+ *  actually produce working nodes (and why not). */
+export async function handleMemberTest(env: Env, userId: string, id: string): Promise<Response> {
+  const member = await env.DB.prepare('SELECT * FROM worker_members WHERE id = ? AND owner_user_id = ?')
+    .bind(id, userId).first<Record<string, unknown>>()
+  if (!member) return apiError('عضو پیدا نشد', 404)
+
+  const ctx = await resolveSource(env, userId, member.deployment_id as string)
+  if (!ctx) return apiError('اتصال به ورکر برقرار نیست — توکن/account_id/KV را بررسی کنید', 502)
+
+  const { lines, live } = await fetchSourceNodes(ctx)
+  if (!lines.length) {
+    return json({ data: {
+      source_live: false,
+      source_count: 0,
+      output_count: 0,
+      tls_nodes: 0,
+      ws_nodes: 0,
+      warnings: ['ورکر هیچ نودی برنگرداند — استقرار، UUID یا ADD.txt ورکر را بررسی کنید.'],
+      sample: [],
+    } })
+  }
+
+  // Same dedupe as serving.
+  const seen = new Set<string>()
+  const base: string[] = []
+  for (const line of lines) {
+    const identity = line.replace(/#.*$/, '')
+    if (!seen.has(identity)) { seen.add(identity); base.push(line) }
+  }
+
+  const settings = resolveMemberSettings(member.settings as string)
+  const result = transformMemberNodes(base, settings)
+  const sample = result.lines.slice(0, 3).map((l) => {
+    const raw = l.split('#')[1] ?? ''
+    try { return decodeURIComponent(raw) || '(بدون نام)' } catch { return raw }
+  }).filter(Boolean)
+
+  return json({ data: {
+    source_live: live,
+    source_count: base.length,
+    output_count: result.lines.length,
+    tls_nodes: result.tls_total,
+    ws_nodes: result.ws_total,
+    warnings: result.warnings,
+    sample,
+  } })
 }
