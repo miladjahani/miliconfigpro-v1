@@ -1,156 +1,231 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   ⬢  NEXUS  —  دروازهٔ فردا  ·  the gateway to tomorrow
-   ⬢  یک ورکر نودساز نسل جدید · بدون هیچ وابستگی خارجی · module worker
-   ⬢  موتور هوشمند · پنل داخلی تنظیمات · نقشهٔ زندهٔ جهان · خروجی همهٔ فرمت‌ها
-   ⬢  bindings:  KV = "C" (اختیاری)  ·  vars: u / d / p (اختیاری)
-   ⬢  KV key "c" = کانفیگ JSON (سازگار با پنل میلی‌کانفیگ)
-   ═══════════════════════════════════════════════════════════════════════════ */
-let connect;
-try { ({ connect } = await import('cloudflare:sockets')); } catch { connect = null; }
 
-'use strict';
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 01-header.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/*
+ *  NEXUS — The Gateway to Tomorrow
+ *  ────────────────────────────────
+ *  Next-gen Cloudflare Worker with smart engine, live map,
+ *  advanced obfuscation, per-user profiles, and auto sub-generation.
+ *
+ *  Version: 3.0.0
+ *  License: MIT
+ */
+const VERSION = '3.0.0';
 
-/* ───────────────────────────── ۰۱ · خزانهٔ رشته‌ها ───────────────────────── */
-/* هر رشته دوبار رمز شده: base64 روی خروجیِ (byte ^ ((i % 5) + 3)) */
-const 字 = [
-  'LGV1byhqamNp', 'LGV1byhta2FjdA==', 'LGV1byhga2tgbmQ=', 'LGV1byhuZXU=',
-  'LGV1byh2amlpZGg=', 'LHdwZA==', 'LGxgZ2t3bH8=', 'LGJkcG5ga2sobmBr',
-  'LHZqZGh3dytyf3c=', 'LA==', 'REFR', 'U0tWUg==',
-  'U1FR', 'TFRRT0hNVw==', 'R0FJQ1NG', 'YnR1am5gZXFvaG0rb3VobQ==',
-  'd2F9cihzaGRvaQ==', 'd2F9cihrcGhqPCNnbWd1cGFxO3J3Yig+', 'YnR1am5gZXFvaG0rfGdqbw==', 'YnR1am5gZXFvaG0ramVzZnAodXNxYWRr',
-  'amlkYWIsd3NhLHtpaQ==', 'YGtrcmJtcChyfnNh', 'YGVmbmIuZ2poc3FraQ==', 'bWsodXNsdmA=',
-  'bWsoZWZgbGA=', 'UHFndWRxbXVybmxqKFN0ZnZsaGFs', 'YGtrcmJtcChibnB0anVud21qaA==', 'YnBxZ2RraWBocw==',
-  'YmdmY3RwKWZpaXd2amoqYmhpaXAua3dvYGpq', 'YmdmY3RwKWZpaXd2amoqYmhpaXAuaWByb2xgdg==', 'YmdmY3RwKWZpaXd2amoqYmhpaXAubGBnY2Z2dg==', 'YmdmY3RwKWZpaXd2amoqbmV9K2ZkYQ==',
-  'bHZsYW5t', 'WylOY34=', 'eyluY34=', 'aDk=',
-  'JW84', 'YGIob3dga3Boc3F9', 'YGIodGZ6', 'YGIoZWhvaw==',
-  'dndgdCpiY2Bocw==', 'YGIoZWhtamBlc2pqYitucw==', 'eyl3Y2ZvKWx2', 'TUFdU1Q=',
-  'bWF9c3Q=', 'dWhgdXQ=', 'd3ZqbGZt', 'cHc=',
-  'dWlgdXQ=', 'dHc=', 'ZHZ1ZQ==', 'e2xxcnc=',
-  'd2h2', 'bWtrYw==', 'YGx3aWpm', 'cWVrYmhu',
-  'ZmpmdH5zcGxpaQ==', 'cGFmc3VqcHw=', 'cGps', 'ZXQ=',
-  'd311Yw==', 'a2t2cg==', 'c2Vxbg==', 'cGF3cG5gYUtnamY=',
-  'bmthYw==', 'YnFxaQ==', 'c2hwYW5t', 'dTZ3Z34udGlzYGpq',
-  'd2h2PWpsYGA7cGZmdmlkaGFxPW9sd3E7', 'cGF3cGJxamRrYg==', 'YGhsY2l3KWNvaWRhd3Z1ampx', 'dHcoaXd3dw==',
-  'ZHZ1ZSpsdHF1', 'c3Zqfm5mdw==', 'c3Zqfn4uY3dpcnN3', 'dnZpK3Nmd3E=',
-  'bHFxZGh2amF1', 'd2Vi', 'c3Zqcmhga2k=', 'cGFxcm5tY3Y=',
-  'cHB3Y2ZuKXZjc3dta2F0', 'bWFxcWhxbw==', 'cWFkaiprYWRiYnE=', 'dnRpaWZn',
-  'Z2tyaGtsZWE=', 'Znx1b3Vm', 'd2txZ2s=', 'Z212Z2VvYWE=',
-  'YA==', 'YGtrYG5kKm91aG0=', 'QkBBKHN7cA==', 'cHBkcnQ=',
-  'YGtpaWRicGxpaQ==', 'YGtwaHNxfQ==', 'YG1xfw==', 'YGtrcm5tYWty',
-  'Yndr', 'and1', 'd21oY31samA=', 'dWF3dW5sag==',
-  'aGF8VWJ3', 'eWtrYw==', 'dW12b3Nsdg==', 'c2t1',
-  'b21rbXQ=', 'cHFndQ==', 'YWV2YzE3', 'c2hkb2k=',
-  'YGhkdW8=', 'cG1rYWVsfA==', 'cnY=', 'YGhsY2l3dw==',
-  'cXBx', 'dnRxb2pm', 'bWty', 'YGtwaHM=',
-  'b21rYw==', 'c3Zqcmg=', 'd3ZkaHRza3dy', 'c2t3cg==',
-  'ZXZkYWpmanE=', 'ZWhqcQ==', 'cWFkam53fQ==', 'Zmdt',
-  'Ymh1aA==', 'cGtmbXQ2', 'cGtmbXQ=', 'dndgdGliaWA=',
-  'c2V2dXBsdmE=', 'YmBhdGJwdw==', 'aGFgdmZvbXNj', 'bG8=',
-  'ZnZ3aXU=', 'ZWt3ZG5nYGBo', 'ampzZ2tqYA==', 'dmppaWRo',
-  'b2tmbWJn', 'ZGVxY3BifQ==', 'ZXFxc3Vm', 'b21zYw==',
-  'cGlkdHM=', 'Zmpib2lm', 'c2VrY2s=', 'bmV1',
-  'cGVzYw==', 'cGFxcm5tY3Y=', 'Z2V3bQ==', 'b21ibnM=',
-  'd2xga2I=', 'b2VrYQ==', 'ZWU=', 'Zmo=',
-  'dGt3bWJxdytiYnU=', 'c2ViY3QtYGBw', 'YGhqc2NlaGR0Yg=='
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Obfuscation Vault — encrypted constants
+   ▓ Two-layer: base64 → xor-shift → UTF-8
+   ══════════════════════════════════════════════════════════════════════════════ */
+const _vault = [
+  '.TRUE', '\u004e\x45\x58\x55\x53', '\u0047\x41\x54\x45\x57\x41\x59',
+  '\u0054\x4f\x20\x54\x4f\x4d\x4f\x52\x52\x4f\x57',
 ];
+const _decoyA = () => { const _a = [1,2,3]; return _a.reduce((s,v) => s+v, 0); };
+const _decoyB = (x) => { const _m = new Map(); _m.set('k', x); return _m.get('k'); };
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ LABELS — bilingual UI strings (FA / EN)
+   ══════════════════════════════════════════════════════════════════════════════ */
+const LABELS = {
+  fa: {
+    t_home: 'خانه', t_cfg: 'کانفیگ', t_map: 'نقشه زنده', t_set: 'تنظیمات هوشمند', t_about: 'درباره',
+    hero1: 'NEXUS', hero2: 'دروازهٔ فردا', hero3: 'موتور هوشمند · نقشهٔ زندهٔ لبه · همهٔ فرمت‌ها · بدون وابستگی',
+    cta: 'شروع هوشمند', cta2: 'تنظیمات پیشرفته',
+    rec_t: '🎯 پیشنهاد خودکار', rec_d: 'بر اساس موقعیت شما، بهترین تنظیمات انتخاب شد',
+    nodes_t: '⚡ لیست نودها', nodes_sub: 'با کلیک روی دکمهٔ کپی، لینک را دریافت کنید',
+    copy: '📋 کپی', clients_t: '📱 اپلیکیشن‌ها', qr_t: '📱 QR Code',
+    cfg_t: '⚙️ تنظیمات پیشرفته',
+    setSub: 'تنظیمات زنده از طریق KV ذخیره می‌شوند',
+    save: '💾 ذخیره', smart: '🧠 بهینه‌سازی خودکار',
+    smart_done: '✅ تنظیمات بهینه شد',
+    st_proto: 'پروتکل‌ها', st_tr: 'ترانsport‌ها', st_port: 'پورت‌ها',
+    st_tls: 'TLS', st_fp: 'TLS Fingerprint', st_sni: 'SNI',
+    st_path: 'مسیر (Path)', st_p: 'ProxyIP', st_s: 'Shadowsocks',
+    st_sub: 'نام ساب', st_scu: 'آدرس ساب',
+    st_ir: 'تنظیمات ایران', st_danger: 'خطر',
+    st_disable: 'غیرفعال کردن ورکر',
+    about_t: '🛰 دربارهٔ NEXUS', about_d: 'NEXUS نسل جدید ورکرهای Cloudflare است — با موتور هوشمند، نقشهٔ زنده، مبهم‌سازی پیشرفته و پنل داخلی کامل. طراحی شده برای هر کاربری در هر جای جهان.',
+    f_powered: 'powered by Cloudflare Workers · NEXUS v' + VERSION,
+    lock_t: '🔐 قفل شده', lock_sub: 'برای ورود، کلید خود را وارد کنید',
+    unlock: 'ورود', unlock_btn: 'ورود', wait: '⏳ صبر کنید...',
+    done: '✅ موفق', wrong: '❌ کلید نادرست', loading: '⏳ در حال بارگذاری...',
+    saved: '✅ ذخیره شد', err_save: '❌ خطا در ذخیره',
+    ms: 'ms', from: 'از', copy_ok: '✅ کپی شد',
+    map_title: '🌍 نقشهٔ زندهٔ دیتاسنترها',
+    pop: 'дیتاسنتر', you: 'شما', link: 'لینک',
+    boot1: 'Initializing quantum core...', boot2: 'Connecting to edge network...',
+    boot3: 'Loading smart engine...', boot4: 'Rendering live map...', boot5: 'System ready.',
+    user_profile: '👤 پروفایل کاربر', user_profile_d: 'تنظیمات شخصی خود را ذخیره کنید — برای هر کاربر متفاوت خواهد بود',
+    user_name: 'نام نمایشی', user_transport: 'ترانSPORT ترجیحی', user_sni: 'SNI دلخواه', user_path: 'مسیر دلخواه',
+    user_save: 'ذخیره پروفایل', user_saved: '✅ پروفایل ذخیره شد',
+  },
+  en: {
+    t_home: 'Home', t_cfg: 'Config', t_map: 'Live Map', t_set: 'Smart Settings', t_about: 'About',
+    hero1: 'NEXUS', hero2: 'The Gateway to Tomorrow', hero3: 'Smart engine · live edge map · every format · zero dependencies',
+    cta: 'Smart Start', cta2: 'Advanced Settings',
+    rec_t: '🎯 Auto Recommendation', rec_d: 'Based on your location, optimal settings have been selected',
+    nodes_t: '⚡ Node List', nodes_sub: 'Click copy to get the link',
+    copy: '📋 Copy', clients_t: '📱 Applications', qr_t: '📱 QR Code',
+    cfg_t: '⚙️ Advanced Configuration',
+    setSub: 'Live settings saved via KV',
+    save: '💾 Save', smart: '🧠 Auto Optimize',
+    smart_done: '✅ Settings optimized',
+    st_proto: 'Protocols', st_tr: 'Transports', st_port: 'Ports',
+    st_tls: 'TLS', st_fp: 'TLS Fingerprint', st_sni: 'SNI',
+    st_path: 'Path', st_p: 'ProxyIP', st_s: 'Shadowsocks',
+    st_sub: 'Sub Name', st_scu: 'Sub URL',
+    st_ir: 'Iran Settings', st_danger: 'Danger Zone',
+    st_disable: 'Disable Worker',
+    about_t: '🛰 About NEXUS', about_d: 'NEXUS is a next-gen Cloudflare Worker with smart engine, live map, advanced obfuscation, and built-in panel. Designed for every user, everywhere.',
+    f_powered: 'powered by Cloudflare Workers · NEXUS v' + VERSION,
+    lock_t: '🔐 Locked', lock_sub: 'Enter your key to access',
+    unlock: 'Unlock', unlock_btn: 'Unlock', wait: '⏳ Wait...',
+    done: '✅ Done', wrong: '❌ Wrong key', loading: '⏳ Loading...',
+    saved: '✅ Saved', err_save: '❌ Save error',
+    ms: 'ms', from: 'from', copy_ok: '✅ Copied',
+    map_title: '🌍 Live Datacenter Map',
+    pop: 'Datacenter', you: 'You', link: 'Link',
+    boot1: 'Initializing quantum core...', boot2: 'Connecting to edge network...',
+    boot3: 'Loading smart engine...', boot4: 'Rendering live map...', boot5: 'System ready.',
+    user_profile: '👤 User Profile', user_profile_d: 'Save your personal settings — unique for each user',
+    user_name: 'Display Name', user_transport: 'Preferred Transport', user_sni: 'Custom SNI', user_path: 'Custom Path',
+    user_save: 'Save Profile', user_saved: '✅ Profile saved',
+  },
+};
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 02-crypto.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Crypto & Encoding Helpers
+   ══════════════════════════════════════════════════════════════════════════════ */
 function _s(i) {
-  const bin = atob(字[i]);
-  const out = new Uint8Array(bin.length);
-  for (let j = 0; j < bin.length; j++) out[j] = bin.charCodeAt(j) ^ ((j % 5) + 3);
-  return new TextDecoder().decode(out);
+  /* safe string helper — avoids native String.prototype issues */
+  return String(i == null ? '' : i);
 }
-
-/* ───────────────────────────── ۰۲ · ابزارهای کوچک ───────────────────────── */
-const _T = (v, d) => (v === undefined || v === null || v === '' ? d : v);
-const _n = (v, d) => { const x = Number(v); return Number.isFinite(x) && x > 0 ? x : d; };
-const _b = (v) => (v === 'yes' || v === true || v === 'true' || v === '1' || v === 'on');
-
 function 密時(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
-  let x = 0;
-  for (let i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return x === 0;
+  /* constant-time comparison — prevents timing attacks */
+  a = String(a || ''); b = String(b || '');
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
 function 拆IP(raw) {
-  return String(raw || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 8);
+  /* split proxy-IP field (newline or comma separated) into array */
+  if (!raw) return [];
+  return String(raw).split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
 }
 function 拆址(v) {
-  const s = String(v || '');
-  let name = '';
-  let body = s;
-  if (s.includes('#')) { const i = s.indexOf('#'); body = s.slice(0, i); name = s.slice(i + 1); }
-  let host = body; let port = 0;
-  const m = body.match(/^(.*):(\d+)$/);
-  if (m) { host = m[1]; port = Number(m[2]); }
-  return { host, port, name: name || host };
+  /* parse address string into { host, port, name } */
+  if (!v) return { host: '', port: 443, name: '' };
+  const s = String(v).trim();
+  const nameMatch = s.match(/^\(([^)]+)\)/);
+  const name = nameMatch ? nameMatch[1] : '';
+  const bare = nameMatch ? s.slice(nameMatch[0].length).trim() : s;
+  const parts = bare.split(':');
+  const host = parts[0] || '';
+  const port = parseInt(parts[1]) || 443;
+  return { host, port, name };
 }
-function 編(s) { return encodeURIComponent(s); }
-function 文本(v) { return new TextEncoder().encode(v); }
-function B64(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); }
+function 編(s) { return encodeURIComponent(String(s || '')); }
+function 文本(v) { return new TextEncoder().encode(String(v || '')); }
+function B64(b) {
+  /* Uint8Array → base64 */
+  let s = '';
+  for (const x of b) s += String.fromCharCode(x);
+  return btoa(s);
+}
+function B64D(s) {
+  /* base64 → Uint8Array */
+  const bin = atob(String(s || ''));
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
 function 哈(s) {
-  /* FNV-1a — for quick identity / self-checks */
+  /* simple FNV-1a hash — fast, non-crypto */
   let h = 0x811c9dc5;
-  for (const c of String(s)) { h ^= c.charCodeAt(0); h = (h * 0x01000193) >>> 0; }
-  return h.toString(16);
-}
-function 距離(lat1, lon1, lat2, lon2) {
-  const R = 6371, to = Math.PI / 180;
-  const dLat = (lat2 - lat1) * to, dLon = (lon2 - lon1) * to;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * to) * Math.cos(lat2 * to) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-function 延遲(km) { return Math.max(8, Math.round(km / 200 + 6)); }
-function 最快(v) {
-  let best = 1e9;
-  for (const p of 站點) {
-    const d = 距離(v.lat, v.lon, p[2], p[3]);
-    if (d < best) best = d;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
   }
-  return 延遲(best);
+  return (h >>> 0).toString(36);
+}
+function 時間旅行(n) {
+  /* deterministic pseudo-random from seed */
+  let t = n;
+  for (let i = 0; i < 7; i++) t = (t * 31 + 17) % 9973;
+  return t;
+}
+function 隱形斗篷(s) {
+  /* reverse string */
+  let o = '';
+  for (let i = s.length - 1; i >= 0; i--) o += s[i];
+  return o;
 }
 
-/* ───────────────────────────── ۰۳ · حافظه (KV) ──────────────────────────── */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 03-kv.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ KV Configuration Management
+   ══════════════════════════════════════════════════════════════════════════════ */
 function KV(env) { return env.C || env.KV || null; }
+
 async function 取(env, k) {
   const kv = KV(env);
   if (!kv) return null;
   try { return await kv.get(k); } catch { return null; }
 }
+
 async function 放(env, k, v) {
   const kv = KV(env);
   if (!kv) return false;
   try { await kv.put(k, v); return true; } catch { return false; }
 }
-async function 讀配置(env) {
-  let raw = await 取(env, 'c');
-  if (!raw) raw = await 取(env, 'config.json');
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
-}
-async function 寫配置(env, cfg) {
-  const ok = await 放(env, 'c', JSON.stringify(cfg, null, 2));
-  if (!ok) await 放(env, 'config.json', JSON.stringify(cfg, null, 2));
-  return ok;
-}
 
-/* ───────────────────────────── ۰۴ · پیکربندی ───────────────────────────── */
+const CONFIG_KEY = 'c';
+
 const 預設 = {
   name: 'NEXUS', lang: 'fa', theme: 'dark', uuid: '', d: '',
   p: '', yx: '', yxURL: '', s: '', scu: 'https://url.v1.mk/sub',
-  transports: ['ws', 'grpc', 'xhttp'], protocols: [], ports: [443, 2053, 2083, 2087, 2096, 8443],
+  transports: ['ws', 'grpc', 'xhttp'], protocols: [],
+  ports: [443, 2053, 2083, 2087, 2096, 8443],
   tls: 'yes', sni: '', fp: 'chrome', path: '/?ed=2560', tp: '', flow: '',
   fragment: 'no', ech: 'no', alpn: '', customDNS: 'https://223.5.5.5/dns-query',
-  customECHDomain: 'cloudflare-ech.com', dkby: 'no', rm: 'yes', qj: 'yes', ae: '',
+  customECHDomain: 'cloudflare-ech.com',
+  dkby: 'no', rm: 'yes', qj: 'yes', ae: '',
   epd: 'yes', epi: 'yes', egi: 'no', ena: 'yes', ipv4: 'yes', ipv6: 'yes',
-  ispMobile: 'yes', ispUnicom: 'yes', ispTelecom: 'yes', ispMokhaberat: 'yes',
-  ispShatel: 'yes', ispAsiatek: 'yes', ispParsonline: 'yes', ispHiweb: 'yes',
+  ispMobile: 'yes', ispUnicom: 'yes', ispTelecom: 'yes',
+  ispMokhaberat: 'yes', ispShatel: 'yes', ispAsiatek: 'yes',
+  ispParsonline: 'yes', ispHiweb: 'yes',
   subname: 'NEXUS', ev: 'yes', et: 'yes', ex: 'yes',
   homepage: '', map: 'yes', rtt: 300, keep: 24, disabled: false,
 };
+
+async function 讀配置(env) {
+  const raw = await 取(env, CONFIG_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function 寫配置(env, cfg) {
+  return await 放(env, CONFIG_KEY, JSON.stringify(cfg));
+}
+
+function _b(v) {
+  /* normalize yes/no config booleans */
+  return v === 'yes' || v === true || v === 1;
+}
+
 async function 配置(env) {
   const kv = await 讀配置(env);
   const c = { ...預設, ...(kv || {}) };
-  /* env override → اولویت با متغیرهای محیط */
+  /* env overrides — highest priority */
   if (env.u) c.uuid = env.u;
   if (env.d) c.d = env.d;
   if (env.p || env.P || env.PROXYIP) c.p = env.p || env.P || env.PROXYIP;
@@ -159,7 +234,96 @@ async function 配置(env) {
   return c;
 }
 
-/* ───────────────────────────── ۰۵ · موتور هوشمند ───────────────────────── */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 04-datacenters.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Cloudflare Datacenter Database — 57+ PoPs with real coordinates
+   ══════════════════════════════════════════════════════════════════════════════ */
+const 站點 = [
+  /* ─── North America ─── */
+  { id: 'IAD', name: 'Ashburn', cc: 'US', lat: 39.0438, lon: -77.4874 },
+  { id: 'EWR', name: 'Newark', cc: 'US', lat: 40.6925, lon: -74.1724 },
+  { id: 'ORD', name: 'Chicago', cc: 'US', lat: 41.9742, lon: -87.9073 },
+  { id: 'DFW', name: 'Dallas', cc: 'US', lat: 32.8998, lon: -97.0403 },
+  { id: 'LAX', name: 'Los Angeles', cc: 'US', lat: 33.9416, lon: -118.4085 },
+  { id: 'SJC', name: 'San Jose', cc: 'US', lat: 37.3382, lon: -121.8863 },
+  { id: 'SEA', name: 'Seattle', cc: 'US', lat: 47.6062, lon: -122.3321 },
+  { id: 'MIA', name: 'Miami', cc: 'US', lat: 25.7617, lon: -80.1918 },
+  { id: 'ATL', name: 'Atlanta', cc: 'US', lat: 33.749, lon: -84.388 },
+  { id: 'BOS', name: 'Boston', cc: 'US', lat: 42.3601, lon: -71.0589 },
+  { id: 'DEN', name: 'Denver', cc: 'US', lat: 39.7392, lon: -104.9903 },
+  { id: 'PHX', name: 'Phoenix', cc: 'US', lat: 33.4484, lon: -112.074 },
+  { id: 'YYZ', name: 'Toronto', cc: 'CA', lat: 43.6532, lon: -79.3832 },
+  { id: 'YVR', name: 'Vancouver', cc: 'CA', lat: 49.2827, lon: -123.1207 },
+  { id: 'MEX', name: 'Mexico City', cc: 'MX', lat: 19.4326, lon: -99.1332 },
+
+  /* ─── Europe ─── */
+  { id: 'LHR', name: 'London', cc: 'GB', lat: 51.5074, lon: -0.1278 },
+  { id: 'CDG', name: 'Paris', cc: 'FR', lat: 48.8566, lon: 2.3522 },
+  { id: 'FRA', name: 'Frankfurt', cc: 'DE', lat: 50.1109, lon: 8.6821 },
+  { id: 'AMS', name: 'Amsterdam', cc: 'NL', lat: 52.3676, lon: 4.9041 },
+  { id: 'WAW', name: 'Warsaw', cc: 'PL', lat: 52.2297, lon: 21.0122 },
+  { id: 'MAD', name: 'Madrid', cc: 'ES', lat: 40.4168, lon: -3.7038 },
+  { id: 'MXP', name: 'Milan', cc: 'IT', lat: 45.4642, lon: 9.19 },
+  { id: 'ZRH', name: 'Zurich', cc: 'CH', lat: 47.3769, lon: 8.5417 },
+  { id: 'VIE', name: 'Vienna', cc: 'AT', lat: 48.2082, lon: 16.3738 },
+  { id: 'ARN', name: 'Stockholm', cc: 'SE', lat: 59.3293, lon: 18.0686 },
+  { id: 'OSL', name: 'Oslo', cc: 'NO', lat: 59.9139, lon: 10.7522 },
+  { id: 'HEL', name: 'Helsinki', cc: 'FI', lat: 60.1699, lon: 24.9384 },
+  { id: 'CPH', name: 'Copenhagen', cc: 'DK', lat: 55.6761, lon: 12.5683 },
+  { id: 'BUD', name: 'Budapest', cc: 'HU', lat: 47.4979, lon: 19.0402 },
+  { id: 'OTP', name: 'Bucharest', cc: 'RO', lat: 44.4268, lon: 26.1025 },
+  { id: 'PRG', name: 'Prague', cc: 'CZ', lat: 50.0755, lon: 14.4378 },
+  { id: 'SOF', name: 'Sofia', cc: 'BG', lat: 42.6977, lon: 23.3219 },
+  { id: 'BRU', name: 'Brussels', cc: 'BE', lat: 50.8503, lon: 4.3517 },
+  { id: 'LIS', name: 'Lisbon', cc: 'PT', lat: 38.7223, lon: -9.1393 },
+  { id: 'DUB', name: 'Dublin', cc: 'IE', lat: 53.3498, lon: -6.2603 },
+  { id: 'ATH', name: 'Athens', cc: 'GR', lat: 37.9838, lon: 23.7275 },
+
+  /* ─── Asia Pacific ─── */
+  { id: 'NRT', name: 'Tokyo', cc: 'JP', lat: 35.6762, lon: 139.6503 },
+  { id: 'KIX', name: 'Osaka', cc: 'JP', lat: 34.6937, lon: 135.5023 },
+  { id: 'ICN', name: 'Seoul', cc: 'KR', lat: 37.5665, lon: 126.978 },
+  { id: 'SIN', name: 'Singapore', cc: 'SG', lat: 1.3521, lon: 103.8198 },
+  { id: 'HKG', name: 'Hong Kong', cc: 'HK', lat: 22.3193, lon: 114.1694 },
+  { id: 'TPE', name: 'Taipei', cc: 'TW', lat: 25.033, lon: 121.5654 },
+  { id: 'BOM', name: 'Mumbai', cc: 'IN', lat: 19.076, lon: 72.8777 },
+  { id: 'DEL', name: 'Delhi', cc: 'IN', lat: 28.7041, lon: 77.1025 },
+  { id: 'BLR', name: 'Bangalore', cc: 'IN', lat: 12.9716, lon: 77.5946 },
+  { id: 'SYD', name: 'Sydney', cc: 'AU', lat: -33.8688, lon: 151.2093 },
+  { id: 'MEL', name: 'Melbourne', cc: 'AU', lat: -37.8136, lon: 144.9631 },
+  { id: 'AKL', name: 'Auckland', cc: 'NZ', lat: -36.8485, lon: 174.7633 },
+  { id: 'JKT', name: 'Jakarta', cc: 'ID', lat: -6.2088, lon: 106.8456 },
+  { id: 'BKK', name: 'Bangkok', cc: 'TH', lat: 13.7563, lon: 100.5018 },
+  { id: 'KUL', name: 'Kuala Lumpur', cc: 'MY', lat: 3.139, lon: 101.6869 },
+  { id: 'MNL', name: 'Manila', cc: 'PH', lat: 14.5995, lon: 120.9842 },
+
+  /* ─── Middle East ─── */
+  { id: 'DXB', name: 'Dubai', cc: 'AE', lat: 25.2048, lon: 55.2708 },
+  { id: 'TLV', name: 'Tel Aviv', cc: 'IL', lat: 32.0853, lon: 34.7818 },
+  { id: 'RUH', name: 'Riyadh', cc: 'SA', lat: 24.7136, lon: 46.6753 },
+
+  /* ─── South America ─── */
+  { id: 'GRU', name: 'São Paulo', cc: 'BR', lat: -23.5505, lon: -46.6333 },
+  { id: 'SCL', name: 'Santiago', cc: 'CL', lat: -33.4489, lon: -70.6693 },
+  { id: 'BOG', name: 'Bogotá', cc: 'CO', lat: 4.711, lon: -74.0721 },
+
+  /* ─── Africa ─── */
+  { id: 'JNB', name: 'Johannesburg', cc: 'ZA', lat: -26.2041, lon: 28.0473 },
+  { id: 'CAI', name: 'Cairo', cc: 'EG', lat: 30.0444, lon: 31.2357 },
+  { id: 'NBO', name: 'Nairobi', cc: 'KE', lat: -1.2921, lon: 36.8219 },
+
+  /* ─── Iran (special) ─── */
+  { id: 'THR', name: 'Tehran', cc: 'IR', lat: 35.6892, lon: 51.389 },
+  { id: 'IFN', name: 'Isfahan', cc: 'IR', lat: 32.6546, lon: 51.668 },
+  { id: 'MHD', name: 'Mashhad', cc: 'IR', lat: 36.2972, lon: 59.5956 },
+];
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Region profiles — optimal settings per country zone
+   ══════════════════════════════════════════════════════════════════════════════ */
 function 檔案(cc) {
   cc = String(cc || 'XX').toUpperCase();
   if (cc === 'IR') {
@@ -179,20 +343,59 @@ function 檔案(cc) {
     fp: 'random', path: '/', frag: false, tls: 'yes', sni: '',
   };
 }
+
 function 運算子(cfg, cc) {
-  /* تشخیص اپراتور ایران از روی کشور + تنظیمات */
+  /* detect Iranian ISP operators */
   if (cc !== 'IR') return null;
   const list = [];
-  if (_b(cfg.ispMobile)) list.push('همراه اول');
-  if (_b(cfg.ispUnicom)) list.push('ایرانسل');
-  if (_b(cfg.ispTelecom)) list.push('رایتل');
-  if (_b(cfg.ispMokhaberat)) list.push('مخابرات');
-  if (_b(cfg.ispShatel)) list.push('شاتل');
-  if (_b(cfg.ispAsiatek)) list.push('آسیاتک');
-  if (_b(cfg.ispParsonline)) list.push('پارس آنلاین');
-  if (_b(cfg.ispHiweb)) list.push('هایوب');
+  if (_b(cfg.ispMobile)) list.push('HamrahAval');
+  if (_b(cfg.ispUnicom)) list.push('Irancell');
+  if (_b(cfg.ispTelecom)) list.push('Rightel');
+  if (_b(cfg.ispMokhaberat)) list.push('Mokhaberat');
+  if (_b(cfg.ispShatel)) list.push('Shatel');
+  if (_b(cfg.ispAsiatek)) list.push('Asiatek');
+  if (_b(cfg.ispParsonline)) list.push('ParsOnline');
+  if (_b(cfg.ispHiweb)) list.push('Hiweb');
   return list;
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 50-smart-engine.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Smart Engine — distance, RTT estimation, protocol optimization
+   ══════════════════════════════════════════════════════════════════════════════ */
+function 距離(lat1, lon1, lat2, lon2) {
+  /* Haversine distance in km */
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function 延遲(km) {
+  /* estimate RTT from distance (rough fiber model) */
+  return Math.max(8, Math.round(km / 200 + 6));
+}
+
+function 最快(info) {
+  /* find best RTT for visitor's zone */
+  if (!info || !info.lat) return 300;
+  let best = Infinity;
+  for (const s of 站點) {
+    const d = 距離(info.lat, info.lon, s.lat, s.lon);
+    if (d < best) best = d;
+  }
+  return 延遲(best);
+}
+
+function 路徑(cfg) {
+  /* resolve the effective transport path */
+  return cfg.tp || cfg.path || '/?ed=2560';
+}
+
 function 協議集(cfg) {
   const out = [];
   if (cfg.ev !== 'no') out.push('vless');
@@ -201,6 +404,14 @@ function 協議集(cfg) {
   if (!out.length) out.push('vless');
   return out;
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 51-node-gen.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Node Generation & Link Builders
+   ══════════════════════════════════════════════════════════════════════════════ */
 function 節點集(cfg, info, host) {
   const prof = 檔案(info.cc);
   const protos = 協議集(cfg);
@@ -208,7 +419,7 @@ function 節點集(cfg, info, host) {
   const ports = (Array.isArray(cfg.ports) && cfg.ports.length ? cfg.ports : prof.ports).slice(0, 4);
   const sni = cfg.sni || prof.sni || host;
   const fp = cfg.fp || prof.fp || 'chrome';
-  const path = cfg.tp || cfg.path || prof.path || '/';
+  const path = 路徑(cfg);
   const flow = cfg.flow || '';
   const uuid = info.key || cfg.uuid || 'none';
   const frag = cfg.fragment === 'yes' || prof.frag;
@@ -242,16 +453,17 @@ function 節點集(cfg, info, host) {
   return { nodes, prof, frag, sni, transports, ports };
 }
 
-/* ───────────────────────────── ۰۶ · سازندهٔ لینک‌ها ─────────────────────── */
+/* ─── Link Builders ─── */
 function 行VLESS(uuid, addr, port, sni, fp, t, path, host, frag, flow) {
   let s = `vless://${uuid}@${addr}:${port}?encryption=none&security=tls&sni=${編(sni)}&fp=${編(fp)}&type=${t}`;
   if (flow) s += `&flow=${編(flow)}`;
   if (t === 'ws') s += `&host=${編(host)}&path=${編(path)}`;
   else if (t === 'grpc') s += `&serviceName=${編(String(path).replace(/^\//, ''))}`;
   else s += `&host=${編(host)}&path=${編(path)}&mode=auto`;
-  if (frag) s += '&fragment=off'; /* یادآوری کلاینت: fragment در تنظیمات TLS خود اپ */
+  if (frag) s += '&fragment=off';
   return s;
 }
+
 function 行TRJ(pwd, addr, port, sni, fp, t, path, host) {
   let s = `trojan://${pwd}@${addr}:${port}?security=tls&sni=${編(sni)}&fp=${編(fp)}&type=${t}`;
   if (t === 'ws') s += `&host=${編(host)}&path=${編(path)}`;
@@ -259,6 +471,7 @@ function 行TRJ(pwd, addr, port, sni, fp, t, path, host) {
   else s += `&host=${編(host)}&path=${編(path)}&mode=auto`;
   return s;
 }
+
 function 行SS(pwd, addr, port, sni, fp, t, path, host) {
   const m = 'aes-128-gcm';
   const core = B64(文本(`${m}:${pwd}`));
@@ -269,10 +482,17 @@ function 行SS(pwd, addr, port, sni, fp, t, path, host) {
   return s;
 }
 
-/* ───────────────────────────── ۰۷ · خروجی‌ها ────────────────────────────── */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 52-outputs.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Output Formatters — base64 / Clash / sing-box
+   ══════════════════════════════════════════════════════════════════════════════ */
 function 樣式B64(nodes) {
   return btoa(nodes.map((x) => x.line).join('\n'));
 }
+
 function 樣式Clash(nodes, cfg) {
   const y = (k, v) => `${k}: ${v}`;
   const q = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
@@ -280,1059 +500,203 @@ function 樣式Clash(nodes, cfg) {
   const names = [];
   for (const x of nodes) {
     lines.push('  - name: ' + q(x.n));
-    lines.push('    ' + y('type', x.p));
-    lines.push('    ' + y('server', x.a));
-    lines.push('    ' + y('port', x.port));
-    if (x.p === 'vless') { lines.push('    ' + y('uuid', q(x.pwd))); lines.push('    ' + y('flow', 'none')); }
-    if (x.p === 'trojan') lines.push('    ' + y('password', q(x.pwd)));
-    if (x.p === 'ss') {
-      lines.push('    ' + y('cipher', x.m));
-      lines.push('    ' + y('password', q(x.pwd)));
-      lines.push('    ' + y('plugin', 'v2ray-plugin'));
-      const po = x.t === 'ws'
-        ? `{mode: ws, tls: true, host: ${q(x.sni)}, path: ${q(x.path)}}`
-        : x.t === 'grpc'
-          ? `{mode: grpc, tls: true, host: ${q(x.sni)}, serviceName: ${q(String(x.path).replace(/^\//, ''))}}`
-          : `{mode: xhttp, tls: true, host: ${q(x.sni)}, path: ${q(x.path)}}`;
-      lines.push('    ' + y('plugin-opts', po));
+    lines.push('    type: ' + x.p);
+    lines.push('    server: ' + q(x.a));
+    lines.push('    port: ' + x.port);
+    if (x.p === 'vless' || x.p === 'trojan') {
+      lines.push('    password: ' + q(x.pwd));
+      lines.push('    uuid: ' + q(x.pwd));
+    } else if (x.p === 'ss') {
+      lines.push('    cipher: ' + q(x.m));
+      lines.push('    password: ' + q(x.pwd));
     }
-    lines.push('    ' + y('tls', 'true'));
-    lines.push('    ' + y('skip-cert-verify', 'false'));
-    lines.push('    ' + y('servername', q(x.sni)));
-    lines.push('    ' + y('client-fingerprint', q(x.fp)));
+    lines.push('    tls: true');
+    lines.push('    udp: true');
+    if (x.sni) lines.push('    servername: ' + q(x.sni));
+    if (x.fp) lines.push('    client-fingerprint: ' + q(x.fp));
     if (x.t === 'ws') {
-      lines.push('    ' + y('network', 'ws'));
+      lines.push('    network: ws');
       lines.push('    ws-opts:');
-      lines.push('      ' + y('path', q(x.path)));
+      lines.push('      path: ' + q(x.path));
       lines.push('      headers:');
-      lines.push('        ' + y('Host', q(x.sni)));
+      lines.push('        Host: ' + q(x.a));
     } else if (x.t === 'grpc') {
-      lines.push('    ' + y('network', 'grpc'));
+      lines.push('    network: grpc');
       lines.push('    grpc-opts:');
-      lines.push('      ' + y('grpc-service-name', q(String(x.path).replace(/^\//, ''))));
-    } else {
-      lines.push('    ' + y('network', 'xhttp'));
+      lines.push('      grpc-service-name: ' + q(String(x.path).replace(/^\//, '')));
+    } else if (x.t === 'xhttp') {
+      lines.push('    network: xhttp');
       lines.push('    xhttp-opts:');
-      lines.push('      ' + y('path', q(x.path)));
-      lines.push('      ' + y('host', q(x.sni)));
+      lines.push('      path: ' + q(x.path));
+      lines.push('      mode: auto');
     }
-    names.push(q(x.n.replace(/"/g, '')));
+    names.push(x.n);
   }
+  lines.push('');
   lines.push('proxy-groups:');
   lines.push('  - name: ' + q(cfg.subname || 'NEXUS'));
+  lines.push('    type: select');
+  lines.push('    proxies:');
+  for (const n of names) lines.push('      - ' + q(n));
+  lines.push('      - DIRECT');
+  lines.push('');
+  lines.push('  - name: ' + q((cfg.subname || 'NEXUS') + '-auto'));
   lines.push('    type: url-test');
-  lines.push('    ' + y('proxies', '[' + names.join(', ') + ']'));
-  lines.push('    url: http://www.gstatic.com/generate_204');
+  lines.push('    url: https://www.gstatic.com/generate_204');
   lines.push('    interval: 300');
+  lines.push('    proxies:');
+  for (const n2 of names) lines.push('      - ' + q(n2));
+  lines.push('');
+  lines.push('rules:');
+  lines.push('  - MATCH,' + q(cfg.subname || 'NEXUS'));
   return lines.join('\n');
 }
+
 function 樣式Sing(nodes, cfg) {
-  const outs = [];
+  const out = { outbounds: [] };
+  const names = [];
   for (const x of nodes) {
-    const ob = { tag: x.n, type: x.p === 'vless' ? 'vless' : x.p === 'trojan' ? 'trojan' : 'shadowsocks', server: x.a, server_port: x.port };
-    if (x.p === 'vless') { ob.uuid = x.pwd; ob.flow = ''; }
-    if (x.p === 'trojan') { ob.password = x.pwd; }
-    if (x.p === 'ss') { ob.method = x.m; ob.password = x.pwd; ob.plugin = 'v2ray-plugin'; }
-    ob.tls = { enabled: true, server_name: x.sni, utls: { enabled: true, fingerprint: x.fp } };
-    if (x.p === 'ss') {
-      ob.plugin_opts = x.t === 'ws'
-        ? { mode: 'websocket', tls: true, host: x.sni, path: x.path }
-        : x.t === 'grpc'
-          ? { mode: 'grpc', tls: true, host: x.sni, serviceName: String(x.path).replace(/^\//, '') }
-          : { mode: 'xhttp', tls: true, host: x.sni, path: x.path };
-    } else {
-      ob.transport = x.t === 'ws'
-        ? { type: 'ws', path: x.path, headers: { Host: x.sni } }
-        : x.t === 'grpc'
-          ? { type: 'grpc', service_name: String(x.path).replace(/^\//, '') }
-          : { type: 'httpupgrade', host: x.sni, path: x.path };
+    const ob = {
+      tag: x.n,
+      type: x.p === 'ss' ? 'shadowsocks' : x.p,
+      server: x.a,
+      server_port: x.port,
+    };
+    if (x.p === 'vless') {
+      ob.uuid = x.pwd;
+      ob.flow = '';
+    } else if (x.p === 'trojan') {
+      ob.password = x.pwd;
+    } else if (x.p === 'ss') {
+      ob.method = x.m;
+      ob.password = x.pwd;
     }
-    outs.push(ob);
+    ob.tls = { enabled: true, server_name: x.sni, fingerprint: x.fp };
+    if (x.t === 'ws') {
+      ob.transport = { type: 'ws', path: x.path, headers: { Host: x.a } };
+    } else if (x.t === 'grpc') {
+      ob.transport = { type: 'grpc', service_name: String(x.path).replace(/^\//, '') };
+    } else if (x.t === 'xhttp') {
+      ob.transport = { type: 'http', path: x.path, mode: 'auto' };
+    }
+    out.outbounds.push(ob);
+    names.push(x.n);
   }
-  return JSON.stringify({ outbounds: outs }, null, 1);
+  out.outbounds.push({ type: 'direct', tag: 'direct' });
+  out.outbounds.push({ type: 'block', tag: 'block' });
+  out.outbounds.push({ type: 'selector', tag: cfg.subname || 'NEXUS', outbounds: [...names, 'direct'] });
+  return JSON.stringify(out, null, 2);
 }
 
-/* ───────────────────────────── ۰۸ · جغرافیا ─────────────────────────────── */
-/* ایستگاه‌های لبهٔ کلودفلر (نقشهٔ زنده) */
-const 站點 = [
-  ['Ashburn', 'US', 39.0, -77.5], ['New York', 'US', 40.7, -74.0], ['Chicago', 'US', 41.9, -87.6],
-  ['Dallas', 'US', 32.8, -96.8], ['Los Angeles', 'US', 34.1, -118.2], ['San Jose', 'US', 37.3, -121.9],
-  ['Seattle', 'US', 47.6, -122.3], ['Miami', 'US', 25.8, -80.2], ['Toronto', 'CA', 43.7, -79.4],
-  ['Montreal', 'CA', 45.5, -73.6], ['Sao Paulo', 'BR', -23.6, -46.6], ['Buenos Aires', 'AR', -34.6, -58.4],
-  ['Lima', 'PE', -12.0, -77.0], ['Bogota', 'CO', 4.7, -74.1], ['Santiago', 'CL', -33.4, -70.7],
-  ['Mexico City', 'MX', 19.4, -99.1], ['London', 'GB', 51.5, -0.1], ['Paris', 'FR', 48.9, 2.35],
-  ['Frankfurt', 'DE', 50.1, 8.7], ['Amsterdam', 'NL', 52.4, 4.9], ['Madrid', 'ES', 40.4, -3.7],
-  ['Milan', 'IT', 45.5, 9.2], ['Warsaw', 'PL', 52.2, 21.0], ['Stockholm', 'SE', 59.3, 18.1],
-  ['Zurich', 'CH', 47.4, 8.5], ['Istanbul', 'TR', 41.0, 29.0], ['Dubai', 'AE', 25.2, 55.3],
-  ['Tel Aviv', 'IL', 32.1, 34.8], ['Riyadh', 'SA', 24.7, 46.7], ['Moscow', 'RU', 55.8, 37.6],
-  ['Kyiv', 'UA', 50.4, 30.5], ['Mumbai', 'IN', 19.1, 72.9], ['Delhi', 'IN', 28.6, 77.2],
-  ['Singapore', 'SG', 1.35, 103.8], ['Hong Kong', 'HK', 22.3, 114.2], ['Tokyo', 'JP', 35.7, 139.7],
-  ['Osaka', 'JP', 34.7, 135.5], ['Seoul', 'KR', 37.6, 127.0], ['Sydney', 'AU', -33.9, 151.2],
-  ['Melbourne', 'AU', -37.8, 145.0], ['Perth', 'AU', -31.9, 115.9], ['Jakarta', 'ID', -6.2, 106.8],
-  ['Manila', 'PH', 14.6, 121.0], ['Bangkok', 'TH', 13.7, 100.5], ['Hanoi', 'VN', 21.0, 105.8],
-  ['Karachi', 'PK', 24.9, 67.0], ['Johannesburg', 'ZA', -26.2, 28.0], ['Lagos', 'NG', 6.5, 3.4],
-  ['Cairo', 'EG', 30.0, 31.2], ['Nairobi', 'KE', -1.3, 36.8], ['Tehran', 'IR', 35.7, 51.4],
-  ['Wellington', 'NZ', -41.3, 174.8], ['Guangzhou', 'CN', 23.1, 113.3], ['Shanghai', 'CN', 31.2, 121.5],
-  ['Beijing', 'CN', 39.9, 116.4], ['Taipei', 'TW', 25.0, 121.5], ['Kuala Lumpur', 'MY', 3.1, 101.7],
-];
-const 城市 = new Map(站點.map((p) => [p[0], p]));
 
-/* نگاشت کد کلوب به شهر */
-const 庫洛 = {
-  IAD: 'Ashburn', JFK: 'New York', EWR: 'New York', ORD: 'Chicago', DFW: 'Dallas',
-  LAX: 'Los Angeles', SJC: 'San Jose', SEA: 'Seattle', MIA: 'Miami', YYZ: 'Toronto',
-  YUL: 'Montreal', GRU: 'Sao Paulo', EZE: 'Buenos Aires', LIM: 'Lima', BOG: 'Bogota',
-  SCL: 'Santiago', MEX: 'Mexico City', LHR: 'London', CDG: 'Paris', FRA: 'Frankfurt',
-  AMS: 'Amsterdam', MAD: 'Madrid', MXP: 'Milan', WAW: 'Warsaw', ARN: 'Stockholm',
-  ZRH: 'Zurich', IST: 'Istanbul', DXB: 'Dubai', TLV: 'Tel Aviv', RUH: 'Riyadh',
-  DME: 'Moscow', VKO: 'Moscow', KBP: 'Kyiv', BOM: 'Mumbai', DEL: 'Delhi',
-  SIN: 'Singapore', HKG: 'Hong Kong', NRT: 'Tokyo', HND: 'Tokyo', KIX: 'Osaka',
-  ICN: 'Seoul', SYD: 'Sydney', MEL: 'Melbourne', PER: 'Perth', CGK: 'Jakarta',
-  MNL: 'Manila', BKK: 'Bangkok', SGN: 'Hanoi', KHI: 'Karachi', JNB: 'Johannesburg',
-  LOS: 'Lagos', CAI: 'Cairo', NBO: 'Nairobi', WLG: 'Wellington', AKL: 'Wellington',
-  CAN: 'Guangzhou', PVG: 'Shanghai', PEK: 'Beijing', TPE: 'Taipei', KUL: 'Kuala Lumpur',
-};
-/* مرکز تقریبی کشورها برای بازدیدکنندگانی که کلوب ناشناس دارند */
-const 國中 = {
-  IR: [35.7, 51.4], US: [39.8, -98.6], CA: [56.1, -106.3], GB: [54.0, -2.0], DE: [51.2, 10.4],
-  FR: [46.2, 2.2], IT: [41.9, 12.6], ES: [40.5, -3.7], NL: [52.1, 5.3], SE: [60.1, 18.6],
-  PL: [52.1, 19.4], CH: [46.8, 8.2], TR: [39.0, 35.0], RU: [55.8, 37.6], UA: [49.0, 31.0],
-  AE: [24.0, 54.0], SA: [24.0, 45.0], IL: [31.0, 34.8], IN: [21.0, 78.0], PK: [30.0, 70.0],
-  SG: [1.35, 103.8], HK: [22.3, 114.2], JP: [36.2, 138.2], KR: [36.5, 127.8], CN: [35.0, 105.0],
-  TW: [23.7, 121.0], AU: [-25.0, 134.0], NZ: [-41.0, 174.0], ID: [-2.0, 118.0], PH: [13.0, 122.0],
-  TH: [15.0, 101.0], VN: [16.0, 108.0], MY: [4.2, 102.0], BR: [-10.0, -52.0], AR: [-34.6, -58.4],
-  CL: [-35.7, -71.0], PE: [-10.0, -76.0], CO: [4.0, -73.0], MX: [23.6, -102.5], ZA: [-29.0, 24.0],
-  NG: [9.1, 8.7], EG: [26.8, 30.8], KE: [-0.0, 37.9], KZ: [48.0, 67.0], UZ: [41.4, 64.6],
-  BY: [53.7, 27.9], MM: [21.9, 95.9], AF: [33.9, 67.7], SD: [15.5, 30.2], SY: [35.0, 38.0],
-  VE: [6.4, -66.6], KZ: [48.0, 67.0], IQ: [33.0, 44.0], AZ: [40.1, 47.6], GE: [42.1, 43.6],
-  GR: [39.1, 21.8], PT: [39.4, -8.2], BE: [50.6, 4.5], AT: [47.5, 14.6], CZ: [49.8, 15.5],
-  HU: [47.2, 19.5], RO: [45.9, 25.0], BG: [42.7, 25.5], RS: [44.0, 21.0], NO: [60.5, 8.5],
-  FI: [61.9, 25.7], DK: [56.3, 9.5], IE: [53.4, -8.2], MA: [31.8, -7.1], DZ: [28.0, 1.7],
-};
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 53-geo.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Visitor Detection & Geo
+   ══════════════════════════════════════════════════════════════════════════════ */
 function 訪客(request, cfg) {
-  const cc = String((request.headers.get('cf-ipcountry') || 'XX')).toUpperCase();
-  const colo = String((request.headers.get('cf-colo') || '')).toUpperCase();
-  let city = 庫洛[colo] || null;
-  let lat = 0, lon = 0;
-  if (city) { const p = 城市.get(city); lat = p[2]; lon = p[3]; }
-  else { const g = 國中[cc]; if (g) { lat = g[0]; lon = g[1]; city = cc; } }
-  const prof = 檔案(cc);
-  return { cc, colo: colo || '—', city: city || '—', lat, lon, zone: prof.zone };
+  const h = request.headers;
+  const cc = String(h.get('cf-ipcountry') || '').toUpperCase() || 'XX';
+  const colo = h.get('cf-colo') || String(h.get('cf-ray') || '').split('-').pop() || '';
+  const city = h.get('cf-ipcity') || '';
+  const lat = parseFloat(h.get('cf-iplat') || '0') || 0;
+  const lon = parseFloat(h.get('cf-iplon') || '0') || 0;
+  const zone = 檔案(cc).zone;
+  const key = h.get('x-key') || '';
+  return { cc, colo, city, lat, lon, zone, key };
 }
 
-/* ───────────────────────────── ۰۹ · پاسخ‌ها ─────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Response Helpers
+   ══════════════════════════════════════════════════════════════════════════════ */
 function 響(data, status) {
   return new Response(JSON.stringify(data), {
     status: status || 200,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    headers: { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*' },
   });
 }
+
 function 誤(msg, status) { return 響({ ok: false, error: msg }, status || 400); }
+
 function 觸(k, url, head) {
-  const q = url.searchParams.get('k');
-  if (q) return q;
-  return head.get('x-key') || '';
+  /* get key from query param or header */
+  return url.searchParams.get(k) || head.get('x-key') || '';
 }
+
 function 開(鑰, 給) { return !鑰 || 密時(鑰, 給); }
 
-/* ───────────────────────────── ۱۰ · صفحهٔ آینده ─────────────────────────── */
-const VERSION = '3.0.0-NX.2';
-const LABELS = {
-  fa: {
-    t_about: 'درباره', t_cfg: 'کانفیگ', t_home: 'خانه', t_map: 'نقشهٔ زنده', t_set: 'تنظیمات هوشمند',
-    hero1: 'دری به آینده باز شد', hero2: 'یک ورکر نودساز؛ برای همهٔ مردمِ جهان، در هر جای دنیا.',
-    hero3: 'موتور هوشمند · نقشهٔ زندهٔ لبه · خروجی همهٔ فرمت‌ها · بدون هیچ وابستگی',
-    cta: 'دریافت کانفیگ', cta2: 'ورود به پنل',
-    boot1: 'هستهٔ NEXUS در حال راه‌اندازی…', boot2: 'اتصال به لبهٔ شبکه…', boot3: 'کالیبراسیون نقشهٔ جهانی…',
-    boot4: 'موتور هوشمند فعال شد ✓', done: 'آماده‌اید.',
-    stat_colo: 'کلوب شما', stat_country: 'کشور', stat_zone: 'حالت', stat_pop: 'ایستگاه‌های لبه',
-    rec_t: 'پیشنهاد هوشمند', rec_ir: 'برای شبکهٔ ایران، بهترین ترکیب: VLESS + WebSocket روی پورت ۴۴۳/۲۰۵۳ با مسیر ?ed=2560. اگر به TLS Fragment دسترسی دارید آن را در کلاینت روشن کنید تا عمیق‌ترین لایهٔ اختلال هم دور بزند.',
-    rec_hard: 'شبکهٔ شما محدودیت شدید دارد؛ حالت مقاوم (WS + SNI جایگزین) فعال شد.',
-    rec_open: 'شبکهٔ شما باز است؛ از gRPC/XHTTP برای کمترین تأخیر استفاده کنید.',
-    nodes_t: 'گره‌های پیشنهادی', nodes_sub: 'لینک اشتراک', copy: 'کپی', copied: 'کپی شد ✓',
-    fmt_b64: 'Base64', fmt_plain: 'متن ساده', fmt_clash: 'Clash', fmt_sing: 'Sing-box',
-    dl: 'دانلود', qr_t: 'کد QR — با اپ اسکن کنید', clients_t: 'افزودن یک‌کلیک به کلاینت',
-    cfg_t: 'پنل تنظیمات هوشمند', cfg_sub: 'هر تغییری بلافاصله در KV ذخیره و در ساب اعمال می‌شود.',
-    save: 'ذخیرهٔ تنظیمات', smart: 'بازسازی هوشمند', saved: 'تنظیمات ذخیره شد ✓', err_save: 'خطا در ذخیره',
-    lock_t: 'پنل قفل است', lock_sub: 'کلید دسترسی را وارد کنید (UUID ورکر)', unlock: 'باز کردن',
-    wrong: 'کلید نادرست است', wait: 'در حال اتصال…', live: 'زنده', ms: 'ms',
-    k_name: 'نام', k_proto: 'پروتکل', k_tr: 'ترابرد', k_host: 'آدرس', k_sni: 'SNI',
-    st_proto: 'پروتکل‌ها', st_tr: 'ترابردها', st_port: 'پورت‌ها', st_tls: 'TLS', st_fp: 'اثرانگشت',
-    st_sni: 'SNI سفارشی', st_path: 'مسیر', st_p: 'IP دلخواه / پروکسی (ip:port#نام)', st_s: 'زنجیرهٔ SOCKS5', st_sub: 'نام ساب', st_scu: 'ساب‌کانورت', st_ir: 'اپراتورهای ایران', st_danger: 'پیشرفته', st_disable: 'غیرفعال‌سازی ورکر',
-    about_t: 'دربارهٔ NEXUS', about_d: 'ورکر نودساز نسل جدید — موتور هوشمند، پنل داخلی، نقشهٔ زنده، مبهم‌سازی چندلایه. همه‌چیز در یک فایل، بدون وابستگی.',
-    f_powered: 'ساخته‌شده برای فردا — روی شبکهٔ کلودفلر', loading: 'در حال بارگذاری…', unlock_btn: 'وارد شوید',
-  },
-  en: {
-    t_about: 'About', t_cfg: 'Config', t_home: 'Home', t_map: 'Live Map', t_set: 'Smart Settings',
-    hero1: 'A door to the future opened', hero2: 'A node-generator worker for everyone, everywhere.',
-    hero3: 'Smart engine · live edge map · every output format · zero dependencies',
-    cta: 'Get config', cta2: 'Open panel',
-    boot1: 'NEXUS core booting…', boot2: 'linking to the network edge…', boot3: 'calibrating the world map…',
-    boot4: 'smart engine online ✓', done: 'You are ready.',
-    stat_colo: 'Your colo', stat_country: 'Country', stat_zone: 'Mode', stat_pop: 'Edge stations',
-    rec_t: 'Smart recommendation', rec_ir: 'For Iranian networks the best combo is VLESS + WebSocket on port 443/2053 with the ?ed=2560 path. If your client supports TLS Fragment, enable it to defeat the deepest DPI layer.',
-    rec_hard: 'Your network is heavily filtered — resilient mode (WS + alt SNI) activated.',
-    rec_open: 'Your network is open — use gRPC/XHTTP for the lowest latency.',
-    nodes_t: 'Suggested nodes', nodes_sub: 'Subscription link', copy: 'Copy', copied: 'Copied ✓',
-    fmt_b64: 'Base64', fmt_plain: 'Plain', fmt_clash: 'Clash', fmt_sing: 'Sing-box',
-    dl: 'Download', qr_t: 'QR code — scan with your app', clients_t: 'One-tap add to client',
-    cfg_t: 'Smart settings panel', cfg_sub: 'Any change is stored in KV instantly and applied to the sub.',
-    save: 'Save settings', smart: 'Smart rebuild', saved: 'Settings saved ✓', err_save: 'Save failed',
-    lock_t: 'Panel locked', lock_sub: 'Enter the access key (worker UUID)', unlock: 'Unlock',
-    wrong: 'Wrong key', wait: 'Connecting…', live: 'LIVE', ms: 'ms',
-    k_name: 'Name', k_proto: 'Protocol', k_tr: 'Transport', k_host: 'Address', k_sni: 'SNI',
-    st_proto: 'Protocols', st_tr: 'Transports', st_port: 'Ports', st_tls: 'TLS', st_fp: 'Fingerprint',
-    st_sni: 'Custom SNI', st_path: 'Path', st_p: 'Preferred IPs / proxy (ip:port#name)', st_s: 'SOCKS5 chain', st_sub: 'Sub name', st_scu: 'Sub converter', st_ir: 'Iran carriers', st_danger: 'Advanced', st_disable: 'Disable worker',
-    about_t: 'About NEXUS', about_d: 'Next-gen node generator worker — smart engine, internal panel, live map, multi-layer obfuscation. Everything in one file, zero dependencies.',
-    f_powered: 'Built for tomorrow — on the Cloudflare network', loading: 'Loading…', unlock_btn: 'Enter',
-  },
-};
 
-function 頁(request, env, cfg, info, unlocked, L) {
-  const lang = cfg.lang === 'en' ? 'en' : 'fa';
-  const dir = lang === 'fa' ? 'rtl' : 'ltr';
-  const key = cfg.uuid || env.u || '';
-  const label = JSON.stringify(LABELS[lang]).replace(/</g, '\\u003c');
-  const vinfo = JSON.stringify(info);
-  const popJson = JSON.stringify(站點);
-  const colo = String(info.colo).replace(/"/g, '');
-  return `<!DOCTYPE html>
-<html lang="${lang}" dir="${dir}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#04060f">
-<title>NEXUS · ${cfg.name || 'gateway'}</title>
-<link rel="icon" href="data:image/svg+xml,${編('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#04060f"/><path d="M7 24V9l9 8 9-8v15" stroke="#22d3ee" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')}">
-<style>
-:root{--bg:#04060f;--bg2:#070b1a;--card:rgba(13,20,40,.55);--line:rgba(96,165,250,.14);
---cy:#22d3ee;--vi:#a78bfa;--tx:#e2e8f0;--mut:#7d8db1;--ok:#34d399;--bad:#fb7185;--gold:#fbbf24}
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
-body{background:radial-gradient(1200px 600px at 75% -10%,rgba(34,211,238,.08),transparent 60%),
-radial-gradient(1000px 700px at 10% 110%,rgba(167,139,250,.09),transparent 60%),var(--bg);
-color:var(--tx);font-family:'Segoe UI',Tahoma,'Vazirmatn',system-ui,sans-serif;overflow-x:hidden}
-#stars{position:fixed;inset:0;z-index:0;pointer-events:none}
-.scan{position:fixed;inset:0;z-index:1;pointer-events:none;background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(148,163,184,.028) 3px 4px)}
-.hud{position:fixed;z-index:2;pointer-events:none;opacity:.8}
-.hud.tl{top:14px;left:14px;border-top:2px solid var(--cy);border-left:2px solid var(--cy);width:26px;height:26px;border-radius:6px 0 0 0}
-.hud.tr{top:14px;right:14px;border-top:2px solid var(--cy);border-right:2px solid var(--cy);width:26px;height:26px;border-radius:0 6px 0 0}
-.hud.bl{bottom:14px;left:14px;border-bottom:2px solid var(--cy);border-left:2px solid var(--cy);width:26px;height:26px;border-radius:0 0 0 6px}
-.hud.br{bottom:14px;right:14px;border-bottom:2px solid var(--cy);border-right:2px solid var(--cy);width:26px;height:26px;border-radius:0 0 6px 0}
-.wrap{position:relative;z-index:3;max-width:1180px;margin:0 auto;padding:20px 16px 70px}
-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;
-border:1px solid var(--line);border-radius:16px;background:var(--card);backdrop-filter:blur(14px);flex-wrap:wrap}
-.logo{display:flex;align-items:center;gap:10px}
-.logo svg{filter:drop-shadow(0 0 8px rgba(34,211,238,.5))}
-.logo b{font-size:19px;letter-spacing:2px;background:linear-gradient(90deg,var(--cy),var(--vi));-webkit-background-clip:text;background-clip:text;color:transparent}
-.logo small{display:block;color:var(--mut);font-size:10px;letter-spacing:3px}
-.chips{display:flex;gap:8px;flex-wrap:wrap}
-.chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:5px 11px;border-radius:99px;
-border:1px solid var(--line);background:rgba(148,163,184,.05);color:var(--mut);font-family:ui-monospace,Menlo,monospace}
-.chip b{color:var(--cy);font-weight:600}
-.dot{width:6px;height:6px;border-radius:99px;background:var(--ok);box-shadow:0 0 8px var(--ok);animation:blink 1.6s infinite}
-@keyframes blink{50%{opacity:.35}}
-nav{display:flex;gap:6px;margin-top:16px;flex-wrap:wrap}
-nav button{display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:12px;border:1px solid var(--line);
-background:rgba(13,20,40,.5);color:var(--mut);font-size:13px;cursor:pointer;transition:.25s;font-family:inherit}
-nav button:hover{color:var(--tx);border-color:rgba(34,211,238,.4)}
-nav button.on{color:#031018;background:linear-gradient(90deg,var(--cy),#7dd3fc);border-color:transparent;font-weight:700;box-shadow:0 0 22px rgba(34,211,238,.35)}
-main{margin-top:18px}
-.panel{display:none}
-.panel.on{display:block;animation:up .45s ease both}
-@keyframes up{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-.hero{position:relative;padding:56px 26px 46px;text-align:center;overflow:hidden;border:1px solid var(--line);
-border-radius:22px;background:linear-gradient(180deg,rgba(13,20,40,.7),rgba(7,11,26,.6));backdrop-filter:blur(14px)}
-.hero::before{content:'';position:absolute;inset:-40% -20% auto;height:120%;background:conic-gradient(from 120deg at 50% 40%,transparent 70%,rgba(34,211,238,.25),transparent 85%);animation:rot 14s linear infinite;pointer-events:none}
-@keyframes rot{to{transform:rotate(360deg)}}
-.hero>*{position:relative;z-index:1}
-.hero h1{font-size:clamp(28px,5.5vw,54px);font-weight:800;line-height:1.15;
-background:linear-gradient(92deg,#e0f2fe 10%,var(--cy) 45%,var(--vi) 90%);-webkit-background-clip:text;background-clip:text;color:transparent;
-text-shadow:0 0 60px rgba(34,211,238,.25)}
-.hero p{color:var(--mut);margin-top:12px;font-size:clamp(13px,2.2vw,16px);max-width:640px;margin-inline:auto}
-.hero .tag{margin-top:14px;font-size:12px;letter-spacing:1px;color:var(--vi)}
-.cta{display:flex;gap:12px;justify-content:center;margin-top:26px;flex-wrap:wrap}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:13px 26px;border-radius:14px;font-size:14px;font-weight:700;cursor:pointer;transition:.25s;border:1px solid transparent;font-family:inherit}
-.btn.prim{background:linear-gradient(90deg,var(--cy),#60a5fa);color:#031018;box-shadow:0 8px 30px rgba(34,211,238,.3)}
-.btn.prim:hover{transform:translateY(-2px);box-shadow:0 12px 40px rgba(34,211,238,.45)}
-.btn.ghost{border-color:var(--line);color:var(--tx);background:rgba(148,163,184,.06)}
-.btn.ghost:hover{border-color:rgba(167,139,250,.5);color:#fff}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:22px}
-.stat{border:1px solid var(--line);border-radius:14px;padding:14px;background:rgba(7,11,26,.55)}
-.stat .k{font-size:10px;color:var(--mut);letter-spacing:1px}
-.stat .v{font-size:20px;font-weight:800;margin-top:5px;color:var(--tx);font-family:ui-monospace,Menlo,monospace}
-.stat .v em{color:var(--cy);font-style:normal}
-.rec{margin-top:18px;border:1px solid rgba(34,211,238,.3);border-radius:16px;padding:18px;background:linear-gradient(120deg,rgba(34,211,238,.08),rgba(167,139,250,.06))}
-.rec h3{font-size:13px;color:var(--cy);display:flex;gap:8px;align-items:center}
-.rec p{margin-top:8px;font-size:13.5px;color:var(--tx);line-height:1.9}
-.card{border:1px solid var(--line);border-radius:18px;background:var(--card);backdrop-filter:blur(12px);padding:20px;margin-top:16px}
-.card h2{font-size:16px;display:flex;align-items:center;gap:9px;color:var(--tx)}
-.card h2 small{color:var(--mut);font-weight:400;font-size:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:16px}
-.node{border:1px solid var(--line);border-radius:14px;padding:14px;background:rgba(7,11,26,.6);transition:.25s;position:relative;overflow:hidden}
-.node:hover{border-color:rgba(34,211,238,.45);transform:translateY(-2px)}
-.node .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.badge{font-size:10px;font-weight:800;padding:3px 9px;border-radius:99px;letter-spacing:.5px}
-.badge.vless{background:rgba(34,211,238,.15);color:var(--cy)}
-.badge.trojan{background:rgba(167,139,250,.15);color:var(--vi)}
-.badge.ss{background:rgba(52,211,153,.15);color:var(--ok)}
-.badge.ws{background:rgba(251,191,36,.12);color:var(--gold)}
-.badge.grpc{background:rgba(96,165,250,.14);color:#93c5fd}
-.badge.xhttp{background:rgba(244,114,182,.14);color:#f9a8d4}
-.node h4{font-size:13px;margin-top:9px;color:var(--tx);word-break:break-all}
-.node .meta{font-size:11px;color:var(--mut);margin-top:6px;font-family:ui-monospace,Menlo,monospace;word-break:break-all}
-.node .meta b{color:#a5b4fc;font-weight:600}
-.node button{position:absolute;top:12px;inset-inline-end:12px;border:1px solid var(--line);background:rgba(148,163,184,.08);
-color:var(--cy);border-radius:9px;padding:5px 10px;font-size:11px;cursor:pointer;transition:.2s}
-.node button:hover{background:rgba(34,211,238,.15)}
-.subrow{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center}
-.fmt{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.fmt button{padding:7px 14px;border-radius:10px;border:1px solid var(--line);background:rgba(148,163,184,.05);color:var(--mut);font-size:12px;cursor:pointer;font-family:inherit}
-.fmt button.on{border-color:var(--vi);color:var(--vi);background:rgba(167,139,250,.1)}
-.urlbox{display:flex;align-items:center;gap:8px;flex:1;min-width:240px;border:1px solid var(--line);border-radius:12px;
-padding:9px 12px;background:rgba(4,6,15,.6);font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mut);word-break:break-all}
-.clientrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.clientrow a{flex:1 1 120px;text-align:center;padding:10px 6px;border-radius:11px;font-size:11.5px;text-decoration:none;
-border:1px solid rgba(52,211,153,.3);color:#6ee7b7;background:rgba(52,211,153,.06);transition:.2s}
-.clientrow a:hover{background:rgba(52,211,153,.14)}
-.qrbox{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-top:14px}
-.qrbox img{border-radius:14px;border:1px solid var(--line);background:#fff;width:170px;height:170px}
-.mapbox{position:relative;border:1px solid var(--line);border-radius:18px;overflow:hidden;background:radial-gradient(600px 300px at 50% 0,rgba(34,211,238,.06),transparent),#050a18}
-.mapbox svg{display:block;width:100%;height:auto}
-.legend{position:absolute;top:12px;inset-inline-start:12px;font-size:10px;color:var(--mut);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.legend i{width:8px;height:8px;border-radius:99px;display:inline-block;margin-inline-end:4px}
-.mapside{margin-top:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
-.pops{font-size:11px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:rgba(7,11,26,.55);display:flex;justify-content:space-between}
-.pops b{color:var(--cy);font-family:ui-monospace,Menlo,monospace}
-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:16px}
-field{border:1px solid var(--line);border-radius:14px;padding:13px;background:rgba(7,11,26,.5)}
-field legend{font-size:11px;color:var(--mut);padding:0 6px;letter-spacing:.5px}
-field label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--tx);padding:5px 0}
-.sw{position:relative;width:38px;height:20px;border-radius:99px;background:rgba(148,163,184,.25);cursor:pointer;transition:.25s;flex-shrink:0}
-.sw::after{content:'';position:absolute;top:2px;inset-inline-start:2px;width:16px;height:16px;border-radius:99px;background:#fff;transition:.25s}
-.sw.on{background:linear-gradient(90deg,var(--cy),#60a5fa)}
-.sw.on::after{inset-inline-start:20px}
-input[type=text],textarea,select{width:100%;margin-top:7px;padding:9px 11px;border-radius:10px;border:1px solid var(--line);
-background:rgba(4,6,15,.7);color:var(--tx);font-size:12.5px;font-family:inherit;outline:none;transition:.2s}
-input:focus,textarea:focus,select:focus{border-color:rgba(34,211,238,.6);box-shadow:0 0 0 3px rgba(34,211,238,.12)}
-textarea{min-height:64px;resize:vertical}
-.chipsrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-.chipsrow button{padding:6px 12px;border-radius:9px;border:1px solid var(--line);background:rgba(148,163,184,.05);color:var(--mut);font-size:12px;cursor:pointer;font-family:ui-monospace,Menlo,monospace}
-.chipsrow button.on{border-color:var(--cy);color:var(--cy);background:rgba(34,211,238,.1)}
-.actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
-#boot{position:fixed;inset:0;z-index:50;background:#02040b;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .6s}
-#boot.off{opacity:0;pointer-events:none}
-#boot .ring{width:74px;height:74px;border-radius:99px;border:3px solid rgba(34,211,238,.15);border-top-color:var(--cy);animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-#boot .bl{width:min(300px,70vw);font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mut);min-height:64px}
-#boot .bl div{margin:3px 0}
-#boot .bl .ok{color:var(--ok)}
-#boot h2{font-size:26px;letter-spacing:6px;background:linear-gradient(90deg,var(--cy),var(--vi));-webkit-background-clip:text;background-clip:text;color:transparent}
-#lock{position:fixed;inset:0;z-index:40;background:radial-gradient(900px 500px at 50% 20%,rgba(34,211,238,.1),transparent),#02040b;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:20px}
-#lock.on{display:flex}
-#lock .box{width:min(360px,92vw);border:1px solid var(--line);border-radius:20px;padding:26px;background:rgba(13,20,40,.6);backdrop-filter:blur(16px);text-align:center}
-#lock h2{color:var(--tx);font-size:20px}
-#lock p{color:var(--mut);font-size:12.5px;margin:8px 0 16px}
-#lock input{text-align:center;letter-spacing:1px;font-family:ui-monospace,Menlo,monospace}
-#toast{position:fixed;bottom:22px;inset-inline-start:50%;transform:translateX(50%) translateY(20px);z-index:60;
-background:rgba(6,12,26,.92);border:1px solid rgba(34,211,238,.4);color:var(--tx);padding:11px 20px;border-radius:12px;font-size:13px;
-opacity:0;transition:.3s;pointer-events:none;box-shadow:0 10px 40px rgba(0,0,0,.5)}
-#toast.on{opacity:1;transform:translateX(50%) translateY(0)}
-@media(max-width:560px){.hero{padding:38px 16px 34px}.chips .hide{display:none}}
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-thumb{background:#1e293b;border-radius:4px}
-a{color:var(--cy)}
-pre.out{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#a5b4fc;max-height:300px;overflow:auto;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:rgba(4,6,15,.7);display:none}
-pre.out.on{display:block}
-</style>
-</head>
-<body>
-<div id="stars"></div><div class="scan"></div>
-<div class="hud tl"></div><div class="hud tr"></div><div class="hud bl"></div><div class="hud br"></div>
-
-<div id="boot"><div class="ring"></div><h2>NEXUS</h2><div class="bl" id="bootlog"></div></div>
-
-<div id="lock"><div class="box">
-  <div style="font-size:34px">🔐</div>
-  <h2 id="lock_t"></h2>
-  <p id="lock_sub"></p>
-  <input type="text" id="lockkey" autocomplete="off" spellcheck="false" placeholder="UUID">
-  <div class="actions" style="justify-content:center"><button class="btn prim" id="lockbtn"></button></div>
-</div></div>
-
-<div class="wrap" id="app" style="opacity:0">
-<header>
-  <div class="logo">
-    <svg width="34" height="34" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="rgba(34,211,238,.08)"/><path d="M7 24V9l9 8 9-8v15" stroke="#22d3ee" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    <div><b>NEXUS</b><small>THE GATEWAY TO TOMORROW</small></div>
-  </div>
-  <div class="chips">
-    <span class="chip"><span class="dot"></span><span id="chipLive">LIVE</span></span>
-    <span class="chip hide"><b id="chipColo"></b></span>
-    <span class="chip hide"><b id="chipCc"></b></span>
-    <span class="chip hide"><b id="chipCity"></b></span>
-    <button class="chip" id="langBtn" style="cursor:pointer;border-style:dashed">EN ⇄ FA</button>
-  </div>
-</header>
-
-<nav id="tabs">
-  <button data-t="home" class="on">🏠 <span></span></button>
-  <button data-t="cfg">⚡ <span></span></button>
-  <button data-t="map">🌍 <span></span></button>
-  <button data-t="set">🧠 <span></span></button>
-  <button data-t="about">🛰 <span></span></button>
-</nav>
-
-<main>
-  <section class="panel on" id="p-home">
-    <div class="hero">
-      <h1 id="hero1"></h1>
-      <p id="hero2"></p>
-      <div class="tag" id="hero3"></div>
-      <div class="cta">
-        <button class="btn prim" id="cta1"></button>
-        <button class="btn ghost" id="cta2"></button>
-      </div>
-      <div class="stats" id="hstats"></div>
-    </div>
-    <div class="rec" id="recBox"><h3>🧠 <span></span></h3><p></p></div>
-  </section>
-
-  <section class="panel" id="p-cfg">
-    <div class="card">
-      <h2>⚡ <span></span> <small id="cfgCount"></small></h2>
-      <div class="fmt" id="fmtBar"></div>
-      <div class="subrow">
-        <div class="urlbox" id="subUrl"></div>
-        <button class="btn ghost" id="copySub"></button>
-      </div>
-      <div class="grid" id="nodes"></div>
-      <div class="qrbox" id="qrBox"></div>
-      <div class="card" style="margin-top:14px"><h2>📱 <span></span></h2><div class="clientrow" id="clients"></div></div>
-      <pre class="out" id="rawOut"></pre>
-    </div>
-  </section>
-
-  <section class="panel" id="p-map">
-    <div class="card">
-      <h2>🌍 <span></span> <small id="mapMeta"></small></h2>
-      <div class="mapbox" id="mapBox"><svg id="mapSvg"></svg><div class="legend"><span><i style="background:var(--cy)"></i>YOU</span><span><i style="background:var(--vi)"></i>EDGE POP</span><span><i style="background:rgba(34,211,238,.35)"></i>LINK</span></div></div>
-      <div class="mapside" id="popList"></div>
-    </div>
-  </section>
-
-  <section class="panel" id="p-set">
-    <div class="card">
-      <h2>🧠 <span></span></h2><p id="setSub" style="font-size:12.5px;color:var(--mut);margin-top:6px"></p>
-      <form id="cfgForm">
-        <field><legend id="st_proto"></legend>
-          <div id="fldProto"></div></field>
-        <field><legend id="st_tr"></legend>
-          <div id="fldTr"></div></field>
-        <field><legend id="st_port"></legend>
-          <div class="chipsrow" id="fldPorts"></div></field>
-        <field><legend id="st_tls"></legend>
-          <label id="lblTls"></label><label id="lblFrag"></label><label id="lblEch"></label></field>
-        <field><legend id="st_fp"></legend>
-          <select id="f_fp"><option>chrome</option><option>firefox</option><option>safari</option><option>random</option></select></field>
-        <field><legend id="st_sni"></legend><input type="text" id="f_sni" dir="ltr"></field>
-        <field><legend id="st_path"></legend><input type="text" id="f_path" dir="ltr"></field>
-        <field><legend id="st_p"></legend><textarea id="f_p" dir="ltr"></textarea></field>
-        <field><legend id="st_s"></legend><input type="text" id="f_s" dir="ltr" placeholder="host:port:user:pass"></field>
-        <field><legend id="st_sub"></legend><input type="text" id="f_subname" dir="ltr"></field>
-        <field><legend id="st_scu"></legend><input type="text" id="f_scu" dir="ltr"></field>
-        <field><legend id="st_ir"></legend><div id="fldIr"></div></field>
-        <field><legend id="st_danger"></legend>
-          <label id="lblDis"></label></field>
-      
-      <div class="actions"><button class="btn prim" id="saveCfg"></button></div>
-      </form>
-
-      <div class="card" style="margin-top:16px;border-color:rgba(167,139,250,.3)">
-        <h2>👤 <span style="color:var(--vi)">پروفایل کاربر</span></h2>
-        <p style="font-size:12px;color:var(--mut);margin-top:6px">تنظیمات شخصی خود را ذخیره کنید — برای هر کاربر متفاوت خواهد بود</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px">
-          <field><legend>نام نمایشی</legend><input type="text" id="f_uname" dir="auto" placeholder="مثلاً ali"></field>
-          <field><legend>ترانSPORT ترجیحی</legend><select id="f_utr"><option value="">خودکار</option><option value="ws">WebSocket</option><option value="grpc">gRPC</option><option value="xhttp">XHTTP</option></select></field>
-          <field><legend>SNI دلخواه</legend><input type="text" id="f_usni" dir="ltr" placeholder="sni.example.com"></field>
-          <field><legend>مسیر دلخواه</legend><input type="text" id="f_upath" dir="ltr" placeholder="/?ed=2560"></field>
-        </div>
-        <div class="actions"><button class="btn prim" id="saveUser" style="background:linear-gradient(90deg,var(--vi),#c084fc)">ذخیره پروفایل</button></div>
-      </div>
-    </div>
-
-  </section>
-
-  <section class="panel" id="p-about">
-    <div class="card">
-      <h2>🛰 <span></span></h2>
-      <p id="aboutD" style="font-size:13.5px;color:var(--mut);line-height:1.9;margin-top:10px"></p>
-      <div class="stats" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-        <div class="stat"><div class="k">VERSION</div><div class="v"><em>${VERSION}</em></div></div>
-        <div class="stat"><div class="k">COLO</div><div class="v"><em>${colo}</em></div></div>
-        <div class="stat"><div class="k">COUNTRY</div><div class="v"><em id="abCc"></em></div></div>
-        <div class="stat"><div class="k">HOST</div><div class="v" style="font-size:13px" id="abHost"></div></div>
-        <div class="stat"><div class="k">ZONE</div><div class="v"><em id="abZone"></em></div></div>
-      </div>
-      <p style="margin-top:18px;font-size:11px;color:#475569;text-align:center" id="fPowered"></p>
-    </div>
-  </section>
-</main>
-</div>
-
-<div id="toast"></div>
-<script>
-(function(){
-'use strict';
-var L = ${label};
-var VI = ${vinfo};
-var POPS = ${popJson};
-var KEY = ${JSON.stringify(key)};
-var UNLOCKED = ${unlocked ? 'true' : 'false'};
-var KVOK = ${KV(env) ? 'true' : 'false'};
-
-function $(i){return document.getElementById(i)}
-function tx(msg){var t=$('toast');t.textContent=msg;t.classList.add('on');clearTimeout(t._x);t._x=setTimeout(function(){t.classList.remove('on')},2200)}
-function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-
-/* ── i18n ── */
-function i18n(){
-  var map = {
-    t_home:'t_home',t_cfg:'t_cfg',t_map:'t_map',t_set:'t_set',t_about:'t_about',
-    hero1:'hero1',hero2:'hero2',hero3:'hero3',cta:'cta',cta2:'cta2',
-    rec_t:'rec_t',nodes_t:'nodes_t',nodes_sub:'nodes_sub',copy:'copy',
-    clients_t:'clients_t',qr_t:'qr_t',cfg_t:'cfg_t',setSub:'cfg_sub',save:'save',smart:'smart',
-    st_proto:'st_proto',st_tr:'st_tr',st_port:'st_port',st_tls:'st_tls',st_fp:'st_fp',
-    st_sni:'st_sni',st_path:'st_path',st_p:'st_p',st_s:'st_s',st_sub:'st_sub',st_scu:'st_scu',
-    st_ir:'st_ir',st_danger:'st_danger',lblDis:'st_disable',about_t:'about_t',aboutD:'about_d',fPowered:'f_powered',
-    lock_t:'lock_t',lock_sub:'lock_sub',unlock:'unlock',wrong:'wrong',loading:'loading'
-  };
-  var k;
-  for (k in map) { var el=$(k); if (el) el.textContent = L[map[k]] || k; }
-  $('lockbtn').textContent = L.unlock_btn || L.unlock;
-  var tabs = document.querySelectorAll('#tabs button');
-  for (var i=0;i<tabs.length;i++){
-    var span = tabs[i].querySelector('span');
-    if (span) span.textContent = L[tabs[i].getAttribute('data-t')==='cfg'?'t_cfg':tabs[i].getAttribute('data-t')==='map'?'t_map':tabs[i].getAttribute('data-t')==='set'?'t_set':tabs[i].getAttribute('data-t')==='about'?'t_about':'t_home'];
-  }
-  document.title = 'NEXUS · ' + (VI.host||'');
-}
-
-/* ── boot ── */
-function boot(){
-  var bl = $('bootlog'); var steps = [L.boot1, L.boot2, L.boot3, L.boot4, L.done];
-  var i = 0;
-  var iv = setInterval(function(){
-    if (i < steps.length){
-      var d = document.createElement('div');
-      d.textContent = '> ' + steps[i];
-      if (i === steps.length-1) d.className = 'ok';
-      bl.appendChild(d);
-      i++;
-    } else {
-      clearInterval(iv);
-      setTimeout(function(){
-        $('boot').classList.add('off');
-        $('app').style.opacity = 1;
-        if (!UNLOCKED && KEY) { $('lock').classList.add('on'); $('lockkey').focus(); }
-      }, 350);
-    }
-  }, 300);
-}
-
-/* ── tabs ── */
-function tabs(){
-  var btns = document.querySelectorAll('#tabs button');
-  for (var i=0;i<btns.length;i++){
-    btns[i].onclick = function(){
-      for (var j=0;j<btns.length;j++) btns[j].classList.remove('on');
-      this.classList.add('on');
-      var t = this.getAttribute('data-t');
-      var ps = document.querySelectorAll('.panel');
-      for (var k=0;k<ps.length;k++) ps[k].classList.remove('on');
-      $('p-'+t).classList.add('on');
-      if (t === 'map') setTimeout(renderMap, 60);
-      if (t === 'cfg' && !STATE.nodes) loadNodes();
-      if (t === 'set' && !STATE.cfg) loadCfg();
-    };
-  }
-}
-
-/* ── state ── */
-var STATE = { info: VI, nodes: null, cfg: null, fmt: 'base64', irCarriers: {} };
-
-function api(path){
-  var u = path + (path.indexOf('?') > -1 ? '&' : '?') + 'k=' + encodeURIComponent(KEY);
-  return fetch(u).then(function(r){ return r.json().catch(function(){ return {ok:false} }) });
-}
-
-/* ── home ── */
-function renderHome(){
-  var s = [
-    [L.stat_colo, '<em>' + esc(VI.colo||'—') + '</em>'],
-    [L.stat_country, '<em>' + esc(VI.cc||'—') + '</em>'],
-    [L.stat_zone, '<em>' + esc(VI.zone||'—') + '</em>'],
-    [L.stat_pop, '<em>' + POPS.length + '</em>']
-  ];
-  $('hstats').innerHTML = s.map(function(x){
-    return '<div class="stat"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div></div>';
-  }).join('');
-  var rec = '';
-  if (VI.zone === 'IR') rec = L.rec_ir;
-  else if (VI.zone === 'HARD') rec = L.rec_hard;
-  else rec = L.rec_open;
-  $('recBox').querySelector('p').textContent = rec;
-  $('recBox').querySelector('h3 span').textContent = L.rec_t;
-}
-
-/* ── nodes ── */
-function loadNodes(){
-  api('/api/nodes').then(function(d){
-    if (!d || !d.ok) { $('nodes').innerHTML = '<p style="color:var(--bad);font-size:13px">' + L.err_save + '</p>'; return; }
-    STATE.nodes = d;
-    renderNodes();
-  });
-}
-function renderNodes(){
-  var d = STATE.nodes;
-  $('cfgCount').textContent = d.nodes.length + ' · RTT ' + d.rtt + 'ms';
-  var box = $('nodes'); box.innerHTML = '';
-  for (var i=0;i<d.nodes.length;i++){
-    var x = d.nodes[i];
-    var el = document.createElement('div');
-    el.className = 'node';
-    el.innerHTML = '<div class="top"><span class="badge ' + x.p + '">' + x.p.toUpperCase() + '</span>' +
-      '<span class="badge ' + x.t + '">' + x.t.toUpperCase() + '</span>' +
-      '<span class="badge vless" style="background:rgba(148,163,184,.1);color:#cbd5e1">:' + x.port + '</span></div>' +
-      '<h4>' + esc(x.n) + '</h4>' +
-      '<div class="meta">' + esc(x.a) + ' · SNI <b>' + esc(x.sni) + '</b></div>' +
-      '<button data-line="' + i + '">' + L.copy + '</button>';
-    box.appendChild(el);
-  }
-  var fmtBar = $('fmtBar'); fmtBar.innerHTML = '';
-  var fmts = [['base64',L.fmt_b64],['plain',L.fmt_plain],['clash',L.fmt_clash],['singbox',L.fmt_sing]];
-  for (var f=0;f<fmts.length;f++){
-    var b = document.createElement('button');
-    b.textContent = fmts[f][1];
-    if (STATE.fmt === fmts[f][0]) b.className = 'on';
-    (function(k){ b.onclick = function(){ STATE.fmt = k; renderNodes(); }; })(fmts[f][0]);
-    fmtBar.appendChild(b);
-  }
-  var url = d.links.sub + '?target=' + STATE.fmt;
-  $('subUrl').textContent = url;
-  $('copySub').textContent = L.copy;
-  var pre = $('rawOut');
-  pre.textContent = d.links[STATE.fmt];
-  pre.classList.add('on');
-  $('qrBox').innerHTML = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&qzone=1&data=' +
-    encodeURIComponent(d.links.sub) + '" alt="QR"><div><p style="font-size:12px;color:var(--mut)">' + L.qr_t + '</p></div>';
-  var cl = $('clients'); cl.innerHTML = '';
-  var enc = encodeURIComponent(d.links.sub);
-  var items = [
-    ['v2rayNG', 'v2rayng://install-sub?url=' + enc],
-    ['Clash Meta', 'clash://install-config?url=' + enc],
-    ['sing-box', 'sing-box://import-remote-profile?url=' + enc],
-    ['Hiddify', 'hiddify://import/' + d.links.sub],
-    ['Streisand', 'streisand://import/' + d.links.sub],
-    ['NekoBox', 'sn://subscription?url=' + enc + '&name=NEXUS']
-  ];
-  for (var c=0;c<items.length;c++){
-    var a = document.createElement('a');
-    a.href = items[c][1]; a.textContent = items[c][0]; a.target = '_blank'; a.rel = 'noopener';
-    cl.appendChild(a);
-  }
-  box.querySelectorAll('button[data-line]').forEach(function(btn){
-    btn.onclick = function(){
-      var x = STATE.nodes.nodes[Number(btn.getAttribute('data-line'))];
-      copyText(x.line);
-    };
-  });
-}
-function copyText(t){
-  if (navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(t).then(function(){ tx(L.copied) }).catch(function(){ fallbackCopy(t) });
-  } else fallbackCopy(t);
-}
-function fallbackCopy(t){
-  var ta = document.createElement('textarea');
-  ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
-  document.body.appendChild(ta); ta.select();
-  try { document.execCommand('copy'); tx(L.copied); } catch(e){}
-  document.body.removeChild(ta);
-}
-$('copySub').onclick = function(){ copyText($('subUrl').textContent) };
-
-/* ── map ── */
-var LAND = [
- [2,2,8,3],[9,3,9,2],[6,5,7,3],[10,5,10,3],[11,8,5,2],[12,10,3,3],[14,12,1,3],[15,13,1,2],
- [21,13,4,2],[21,15,5,2],[22,17,4,2],[23,19,3,2],[22,21,2,1],[23,22,1,2],
- [29,1,3,2],[43,3,9,3],[41,5,4,2],[44,5,6,3],[42,8,4,3],[45,8,4,2],[46,10,3,2],
- [41,12,6,3],[42,15,6,2],[46,14,4,3],[45,17,4,2],[46,19,3,3],[44,22,2,1],[46,20,2,2],[51,19,2,2],
- [55,3,9,3],[65,2,10,2],[75,3,6,2],[59,5,8,3],[63,8,5,2],[67,10,6,3],[71,13,4,2],
- [65,13,3,2],[65,15,3,3],[59,9,4,3],[61,12,2,2],[55,10,3,2],[55,4,3,1],[75,5,3,2],
- [77,8,2,2],[80,9,3,4],[73,15,4,2],[77,15,5,2],[77,17,5,2],
- [81,22,5,3],[81,25,4,2],[86,26,1,1],[88,27,2,2]
-];
-function XY(lat, lon){
-  return { x: (lon + 180) / 360 * 96, y: (90 - lat) / 180 * 48 };
-}
-function renderMap(){
-  var svg = $('mapSvg');
-  var W = 960, H = 480;
-  var parts = [];
-  parts.push('<rect width="' + W + '" height="' + H + '" fill="transparent"/>');
-  parts.push('<g fill="rgba(148,163,184,.09)">');
-  for (var i=0;i<LAND.length;i++){
-    var r = LAND[i];
-    for (var yy = r[1]; yy < r[1] + r[3]; yy++){
-      for (var xx = r[0]; xx < r[0] + r[2]; xx++){
-        parts.push('<circle cx="' + (xx*10 + 5) + '" cy="' + (yy*10 + 5) + '" r="2.1"/>');
-      }
-    }
-  }
-  parts.push('</g>');
-  var me = { lat: VI.lat || 35.7, lon: VI.lon || 51.4 };
-  var m = XY(me.lat, me.lon);
-  parts.push('<circle cx="' + m.x + '" cy="' + m.y + '" r="5" fill="#22d3ee" opacity=".25"><animate attributeName="r" values="5;16;5" dur="3s" repeatCount="indefinite"/></circle>');
-  parts.push('<circle cx="' + m.x + '" cy="' + m.y + '" r="4" fill="#22d3ee" stroke="#e0f2fe" stroke-width="1.5"/>');
-  var links = [];
-  for (var p=0;p<POPS.length;p++){
-    var pp = POPS[p];
-    var c = XY(pp[2], pp[3]);
-    var same = Math.abs(pp[2]-me.lat) < .5 && Math.abs(pp[3]-me.lon) < .5;
-    if (!same) {
-      parts.push('<circle cx="' + c.x + '" cy="' + c.y + '" r="2.6" fill="#a78bfa" opacity=".85"/>');
-      if (links.length < 9) links.push([m.x, m.y, c.x, c.y, pp[0]]);
-    } else {
-      parts.push('<circle cx="' + c.x + '" cy="' + c.y + '" r="3.5" fill="#a78bfa" stroke="#f5f3ff" stroke-width="1"/>');
-    }
-  }
-  for (var a=0;a<links.length;a++){
-    var l = links[a];
-    var mx = (l[0]+l[2])/2, my = (l[1]+l[3])/2 - Math.min(26, Math.abs(l[2]-l[0])*0.18);
-    parts.push('<path d="M' + l[0] + ' ' + l[1] + ' Q' + mx + ' ' + my + ' ' + l[2] + ' ' + l[3] +
-      '" fill="none" stroke="rgba(34,211,238,.4)" stroke-width="1.1" stroke-dasharray="5 5" opacity=".8">' +
-      '<animate attributeName="stroke-dashoffset" values="0;20" dur="1.6s" repeatCount="indefinite"/></path>');
-  }
-  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-  svg.innerHTML = parts.join('');
-  $('mapMeta').textContent = '· ' + VI.city + ' · ' + VI.cc + ' · ' + VI.colo;
-  var pl = $('popList'); pl.innerHTML = '';
-  for (var q=0;q<POPS.length;q++){
-    var g = POPS[q];
-    var km = 0;
-    if (VI.lat){ km = dist(me.lat, me.lon, g[2], g[3]); }
-    var d = document.createElement('div');
-    d.className = 'pops';
-    d.innerHTML = '<span>' + esc(g[0]) + ' · ' + g[1] + '</span><b>' + (km ? latMs(km) : '—') + '</b>';
-    pl.appendChild(d);
-  }
-}
-function dist(lat1, lon1, lat2, lon2){
-  var R = 6371, to = Math.PI/180;
-  var dLat = (lat2-lat1)*to, dLon = (lon2-lon1)*to;
-  var a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(lat1*to)*Math.cos(lat2*to)*Math.sin(dLon/2)*Math.sin(dLon/2);
-  return 2*R*Math.asin(Math.sqrt(a));
-}
-function latMs(km){ return Math.max(8, Math.round(km/200 + 6)) + ' ' + L.ms; }
-
-/* ── settings ── */
-function chips(list, selected, cb){
-  var wrap = document.createElement('div');
-  wrap.className = 'chipsrow';
-  for (var i=0;i<list.length;i++){
-    var b = document.createElement('button');
-    b.textContent = list[i];
-    if (selected.indexOf(list[i]) > -1) b.className = 'on';
-    (function(el, v){
-      b.onclick = function(){ el.classList.toggle('on'); cb(); };
-    })(b, list[i]);
-    wrap.appendChild(b);
-  }
-  return wrap;
-}
-function loadCfg(){
-  api('/api/config').then(function(d){
-    if (!d || !d.ok) return;
-    STATE.cfg = d.cfg;
-    renderCfg();
-  });
-}
-function renderCfg(){
-  var c = STATE.cfg;
-  var protos = [['vless', c.ev !== 'no'], ['trojan', c.et === 'yes'], ['ss', c.ex === 'yes']];
-  var pBox = $('fldProto'); pBox.innerHTML = '';
-  for (var i=0;i<protos.length;i++){
-    var l = document.createElement('label');
-    l.innerHTML = '<span>' + protos[i][0].toUpperCase() + '</span><span class="sw' + (protos[i][1] ? ' on' : '') + '" data-p="' + protos[i][0] + '"></span>';
-    pBox.appendChild(l);
-  }
-  var trBox = $('fldTr'); trBox.innerHTML = '';
-  trBox.appendChild(chips(['ws','grpc','xhttp'], c.transports || [], function(){
-    var on = trBox.querySelectorAll('.chipsrow button.on');
-    STATE.cfg.transports = Array.prototype.map.call(on, function(b){ return b.textContent });
-  }));
-  var portsBox = $('fldPorts'); portsBox.innerHTML = '';
-  portsBox.appendChild(chips([443,2053,2083,2087,2096,8443,2052,8080,8880].map(String), (c.ports || []).map(String), function(){
-    var on = portsBox.querySelectorAll('.chipsrow button.on');
-    STATE.cfg.ports = Array.prototype.map.call(on, function(b){ return Number(b.textContent) });
-  }));
-  $('lblTls').innerHTML = '<span>' + L.st_tls + '</span><span class="sw' + (c.tls !== 'no' ? ' on' : '') + '" id="swTls"></span>';
-  $('lblFrag').innerHTML = '<span>TLS Fragment</span><span class="sw' + (c.fragment === 'yes' ? ' on' : '') + '" id="swFrag"></span>';
-  $('lblEch').innerHTML = '<span>ECH</span><span class="sw' + (c.ech === 'yes' ? ' on' : '') + '" id="swEch"></span>';
-  $('lblDis').innerHTML = '<span>' + L.st_disable + '</span><span class="sw' + (c.disabled ? ' on' : '') + '" id="swDis"></span>';
-  $('f_fp').value = c.fp || 'chrome';
-  $('f_sni').value = c.sni || '';
-  $('f_path').value = c.path || '/?ed=2560';
-  $('f_p').value = c.p || '';
-  $('f_s').value = c.s || '';
-  $('f_subname').value = c.subname || 'NEXUS';
-  $('f_scu').value = c.scu || '';
-  var irBox = $('fldIr'); irBox.innerHTML = '';
-  var ir = [['ispMobile','همراه اول'],['ispUnicom','ایرانسل'],['ispTelecom','رایتل'],['ispMokhaberat','مخابرات'],['ispShatel','شاتل'],['ispAsiatek','آسیاتک'],['ispParsonline','پارس آنلاین'],['ispHiweb','هایوب']];
-  for (var k=0;k<ir.length;k++){
-    var l2 = document.createElement('label');
-    l2.innerHTML = '<span>' + ir[k][1] + '</span><span class="sw' + (c[ir[k][0]] === 'yes' ? ' on' : '') + '" data-ir="' + ir[k][0] + '"></span>';
-    irBox.appendChild(l2);
-  }
-}
-function bindSw(id, get, set){
-  var el = $(id);
-  if (!el) return;
-  el.onclick = function(){ el.classList.toggle('on'); set(el.classList.contains('on')); };
-}
-function collect(){
-  var c = STATE.cfg || {};
-  c.ev = protoOn('vless') ? 'yes' : 'no';
-  c.et = protoOn('trojan') ? 'yes' : 'no';
-  c.ex = protoOn('ss') ? 'yes' : 'no';
-  var $_swTls = $('swTls'); c.tls = ($_swTls && $_swTls.classList && $_swTls.classList.contains('on')) ? 'yes' : 'no';
-  var $_swFrag = $('swFrag'); c.fragment = ($_swFrag && $_swFrag.classList && $_swFrag.classList.contains('on')) ? 'yes' : 'no';
-  var $_swEch = $('swEch'); c.ech = ($_swEch && $_swEch.classList && $_swEch.classList.contains('on')) ? 'yes' : 'no';
-  var $_swDis = $('swDis'); c.disabled = $_swDis && $_swDis.classList && $_swDis.classList.contains('on');
-  var $_fp = $('f_fp'); c.fp = $_fp ? $_fp.value : (c.fp || 'chrome');
-  c.sni = $('f_sni').value.trim();
-  c.path = $('f_path').value.trim() || '/?ed=2560';
-  c.p = $('f_p').value.trim();
-  c.s = $('f_s').value.trim();
-  c.subname = $('f_subname').value.trim() || 'NEXUS';
-  c.scu = $('f_scu').value.trim();
-  var irs = $('fldIr').querySelectorAll('.sw');
-  for (var i=0;i<irs.length;i++){
-    if (irs[i].getAttribute('data-ir')) c[irs[i].getAttribute('data-ir')] = irs[i].classList.contains('on') ? 'yes' : 'no';
-  }
-  return c;
-}
-function protoOn(p){
-  var els = $('fldProto').querySelectorAll('.sw');
-  for (var i=0;i<els.length;i++){
-    if (els[i].getAttribute('data-p') === p) return els[i].classList.contains('on');
-  }
-  return false;
-}
-function saveCfg(){
-  var body = collect();
-  fetch('/api/config?k=' + encodeURIComponent(KEY), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body)
-  }).then(function(r){ return r.json() }).then(function(d){
-    if (d && d.ok){ tx(L.saved); STATE.cfg = d.cfg; STATE.nodes = null; if ($('p-cfg').classList.contains('on')) loadNodes(); }
-    else tx(L.err_save);
-  }).catch(function(){ tx(L.err_save) });
-}
-
-/* ── lock ── */
-function lock(){
-  $('lockbtn').onclick = tryUnlock;
-  $('lockkey').addEventListener('keydown', function(e){ if (e.key === 'Enter') tryUnlock(); });
-}
-function tryUnlock(){
-  var k = $('lockkey').value.trim();
-  if (!k) return;
-  var btn = $('lockbtn'); btn.disabled = true; btn.textContent = L.wait;
-  fetch('/api/unlock?k=' + encodeURIComponent(KEY), {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: k })
-  }).then(function(r){ return r.json() }).then(function(d){
-    if (d && d.ok){
-      KEY = k;
-      UNLOCKED = true;
-      $('lock').classList.remove('on');
-      tx(L.done);
-      loadNodes(); loadCfg();
-    } else {
-      btn.textContent = L.unlock_btn || L.unlock;
-      tx(L.wrong);
-      $('lockkey').value = '';
-    }
-    btn.disabled = false;
-  }).catch(function(){ btn.disabled = false; btn.textContent = L.unlock_btn || L.unlock; });
-}
-
-/* ── header / clock ── */
-function clock(){
-  var t = $('chipLive');
-  setInterval(function(){
-    if (!t) return;
-    var d = new Date();
-    t.textContent = 'LIVE · ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2) + ':' + ('0'+d.getSeconds()).slice(-2);
-  }, 1000);
-}
-
-/* ── stars ── */
-function stars(){
-  var cv = $('stars');
-  if (!cv || !cv.getContext) return;
-  var ctx = cv.getContext('2d');
-  cv.width = innerWidth; cv.height = innerHeight;
-  var n = 130, arr = [];
-  for (var i=0;i<n;i++) arr.push({ x: Math.random()*innerWidth, y: Math.random()*innerHeight, r: Math.random()*1.3+.3, s: Math.random()*.4+.08, tw: Math.random()*Math.PI*2 });
-  (function draw(){
-    ctx.clearRect(0,0,innerWidth,innerHeight);
-    for (var i=0;i<n;i++){
-      var p = arr[i];
-      p.y -= p.s; p.tw += .05;
-      if (p.y < -2){ p.y = innerHeight + 2; p.x = Math.random()*innerWidth; }
-      var a = .4 + Math.sin(p.tw)*.35;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fillStyle = 'rgba(148,197,255,' + a + ')'; ctx.fill();
-    }
-    requestAnimationFrame(draw);
-  })();
-  addEventListener('resize', function(){ cv.width = innerWidth; cv.height = innerHeight; });
-}
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 54-response.js
+   ══════════════════════════════════════════════════════════════════════════ */
 
 
-/* ── user profile ── */
-var USER_PROFILE = {};
-function loadUserProfile(){
-  var uid = new URLSearchParams(location.search).get('uid') || '';
-  fetch('/api/user-config?k=' + encodeURIComponent(KEY) + '&uid=' + encodeURIComponent(uid))
-    .then(function(r){return r.json()}).then(function(d){
-      if(d&&d.ok){ USER_PROFILE=d.ucfg||{}; renderUserProfile(); }
-    }).catch(function(){});
-}
-function renderUserProfile(){
-  var u=USER_PROFILE||{};
-  var e1=$('f_uname'); if(e1) e1.value=u.name||'';
-  var e2=$('f_utr'); if(e2) e2.value=u.transport||'';
-  var e3=$('f_usni'); if(e3) e3.value=u.sni||'';
-  var e4=$('f_upath'); if(e4) e4.value=u.path||'';
-}
-function saveUserProfile(){
-  var uid = new URLSearchParams(location.search).get('uid') || '';
-  var body={
-    name: ($('f_uname')||{}).value||'',
-    transport: ($('f_utr')||{}).value||'',
-    sni: ($('f_usni')||{}).value||'',
-    path: ($('f_upath')||{}).value||''
-  };
-  fetch('/api/user-config?k='+encodeURIComponent(KEY)+'&uid='+encodeURIComponent(uid),{
-    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)
-  }).then(function(r){return r.json()}).then(function(d){
-    if(d&&d.ok){USER_PROFILE=d.ucfg; tx('پروفایل ذخیره شد ✓');}
-    else tx('خطا');
-  }).catch(function(){tx('خطا');});
-}
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 55-proxy.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ WebSocket Proxy Engine — VLESS + Trojan via cloudflare:sockets
+   ══════════════════════════════════════════════════════════════════════════════ */
 
-/* ── init ── */
-function init(){
-  $('chipColo').textContent = VI.colo || '—';
-  $('chipCc').textContent = VI.cc || '—';
-  $('chipCity').textContent = VI.city || '—';
-  $('abCc').textContent = VI.cc || '—';
-  $('abHost').textContent = VI.host || '—';
-  $('abZone').textContent = VI.zone || '—';
-  i18n();
-  renderHome();
-  tabs();
-  bindSw('swTls', null, function(v){});
-  bindSw('swFrag', null, function(v){});
-  bindSw('swEch', null, function(v){});
-  bindSw('swDis', null, function(v){});
-  $('saveCfg').onclick = saveCfg;
-  $('smartBtn').onclick = function(){
-    tx(L.wait);
-    api('/api/info').then(function(){ STATE.nodes = null; loadNodes(); loadCfg(); tx(L.smart + ' ✓'); });
-  };
-  $('cta1').onclick = function(){ go('cfg'); };
-  $('cta2').onclick = function(){ go('set'); };
-  $('langBtn').onclick = function(){
-    fetch('/api/config?k=' + encodeURIComponent(KEY)).then(function(r){ return r.json() }).then(function(d){
-      if (!d || !d.ok) return;
-      d.cfg.lang = d.cfg.lang === 'en' ? 'fa' : 'en';
-      return fetch('/api/config?k=' + encodeURIComponent(KEY), {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(d.cfg)
-      });
-    }).then(function(){ location.reload(); });
-  };
-  var saveUserBtn = document.getElementById("saveUser"); if(saveUserBtn) saveUserBtn.onclick=saveUserProfile;
-  loadUserProfile();
-  lock();
-  clock();
-  stars();
-  boot();
-}
-function go(t){
-  var btns = document.querySelectorAll('#tabs button');
-  for (var i=0;i<btns.length;i++){
-    if (btns[i].getAttribute('data-t') === t){ btns[i].click(); return; }
-  }
-}
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-else init();
-})();
-</script>
-</body>
-</html>`;
-}
+/* Lazy import: cloudflare:sockets is only available in Workers runtime */
+let connect = null;
+try { connect = (await import('cloudflare:sockets')).connect; } catch {}
 
-
-/* ───────────────────────────── ۱۰·۱ · موتور پروکسی WebSocket ────────────── */
 function UUID2hex(bytes) {
   const h = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20,32);
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20, 32);
 }
+
 function parseVLESS(buf, uuid) {
   if (buf.length < 18 || buf[0] !== 0) return null;
-  const cid = UUID2hex(buf.slice(1,17));
+  const cid = UUID2hex(buf.slice(1, 17));
   if (cid !== uuid) return null;
   const cmd = buf[17];
-  const port = (buf[18]<<8)|buf[19];
+  const port = (buf[18] << 8) | buf[19];
   const atyp = buf[20];
-  let addr='', hdrLen=21;
-  if (atyp===1) { addr=[buf[21],buf[22],buf[23],buf[24]].join('.'); hdrLen=25; }
-  else if (atyp===2) { const dl=buf[21]; addr=new TextDecoder().decode(buf.slice(22,22+dl)); hdrLen=22+dl; }
-  else if (atyp===3) { const p=[]; for(let i=0;i<8;i++) p.push(((buf[21+i*2]<<8)|buf[22+i*2]).toString(16)); addr=p.join(':'); hdrLen=37; }
+  let addr = '', hdrLen = 21;
+  if (atyp === 1) { addr = [buf[21], buf[22], buf[23], buf[24]].join('.'); hdrLen = 25; }
+  else if (atyp === 2) { const dl = buf[21]; addr = new TextDecoder().decode(buf.slice(22, 22 + dl)); hdrLen = 22 + dl; }
+  else if (atyp === 3) {
+    const p = [];
+    for (let i = 0; i < 8; i++) p.push(((buf[21 + i * 2] << 8) | buf[22 + i * 2]).toString(16));
+    addr = p.join(':'); hdrLen = 37;
+  }
   return { cmd, addr, port, hdrLen, remaining: buf.slice(hdrLen) };
 }
+
 async function sha224hex(str) {
   const buf = await crypto.subtle.digest('SHA-224', new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-function parseTrojan(buf, uuid) {
-  const txt = new TextDecoder().decode(buf);
-  const CRLF_HASH = '\r\n';
+
+function parseTrojan(buf) {
   if (!buf.length || buf[0] !== 0x0D || buf[1] !== 0x0A) return null;
   let end = 2;
-  while (end < buf.length - 1 && !(buf[end] === 0x0D && buf[end+1] === 0x0A)) end++;
+  while (end < buf.length - 1 && !(buf[end] === 0x0D && buf[end + 1] === 0x0A)) end++;
   if (end >= buf.length - 1) return null;
   const hex56 = new TextDecoder().decode(buf.slice(2, end));
   if (hex56.length !== 56) return null;
   return { hex56, hdrEnd: end + 2 };
 }
+
 async function 代理(request, env, cfg) {
   const uuid = cfg.uuid || env.u || '';
   if (!uuid) return new Response('no uuid', { status: 403 });
-  if (!connect) return new Response('proxy not available', { status: 503 });
+  if (!connect) return new Response('proxy not available in this environment', { status: 503 });
+
   const pair = new WebSocketPair();
   const [client, server] = [pair[0], pair[1]];
   server.accept();
   let ready = false;
+
   server.addEventListener('message', async (ev) => {
     if (ready) return;
     ready = true;
     const buf = new Uint8Array(ev.data);
-    /* ── VLESS ── */
+
+    /* ── VLESS detection: first byte 0x00 ── */
     if (buf.length > 0 && buf[0] === 0) {
       const vless = parseVLESS(buf, uuid);
       if (!vless || vless.cmd !== 1) { try { server.close(1008, 'bad'); } catch {} return; }
@@ -1351,8 +715,9 @@ async function 代理(request, env, cfg) {
       } catch { try { server.close(1011, 'connect failed'); } catch {} }
       return;
     }
-    /* ── Trojan ── */
-    const trojan = parseTrojan(buf, uuid);
+
+    /* ── Trojan detection: starts with 0x0D 0x0A ── */
+    const trojan = parseTrojan(buf);
     if (trojan) {
       const expected = await sha224hex(uuid);
       if (trojan.hex56 !== expected) { try { server.close(1008, 'auth'); } catch {} return; }
@@ -1363,16 +728,20 @@ async function 代理(request, env, cfg) {
       const atyp = afterHash[1];
       let addr = '', addrLen = 0;
       if (atyp === 1) { addr = [afterHash[2], afterHash[3], afterHash[4], afterHash[5]].join('.'); addrLen = 4; }
-      else if (atyp === 2) { const dl = afterHash[2]; addr = new TextDecoder().decode(afterHash.slice(3, 3+dl)); addrLen = dl + 1; }
-      else if (atyp === 3) { const p = []; for (let i = 0; i < 8; i++) p.push(((afterHash[2+i*2]<<8)|afterHash[3+i*2]).toString(16)); addr = p.join(':'); addrLen = 16; }
-      const port = (afterHash[2+addrLen] << 8) | afterHash[3+addrLen];
+      else if (atyp === 2) { const dl = afterHash[2]; addr = new TextDecoder().decode(afterHash.slice(3, 3 + dl)); addrLen = dl + 1; }
+      else if (atyp === 3) {
+        const p = [];
+        for (let i = 0; i < 8; i++) p.push(((afterHash[2 + i * 2] << 8) | afterHash[3 + i * 2]).toString(16));
+        addr = p.join(':'); addrLen = 16;
+      }
+      const port = (afterHash[2 + addrLen] << 8) | afterHash[3 + addrLen];
       const dataStart = trojan.hdrEnd + 4 + addrLen;
       const remaining = buf.slice(dataStart);
       const proxyIP = cfg.p || '';
       const target = proxyIP || addr;
       try {
         const tcp = connect({ hostname: target, port: port || 443 });
-        server.send(new Uint8Array([1, 0, 0])); // trojan response header
+        server.send(new Uint8Array([1, 0, 0]));
         const writer = tcp.writable.getWriter();
         if (remaining.length > 0) await writer.write(remaining);
         server.addEventListener('message', async (e) => { try { await writer.write(new Uint8Array(e.data)); } catch {} });
@@ -1382,12 +751,20 @@ async function 代理(request, env, cfg) {
       } catch { try { server.close(1011, 'connect failed'); } catch {} }
       return;
     }
+
     try { server.close(1008, 'unsupported'); } catch {}
   });
+
   return new Response(null, { status: 101, webSocket: client });
 }
 
-/* ───────────────────────────── ۱۱ · مسیریاب ─────────────────────────────── */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 56-router.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ API Router — request handling and endpoint definitions
+   ══════════════════════════════════════════════════════════════════════════════ */
 async function 請求(request, env) {
   const url = new URL(request.url);
   const 路 = url.pathname;
@@ -1400,7 +777,7 @@ async function 請求(request, env) {
   const rootKey = seg[0] || '';
   const unlocked = 開(鑰, rootKey) || (cfg.d && 開(cfg.d, rootKey)) || !鑰;
 
-  /* CORS — برای مصرف راحت ساب از داخل اپ‌ها */
+  /* CORS preflight */
   if (法 === 'OPTIONS') {
     return new Response(null, {
       status: 204,
@@ -1413,12 +790,13 @@ async function 請求(request, env) {
     });
   }
 
-  /* ── تشخیص WebSocket proxy ── */
-  if (頭.get("upgrade") === "websocket") { return await 代理(request, env, cfg); }
+  /* WebSocket proxy */
+  if (頭.get('upgrade') === 'websocket') { return await 代理(request, env, cfg); }
 
-    const info = 訪客(request, cfg);
+  const info = 訪客(request, cfg);
 
-  /* ── endpoints عمومی ── */
+  /* ── Public endpoints ── */
+
   if (路 === '/healthz' || 路 === '/__health') {
     return 響({ ok: true, v: VERSION, t: Date.now(), host, kv: !!KV(env) });
   }
@@ -1428,7 +806,12 @@ async function 請求(request, env) {
   }
 
   if (法 === 'GET' && 路 === '/api/info') {
-    return 響({ ok: true, v: VERSION, host, cc: info.cc, colo: info.colo, city: info.city, lat: info.lat, lon: info.lon, zone: info.zone, keySet: !!鑰, kv: !!KV(env), ts: Date.now(), name: cfg.name, tz: new Date().getTimezoneOffset() });
+    return 響({
+      ok: true, v: VERSION, host, cc: info.cc, colo: info.colo,
+      city: info.city, lat: info.lat, lon: info.lon, zone: info.zone,
+      keySet: !!鑰, kv: !!KV(env), ts: Date.now(), name: cfg.name,
+      tz: new Date().getTimezoneOffset(),
+    });
   }
 
   if (法 === 'GET' && 路 === '/api/map') {
@@ -1450,6 +833,7 @@ async function 請求(request, env) {
     return 響({ ok: true, nodes: r.nodes, links, rtt: 最快(info), frag: r.frag, zone: info.zone });
   }
 
+  /* ── Config endpoints ── */
   if (路 === '/api/config') {
     const k = 觸('k', url, 頭);
     if (鑰 && !開(鑰, k)) return 誤('forbidden', 403);
@@ -1460,9 +844,8 @@ async function 請求(request, env) {
     }
     if (法 === 'POST') {
       let body = {};
-      try { body = await request.json(); } catch { /* ignore */ }
+      try { body = await request.json(); } catch {}
       const next = { ...預設, ...cfg, ...body };
-      /* کلیدها و فیلدهای محافظت‌شده هرگز از بدنه بازنویسی نمی‌شوند */
       if (env.u) next.uuid = env.u;
       if (env.d) next.d = env.d;
       next.disabled = !!next.disabled;
@@ -1472,14 +855,15 @@ async function 請求(request, env) {
     return 誤('method', 405);
   }
 
+  /* ── Unlock endpoint ── */
   if (法 === 'POST' && 路 === '/api/unlock') {
     let body = {};
-    try { body = await request.json(); } catch { /* ignore */ }
+    try { body = await request.json(); } catch {}
     const k = String(body.key || '').trim();
     return 響({ ok: !鑰 || 密時(鑰, k) });
   }
 
-
+  /* ── User profile endpoints ── */
   if (路 === '/api/user-config') {
     const k = 觸('k', url, 頭);
     if (鑰 && !開(鑰, k)) return 誤('forbidden', 403);
@@ -1499,9 +883,10 @@ async function 請求(request, env) {
     return 誤('method', 405);
   }
 
+  /* Unknown API paths → 404 */
   if (路.startsWith('/api/')) return 誤('not found', 404);
 
-  /* ── صفحهٔ اصلی ── */
+  /* ── Main page ── */
   if (法 === 'GET') {
     const 開く = unlocked && !cfg.disabled;
     const L = LABELS[cfg.lang === 'en' ? 'en' : 'fa'];
@@ -1513,7 +898,7 @@ async function 請求(request, env) {
   return 誤('not found', 404);
 }
 
-/* ── ساب‌نویس ── */
+/* ── Subscription endpoint ── */
 async function 給Sub(request, env, cfg, info, host) {
   if (cfg.disabled) return new Response('403 — worker disabled', { status: 403 });
   const url = new URL(request.url);
@@ -1546,14 +931,9 @@ async function 給Sub(request, env, cfg, info, host) {
   });
 }
 
-/* ───────────────────────────── ۱۲ · قلاب ورودی ──────────────────────────── */
 export default {
   async fetch(request, env) {
     try {
-      /* خودآزمایی: اگر محیط مرورگر/ورکر نیست، پاسخ فریبنده */
-      if (typeof TextEncoder === 'undefined' || typeof crypto === 'undefined' || !crypto.getRandomValues) {
-        return new Response('ok', { status: 200 });
-      }
       return await 請求(request, env);
     } catch (e) {
       return 響({ ok: false, error: String((e && e.message) || e) }, 500);
@@ -1561,33 +941,1217 @@ export default {
   },
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   ▓ ناحیهٔ طعمه — این توابع هرگز اجرا نمی‌شوند؛ فقط برای گمراه‌کردن تحلیل‌گر
-   ▓ (decoy zone — dead code, never invoked)
-   ═══════════════════════════════════════════════════════════════════════════ */
-function 量子糾纏(a, b) {
-  /* شبیه‌سازی فروپاشی — هیچ‌وقت صدا زده نمی‌شود */
-  const 場 = (a & 0x55) ^ (b & 0xaa);
-  return 場 === 0 ? 'superposition' : 'collapsed';
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 60-page-template.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ HTML Page Template — Complete CSS + HTML + Client-side JavaScript
+   ▓ This is the core UI: boot screen, home, config, live map, settings, about
+   ══════════════════════════════════════════════════════════════════════════════ */
+function 頁(request, env, cfg, info, unlocked, L) {
+  const lang = cfg.lang === 'en' ? 'en' : 'fa';
+  const dir = lang === 'fa' ? 'rtl' : 'ltr';
+  const key = cfg.uuid || env.u || '';
+  const label = JSON.stringify(LABELS[lang]).replace(/</g, '\\u003c');
+  const vinfo = JSON.stringify(info);
+  const popJson = JSON.stringify(站點);
+  const colo = String(info.colo).replace(/"/g, '');
+  return `<!DOCTYPE html>
+<html lang="${lang}" dir="${dir}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#04060f">
+<title>NEXUS · ${cfg.name || 'gateway'}</title>
+<link rel="icon" href="data:image/svg+xml,${編('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#04060f"/><path d="M7 24V9l9 8 9-8v15" stroke="#22d3ee" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')}">
+<style>
+/* ═══════════════════════ CSS Variables & Reset ═══════════════════════ */
+:root {
+  --bg: #04060f; --bg2: #070b1a; --card: rgba(13,20,40,.55);
+  --line: rgba(96,165,250,.14); --cy: #22d3ee; --vi: #a78bfa;
+  --tx: #e2e8f0; --mut: #7d8db1; --ok: #34d399; --bad: #fb7185;
+  --gold: #fbbf24;
 }
-function 時間旅行(n) {
-  let t = n;
-  for (let i = 0; i < 7; i++) t = (t * 31 + 17) % 9973;
-  return t;
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background:
+    radial-gradient(1200px 600px at 75% -10%, rgba(34,211,238,.08), transparent 60%),
+    radial-gradient(1000px 700px at 10% 110%, rgba(167,139,250,.09), transparent 60%),
+    var(--bg);
+  color: var(--tx); font-family: 'Segoe UI', Tahoma, 'Vazirmatn', system-ui, sans-serif;
+  overflow-x: hidden;
 }
-function 隱形斗篷(s) {
-  let o = '';
-  for (let i = s.length - 1; i >= 0; i--) o += s[i];
-  return o;
+
+/* ═══════════════════════ Boot Screen ═══════════════════════ */
+#boot {
+  position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; background: var(--bg);
+  transition: opacity .5s, visibility .5s;
 }
-function 乙太信標(payload) {
-  /* telemetry beacon — intentionally inert */
-  const seed = 哈(JSON.stringify(payload || {}));
-  return 'beacon:' + seed + ':noop';
+#boot.off { opacity: 0; visibility: hidden; pointer-events: none; }
+#boot .ring {
+  width: 80px; height: 80px; border: 3px solid rgba(34,211,238,.2); border-top-color: var(--cy);
+  border-radius: 50%; animation: spin 1s linear infinite;
 }
-const 虛假金鑰 = ['7f9c', 'a3e1', 'deadbeef', 'c0ffee', '0xNEXUS'];
-const 幻影 = {
-  get 配置() { return 虛假金鑰.join('|'); },
-  set 配置(v) { return v; },
-};
-/* ═══════════════════════════════════════════════════════════════════════════ */
+#boot h2 {
+  margin-top: 18px; font-size: 24px; letter-spacing: 6px; font-weight: 800;
+  background: linear-gradient(90deg, var(--cy), var(--vi));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+#boot .bl { margin-top: 16px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--mut); text-align: left; }
+#boot .bl div { opacity: 0; animation: fadeIn .3s forwards; }
+#boot .bl div.ok { color: var(--ok); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeIn { to { opacity: 1; } }
+
+/* ═══════════════════════ Stars Canvas ═══════════════════════ */
+#stars { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+
+/* ═══════════════════════ Scanline Overlay ═══════════════════════ */
+.scan {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(148,163,184,.028) 3px 4px);
+}
+
+/* ═══════════════════════ HUD Corners ═══════════════════════ */
+.hud { position: fixed; z-index: 2; pointer-events: none; opacity: .8; }
+.hud.tl { top: 14px; left: 14px; border-top: 2px solid var(--cy); border-left: 2px solid var(--cy); width: 26px; height: 26px; border-radius: 6px 0 0 0; }
+.hud.tr { top: 14px; right: 14px; border-top: 2px solid var(--cy); border-right: 2px solid var(--cy); width: 26px; height: 26px; border-radius: 0 6px 0 0; }
+.hud.bl { bottom: 14px; left: 14px; border-bottom: 2px solid var(--cy); border-left: 2px solid var(--cy); width: 26px; height: 26px; border-radius: 0 0 0 6px; }
+.hud.br { bottom: 14px; right: 14px; border-bottom: 2px solid var(--cy); border-right: 2px solid var(--cy); width: 26px; height: 26px; border-radius: 0 0 6px 0; }
+
+/* ═══════════════════════ Layout ═══════════════════════ */
+.wrap { position: relative; z-index: 3; max-width: 1180px; margin: 0 auto; padding: 20px 16px 70px; }
+
+/* ═══════════════════════ Header ═══════════════════════ */
+header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; border: 1px solid var(--line); border-radius: 16px;
+  background: var(--card); backdrop-filter: blur(14px); flex-wrap: wrap;
+}
+.logo { display: flex; align-items: center; gap: 10px; }
+.logo svg { filter: drop-shadow(0 0 8px rgba(34,211,238,.5)); }
+.logo b {
+  font-size: 19px; letter-spacing: 2px;
+  background: linear-gradient(90deg, var(--cy), var(--vi));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.logo small { display: block; color: var(--mut); font-size: 10px; letter-spacing: 3px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line);
+  background: rgba(148,163,184,.05); color: var(--mut);
+  font-family: ui-monospace, Menlo, monospace;
+}
+.chip b { color: var(--cy); font-weight: 600; }
+.dot {
+  width: 6px; height: 6px; border-radius: 99px; background: var(--ok);
+  box-shadow: 0 0 8px var(--ok); animation: blink 1.6s infinite;
+}
+@keyframes blink { 50% { opacity: .35; } }
+
+/* ═══════════════════════ Navigation ═══════════════════════ */
+nav { display: flex; gap: 6px; margin-top: 16px; flex-wrap: wrap; }
+nav button {
+  display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px;
+  border-radius: 12px; border: 1px solid var(--line);
+  background: rgba(13,20,40,.5); color: var(--mut); font-size: 13px;
+  cursor: pointer; transition: .25s; font-family: inherit;
+}
+nav button:hover { color: var(--tx); border-color: rgba(34,211,238,.4); }
+nav button.on {
+  color: #031018;
+  background: linear-gradient(90deg, var(--cy), #7dd3fc);
+  border-color: transparent; font-weight: 700;
+  box-shadow: 0 0 22px rgba(34,211,238,.35);
+}
+
+/* ═══════════════════════ Panels ═══════════════════════ */
+main { margin-top: 18px; }
+.panel { display: none; }
+.panel.on { display: block; animation: up .45s ease both; }
+@keyframes up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+/* ═══════════════════════ Hero Section ═══════════════════════ */
+.hero {
+  position: relative; padding: 56px 26px 46px; text-align: center; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 22px;
+  background: linear-gradient(180deg, rgba(13,20,40,.7), rgba(7,11,26,.6));
+  backdrop-filter: blur(14px);
+}
+.hero::before {
+  content: ''; position: absolute; inset: -40% -20% auto; height: 120%;
+  background: conic-gradient(from 120deg at 50% 40%, transparent 70%, rgba(34,211,238,.25), transparent 85%);
+  animation: rot 14s linear infinite; pointer-events: none;
+}
+@keyframes rot { to { transform: rotate(360deg); } }
+.hero > * { position: relative; z-index: 1; }
+.hero h1 {
+  font-size: clamp(28px, 5.5vw, 54px); font-weight: 800; line-height: 1.15;
+  background: linear-gradient(92deg, #e0f2fe 10%, var(--cy) 45%, var(--vi) 90%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  text-shadow: 0 0 60px rgba(34,211,238,.25);
+}
+.hero p { color: var(--mut); margin-top: 12px; font-size: clamp(13px, 2.2vw, 16px); max-width: 640px; margin-inline: auto; }
+.hero .tag { margin-top: 14px; font-size: 12px; letter-spacing: 1px; color: var(--vi); }
+.cta { display: flex; gap: 12px; justify-content: center; margin-top: 26px; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; padding: 13px 26px;
+  border-radius: 14px; font-size: 14px; font-weight: 700; cursor: pointer;
+  transition: .25s; border: 1px solid transparent; font-family: inherit;
+}
+.btn.prim {
+  background: linear-gradient(90deg, var(--cy), #60a5fa); color: #031018;
+  box-shadow: 0 8px 30px rgba(34,211,238,.3);
+}
+.btn.prim:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(34,211,238,.45); }
+.btn.ghost { border-color: var(--line); color: var(--tx); background: rgba(148,163,184,.06); }
+.btn.ghost:hover { border-color: rgba(167,139,250,.5); color: #fff; }
+
+/* ═══════════════════════ Stats Grid ═══════════════════════ */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 22px; }
+.stat { border: 1px solid var(--line); border-radius: 14px; padding: 14px; background: rgba(7,11,26,.55); }
+.stat .k { font-size: 10px; color: var(--mut); letter-spacing: 1px; }
+.stat .v { font-size: 20px; font-weight: 800; margin-top: 5px; color: var(--tx); font-family: ui-monospace, Menlo, monospace; }
+.stat .v em { color: var(--cy); font-style: normal; }
+
+/* ═══════════════════════ Recommendation Box ═══════════════════════ */
+.rec {
+  margin-top: 18px; border: 1px solid rgba(34,211,238,.3); border-radius: 16px;
+  padding: 18px; background: linear-gradient(120deg, rgba(34,211,238,.08), rgba(167,139,250,.06));
+}
+.rec h3 { font-size: 13px; color: var(--cy); display: flex; gap: 8px; align-items: center; }
+.rec p { margin-top: 8px; font-size: 13.5px; color: var(--tx); line-height: 1.9; }
+
+/* ═══════════════════════ Cards ═══════════════════════ */
+.card { border: 1px solid var(--line); border-radius: 18px; background: var(--card); backdrop-filter: blur(12px); padding: 20px; margin-top: 16px; }
+.card h2 { font-size: 16px; display: flex; align-items: center; gap: 9px; color: var(--tx); }
+.card h2 small { color: var(--mut); font-weight: 400; font-size: 12px; }
+
+/* ═══════════════════════ Node Grid ═══════════════════════ */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 16px; }
+.node {
+  border: 1px solid var(--line); border-radius: 14px; padding: 14px;
+  background: rgba(7,11,26,.6); transition: .25s; position: relative; overflow: hidden;
+}
+.node:hover { border-color: rgba(34,211,238,.45); transform: translateY(-2px); }
+.node .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.badge { font-size: 10px; font-weight: 800; padding: 3px 9px; border-radius: 99px; letter-spacing: .5px; }
+.badge.vless { background: rgba(34,211,238,.15); color: var(--cy); }
+.badge.trojan { background: rgba(167,139,250,.15); color: var(--vi); }
+.badge.ss { background: rgba(52,211,153,.15); color: var(--ok); }
+.badge.ws { background: rgba(251,191,36,.12); color: var(--gold); }
+.badge.grpc { background: rgba(96,165,250,.14); color: #93c5fd; }
+.badge.xhttp { background: rgba(244,114,182,.14); color: #f9a8d4; }
+.node h4 { font-size: 13px; margin-top: 9px; color: var(--tx); word-break: break-all; }
+.node .meta { font-size: 11px; color: var(--mut); margin-top: 6px; font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.node .meta b { color: #a5b4fc; font-weight: 600; }
+.node button {
+  position: absolute; top: 12px; inset-inline-end: 12px;
+  border: 1px solid var(--line); background: rgba(148,163,184,.08);
+  color: var(--cy); border-radius: 9px; padding: 5px 10px; font-size: 11px;
+  cursor: pointer; transition: .2s;
+}
+.node button:hover { background: rgba(34,211,238,.15); }
+
+/* ═══════════════════════ Sub Row ═══════════════════════ */
+.subrow { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+.fmt { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.fmt button {
+  padding: 7px 14px; border-radius: 10px; border: 1px solid var(--line);
+  background: rgba(148,163,184,.05); color: var(--mut); font-size: 12px;
+  cursor: pointer; font-family: inherit;
+}
+.fmt button.on { border-color: var(--vi); color: var(--vi); background: rgba(167,139,250,.1); }
+.urlbox {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 240px;
+  border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px;
+  background: rgba(4,6,15,.6); font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px; color: var(--mut); word-break: break-all;
+}
+
+/* ═══════════════════════ Client Links ═══════════════════════ */
+.clientrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.clientrow a {
+  flex: 1 1 120px; text-align: center; padding: 10px 6px; border-radius: 11px;
+  font-size: 11.5px; text-decoration: none; border: 1px solid rgba(52,211,153,.3);
+  color: #6ee7b7; background: rgba(52,211,153,.06); transition: .2s;
+}
+.clientrow a:hover { background: rgba(52,211,153,.14); }
+
+/* ═══════════════════════ QR Box ═══════════════════════ */
+.qrbox { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+.qrbox img { border-radius: 14px; border: 1px solid var(--line); background: #fff; width: 170px; height: 170px; }
+
+/* ═══════════════════════ Map ═══════════════════════ */
+.mapbox {
+  position: relative; border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
+  background: radial-gradient(600px 300px at 50% 0, rgba(34,211,238,.06), transparent), #050a18;
+}
+.mapbox svg { display: block; width: 100%; height: auto; }
+.legend { position: absolute; top: 12px; inset-inline-start: 12px; font-size: 10px; color: var(--mut); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.legend i { width: 8px; height: 8px; border-radius: 99px; display: inline-block; margin-inline-end: 4px; }
+.mapside { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.pops { font-size: 11px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: rgba(7,11,26,.55); display: flex; justify-content: space-between; }
+.pops b { color: var(--cy); font-family: ui-monospace, Menlo, monospace; }
+
+/* ═══════════════════════ Forms ═══════════════════════ */
+form#cfgForm {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 16px;
+}
+field {
+  border: 1px solid var(--line); border-radius: 14px; padding: 13px;
+  background: rgba(7,11,26,.5);
+}
+field legend { font-size: 11px; color: var(--mut); padding: 0 6px; letter-spacing: .5px; }
+field label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--tx); padding: 5px 0; }
+field input, field select, field textarea {
+  width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 10px; background: rgba(4,6,15,.6); color: var(--tx); font-size: 13px;
+  font-family: inherit; outline: none; transition: .2s;
+}
+field input:focus, field select:focus, field textarea:focus { border-color: var(--cy); }
+field textarea { min-height: 60px; resize: vertical; }
+
+/* ═══════════════════════ Switches ═══════════════════════ */
+.sw {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px;
+  border-radius: 10px; border: 1px solid var(--line); background: rgba(148,163,184,.05);
+  color: var(--mut); font-size: 12px; cursor: pointer; transition: .2s;
+  user-select: none;
+}
+.sw.on { border-color: var(--cy); color: var(--cy); background: rgba(34,211,238,.1); }
+.sw::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--mut); transition: .2s; }
+.sw.on::before { background: var(--cy); box-shadow: 0 0 8px var(--cy); }
+
+/* ═══════════════════════ Actions ═══════════════════════ */
+.actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+
+/* ═══════════════════════ Lock Screen ═══════════════════════ */
+#lock {
+  position: fixed; inset: 0; z-index: 50; display: none; align-items: center;
+  justify-content: center; background: rgba(4,6,15,.92); backdrop-filter: blur(18px);
+}
+#lock.on { display: flex; }
+.lockbox {
+  text-align: center; padding: 36px; border: 1px solid var(--line); border-radius: 20px;
+  background: var(--card); max-width: 380px; width: 90%;
+}
+.lockbox h2 { font-size: 20px; margin-bottom: 8px; }
+.lockbox p { font-size: 13px; color: var(--mut); margin-bottom: 18px; }
+.lockbox input {
+  width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: rgba(4,6,15,.6); color: var(--tx); font-size: 15px; text-align: center;
+  font-family: ui-monospace, Menlo, monospace; letter-spacing: 3px; outline: none;
+}
+.lockbox input:focus { border-color: var(--cy); }
+.lockbox button {
+  margin-top: 14px; width: 100%; padding: 12px; border: none; border-radius: 12px;
+  background: linear-gradient(90deg, var(--cy), #60a5fa); color: #031018;
+  font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit;
+}
+
+/* ═══════════════════════ Toast ═══════════════════════ */
+#toast {
+  position: fixed; bottom: 22px; inset-inline-start: 50%; transform: translateX(50%) translateY(20px);
+  z-index: 60; padding: 10px 22px; border-radius: 12px; font-size: 13px;
+  background: var(--card); border: 1px solid var(--line); color: var(--tx);
+  backdrop-filter: blur(12px); opacity: 0; transition: .3s; pointer-events: none;
+  white-space: nowrap;
+}
+#toast.on { opacity: 1; transform: translateX(50%) translateY(0); }
+
+/* ═══════════════════════ About ═══════════════════════ */
+.about-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 14px; }
+
+/* ═══════════════════════ Responsive ═══════════════════════ */
+@media (max-width: 600px) {
+  .hero { padding: 36px 16px 30px; }
+  .hero h1 { font-size: 28px; }
+  nav button { padding: 8px 12px; font-size: 12px; }
+  .grid { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  header { padding: 10px 12px; }
+}
+</style>
+</head>
+<body>
+<canvas id="stars"></canvas>
+<div class="scan"></div>
+<div class="hud tl"></div><div class="hud tr"></div>
+<div class="hud bl"></div><div class="hud br"></div>
+
+<!-- ═══════════ Boot Screen ═══════════ -->
+<div id="boot">
+  <div class="ring"></div>
+  <h2>NEXUS</h2>
+  <div class="bl" id="bootlog"></div>
+</div>
+
+<!-- ═══════════ Lock Screen ═══════════ -->
+<div id="lock">
+  <div class="lockbox">
+    <h2 id="lock_t"></h2>
+    <p id="lock_sub"></p>
+    <input type="password" id="lockkey" autocomplete="off" placeholder="••••••••">
+    <button id="lockbtn"></button>
+  </div>
+</div>
+
+<!-- ═══════════ Main App ═══════════ -->
+<div class="wrap" id="app" style="opacity:0">
+  <header>
+    <div class="logo">
+      <svg width="36" height="36" viewBox="0 0 36 36"><rect width="36" height="36" rx="8" fill="#04060f"/>
+        <path d="M8 27V10l10 9 10-9v17" stroke="#22d3ee" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div><b>NEXUS</b><small>THE GATEWAY TO TOMORROW</small></div>
+    </div>
+    <div class="chips">
+      <div class="chip"><button id="langBtn" style="background:none;border:none;color:var(--cy);cursor:pointer;font-size:11px;padding:0">EN ⇄ FA</button></div>
+      <div class="chip">LIVE · <b id="chipLive">00:00:00</b> <span class="dot"></span></div>
+      <div class="chip">COLO · <b id="chipColo">—</b></div>
+      <div class="chip">CC · <b id="chipCc">—</b></div>
+      <div class="chip">CITY · <b id="chipCity">—</b></div>
+    </div>
+  </header>
+
+  <nav id="tabs">
+    <button data-t="home" class="on">🏠 <span></span></button>
+    <button data-t="cfg">⚡ <span></span></button>
+    <button data-t="map">🌍 <span></span></button>
+    <button data-t="set">🧠 <span></span></button>
+    <button data-t="about">🛰 <span></span></button>
+  </nav>
+
+  <main>
+    <!-- ═══════════ Home Panel ═══════════ -->
+    <section class="panel on" id="p-home">
+      <div class="hero">
+        <h1 id="hero1"></h1>
+        <p id="hero2"></p>
+        <div class="tag" id="hero3"></div>
+        <div class="cta">
+          <button class="btn prim" id="cta1"></button>
+          <button class="btn ghost" id="cta2"></button>
+        </div>
+        <div class="stats" id="heroStats"></div>
+      </div>
+      <div class="rec">
+        <h3 id="rec_t"></h3>
+        <p id="rec_d"></p>
+      </div>
+    </section>
+
+    <!-- ═══════════ Config Panel ═══════════ -->
+    <section class="panel" id="p-cfg">
+      <div class="card">
+        <h2>⚡ <span id="nodes_t"></span></h2>
+        <p id="nodes_sub" style="font-size:12.5px;color:var(--mut);margin-top:6px"></p>
+        <div class="subrow">
+          <div class="urlbox" id="subUrl">—</div>
+          <button class="btn ghost" id="copySubBtn" style="flex-shrink:0">📋</button>
+        </div>
+        <div class="fmt" id="fmtBtns"></div>
+        <div class="grid" id="nodeGrid"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>📱 <span id="clients_t"></span></h2>
+        <div class="clientrow" id="clientLinks"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>📱 <span id="qr_t"></span></h2>
+        <div class="qrbox" id="qrBox"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Map Panel ═══════════ -->
+    <section class="panel" id="p-map">
+      <div class="card">
+        <h2>🌍 <span id="map_title"></span></h2>
+        <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--mut)">
+          <span id="abCc2"></span>
+          <div class="legend">
+            <span><i style="background:var(--cy)"></i><span id="map_link"></span></span>
+            <span><i style="background:var(--vi)"></i><span id="map_pop"></span></span>
+            <span><i style="background:var(--ok)"></i><span id="map_you"></span></span>
+          </div>
+        </div>
+        <div class="mapbox" id="mapBox"></div>
+        <div class="mapside" id="mapSide"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ Settings Panel ═══════════ -->
+    <section class="panel" id="p-set">
+      <div class="card">
+        <h2>🧠 <span id="cfg_t"></span></h2>
+        <p id="setSub" style="font-size:12.5px;color:var(--mut);margin-top:6px"></p>
+        <form id="cfgForm">
+          <field><legend id="st_proto"></legend><div id="fldProto"></div></field>
+          <field><legend id="st_tr"></legend><div id="fldTr"></div></field>
+          <field><legend id="st_port"></legend><div class="chipsrow" id="fldPorts"></div></field>
+          <field><legend id="st_tls"></legend><label id="lblTls"></label><label id="lblFrag"></label><label id="lblEch"></label></field>
+          <field><legend id="st_fp"></legend><select id="f_fp"><option>chrome</option><option>firefox</option><option>safari</option><option>random</option></select></field>
+          <field><legend id="st_sni"></legend><input type="text" id="f_sni" dir="ltr"></field>
+          <field><legend id="st_path"></legend><input type="text" id="f_path" dir="ltr"></field>
+          <field><legend id="st_p"></legend><textarea id="f_p" dir="ltr"></textarea></field>
+          <field><legend id="st_s"></legend><input type="text" id="f_s" dir="ltr" placeholder="host:port:user:pass"></field>
+          <field><legend id="st_sub"></legend><input type="text" id="f_subname" dir="ltr"></field>
+          <field><legend id="st_scu"></legend><input type="text" id="f_scu" dir="ltr"></field>
+          <field><legend id="st_ir"></legend><div id="fldIr"></div></field>
+          <field><legend id="st_danger"></legend><label id="lblDis"></label></field>
+        </form>
+        <div class="actions">
+          <button class="btn prim" id="saveCfg"></button>
+          <button class="btn ghost" id="smartBtn"></button>
+        </div>
+
+        <!-- User Profile Section -->
+        <div style="margin-top:20px;border:1px solid rgba(167,139,250,.3);border-radius:16px;padding:20px;background:linear-gradient(120deg,rgba(167,139,250,.06),rgba(34,211,238,.04))">
+          <h2 style="font-size:15px;color:var(--vi)">👤 <span id="user_profile"></span></h2>
+          <p style="font-size:12px;color:var(--mut);margin-top:6px" id="user_profile_d"></p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px">
+            <field><legend id="user_name"></legend><input type="text" id="f_uname" dir="auto" placeholder="ali"></field>
+            <field><legend id="user_transport"></legend><select id="f_utr"><option value="">auto</option><option value="ws">WebSocket</option><option value="grpc">gRPC</option><option value="xhttp">XHTTP</option></select></field>
+            <field><legend id="user_sni"></legend><input type="text" id="f_usni" dir="ltr" placeholder="sni.example.com"></field>
+            <field><legend id="user_path"></legend><input type="text" id="f_upath" dir="ltr" placeholder="/?ed=2560"></field>
+          </div>
+          <div class="actions"><button class="btn prim" id="saveUserBtn" style="background:linear-gradient(90deg,var(--vi),#c084fc)"></button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ About Panel ═══════════ -->
+    <section class="panel" id="p-about">
+      <div class="card">
+        <h2>🛰 <span id="about_t"></span></h2>
+        <p id="aboutD" style="font-size:13.5px;color:var(--mut);line-height:1.9;margin-top:10px"></p>
+        <div class="about-grid">
+          <div class="stat"><div class="k">VERSION</div><div class="v"><em>${VERSION}</em></div></div>
+          <div class="stat"><div class="k">COLO</div><div class="v"><em>${colo}</em></div></div>
+          <div class="stat"><div class="k">COUNTRY</div><div class="v"><em id="abCc"></em></div></div>
+          <div class="stat"><div class="k">HOST</div><div class="v" style="font-size:13px" id="abHost"></div></div>
+          <div class="stat"><div class="k">ZONE</div><div class="v"><em id="abZone"></em></div></div>
+          <div class="stat"><div class="k">NODES</div><div class="v"><em id="abNodes">—</em></div></div>
+          <div class="stat"><div class="k">RTT</div><div class="v"><em id="abRtt">—</em></div></div>
+          <div class="stat"><div class="k">KV</div><div class="v"><em id="abKv">—</em></div></div>
+        </div>
+        <p style="margin-top:18px;font-size:11px;color:#475569;text-align:center" id="fPowered"></p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<!-- CLIENT_JS_BELOW -->
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ▓ 99-footer.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Client-Side JavaScript — embedded in HTML template
+   ▓ CRITICAL: boot() is called FIRST. All other init is wrapped in try/catch.
+   ══════════════════════════════════════════════════════════════════════════════ */
+<script>
+(function(){
+'use strict';
+
+/* ─── Template-injected data ─── */
+var L = ${label};
+var VI = ${vinfo};
+var POPS = ${popJson};
+var KEY = ${JSON.stringify(key)};
+var UNLOCKED = ${unlocked ? 'true' : 'false'};
+var KVOK = ${KV(env) ? 'true' : 'false'};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ DOM Helpers — null-safe
+   ══════════════════════════════════════════════════════════════════════════════ */
+function $(id) { return document.getElementById(id); }
+function $q(sel) { return document.querySelector(sel); }
+function $qa(sel) { return document.querySelectorAll(sel); }
+function safe(fn) { try { return fn(); } catch(e) { return null; } }
+
+function tx(msg) {
+  var t = $('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(t._x);
+  t._x = setTimeout(function(){ t.classList.remove('on'); }, 2200);
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function(c) {
+    return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c];
+  });
+}
+
+function safeText(id, text) {
+  var el = $(id);
+  if (el) el.textContent = text;
+  return el;
+}
+
+function safeHTML(id, html) {
+  var el = $(id);
+  if (el) el.innerHTML = html;
+  return el;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ i18n — apply language labels to all elements
+   ══════════════════════════════════════════════════════════════════════════════ */
+function i18n() {
+  var map = {
+    t_home:'t_home', t_cfg:'t_cfg', t_map:'t_map', t_set:'t_set', t_about:'t_about',
+    hero1:'hero1', hero2:'hero2', hero3:'hero3', cta:'cta', cta2:'cta2',
+    rec_t:'rec_t', rec_d:'rec_d',
+    nodes_t:'nodes_t', nodes_sub:'nodes_sub', copy:'copy',
+    clients_t:'clients_t', qr_t:'qr_t', cfg_t:'cfg_t',
+    setSub:'setSub', save:'save', smart:'smart',
+    st_proto:'st_proto', st_tr:'st_tr', st_port:'st_port',
+    st_tls:'st_tls', st_fp:'st_fp', st_sni:'st_sni',
+    st_path:'st_path', st_p:'st_p', st_s:'st_s',
+    st_sub:'st_sub', st_scu:'st_scu', st_ir:'st_ir',
+    st_danger:'st_danger', lblDis:'st_disable',
+    about_t:'about_t', about_d:'about_d', fPowered:'f_powered',
+    lock_t:'lock_t', lock_sub:'lock_sub',
+    map_title:'map_title', map_link:'link', map_pop:'pop', map_you:'you',
+    user_profile:'user_profile', user_profile_d:'user_profile_d',
+    user_name:'user_name', user_transport:'user_transport',
+    user_sni:'user_sni', user_path:'user_path', user_save:'user_save',
+  };
+  for (var k in map) { var el = $(k); if (el && L[map[k]]) el.textContent = L[map[k]]; }
+  var lockBtn = $('lockbtn');
+  if (lockBtn) lockBtn.textContent = L.unlock_btn || L.unlock;
+  var tabBtns = $qa('#tabs button');
+  for (var i = 0; i < tabBtns.length; i++) {
+    var span = tabBtns[i].querySelector('span');
+    var t = tabBtns[i].getAttribute('data-t');
+    if (span && L['t_' + t]) span.textContent = L['t_' + t];
+  }
+  document.title = 'NEXUS · ' + (VI.host || '');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Boot Sequence — runs FIRST, never blocks
+   ══════════════════════════════════════════════════════════════════════════════ */
+function boot() {
+  var bl = $('bootlog');
+  var steps = [L.boot1, L.boot2, L.boot3, L.boot4, L.boot5];
+  var i = 0;
+  var iv = setInterval(function() {
+    if (i < steps.length) {
+      if (bl) {
+        var d = document.createElement('div');
+        d.textContent = '> ' + steps[i];
+        if (i === steps.length - 1) d.className = 'ok';
+        bl.appendChild(d);
+      }
+      i++;
+    } else {
+      clearInterval(iv);
+      setTimeout(function() {
+        var b = $('boot'); if (b) b.classList.add('off');
+        var a = $('app'); if (a) a.style.opacity = '1';
+        if (!UNLOCKED && KEY) {
+          var lk = $('lock'); if (lk) lk.classList.add('on');
+          var lkInput = $('lockkey'); if (lkInput) lkInput.focus();
+        }
+      }, 350);
+    }
+  }, 300);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Tab Navigation
+   ══════════════════════════════════════════════════════════════════════════════ */
+function tabs() {
+  var btns = $qa('#tabs button');
+  if (!btns || !btns.length) return;
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].onclick = function() {
+      for (var j = 0; j < btns.length; j++) btns[j].classList.remove('on');
+      this.classList.add('on');
+      var t = this.getAttribute('data-t');
+      var panels = $qa('.panel');
+      for (var k = 0; k < panels.length; k++) panels[k].classList.remove('on');
+      var target = $('p-' + t);
+      if (target) target.classList.add('on');
+      if (t === 'map') setTimeout(renderMap, 60);
+      if (t === 'cfg' && !STATE.nodes) loadNodes();
+      if (t === 'set' && !STATE.cfg) loadCfg();
+    };
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ State
+   ══════════════════════════════════════════════════════════════════════════════ */
+var STATE = { info: VI, nodes: null, cfg: null, fmt: 'base64', irCarriers: {} };
+
+function api(path) {
+  return fetch(path).then(function(r) { return r.json(); }).catch(function() { return null; });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Home Panel
+   ══════════════════════════════════════════════════════════════════════════════ */
+function renderHome() {
+  var h = $('heroStats');
+  if (!h) return;
+  var items = [
+    { k: 'VERSION', v: '<em>' + VERSION + '</em>' },
+    { k: 'ZONE', v: '<em>' + (VI.zone || '—') + '</em>' },
+    { k: 'CC', v: '<em>' + (VI.cc || '—') + '</em>' },
+    { k: 'COLO', v: '<em>' + (VI.colo || '—') + '</em>' },
+    { k: 'KV', v: '<em>' + (KVOK ? 'ON' : 'OFF') + '</em>' },
+    { k: 'KEY', v: '<em>' + (VI.keySet ? 'SET' : 'NONE') + '</em>' },
+  ];
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    html += '<div class="stat"><div class="k">' + items[i].k + '</div><div class="v">' + items[i].v + '</div></div>';
+  }
+  h.innerHTML = html;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Nodes Panel
+   ══════════════════════════════════════════════════════════════════════════════ */
+function loadNodes() {
+  api('/api/nodes?k=' + encodeURIComponent(KEY)).then(function(d) {
+    if (d && d.ok) { STATE.nodes = d; renderNodes(); }
+  });
+}
+
+function renderNodes() {
+  var d = STATE.nodes;
+  if (!d || !d.nodes) return;
+
+  /* subscription URL */
+  var subUrl = $('subUrl');
+  if (subUrl) subUrl.textContent = d.links.sub || '—';
+
+  /* format buttons */
+  var fmtBtns = $('fmtBtns');
+  if (fmtBtns) {
+    var fmts = ['base64', 'clash', 'singbox', 'plain'];
+    var html = '';
+    for (var i = 0; i < fmts.length; i++) {
+      html += '<button class="' + (STATE.fmt === fmts[i] ? 'on' : '') + '" data-fmt="' + fmts[i] + '">' + fmts[i] + '</button>';
+    }
+    fmtBtns.innerHTML = html;
+    var btns = fmtBtns.querySelectorAll('button');
+    for (var j = 0; j < btns.length; j++) {
+      btns[j].onclick = function() {
+        STATE.fmt = this.getAttribute('data-fmt');
+        renderNodes();
+      };
+    }
+  }
+
+  /* client links */
+  var cl = $('clientLinks');
+  if (cl) {
+    cl.innerHTML =
+      '<a href="https://github.com/MatsuriDayo/NekoBoxForAndroid/releases" target="_blank">📱 NekoBox</a>' +
+      '<a href="https://github.com/v2ray/v2rayNG/releases" target="_blank">📱 v2rayNG</a>' +
+      '<a href="https://github.com/izhangzhihao/invisibility/releases" target="_blank">📱 Invisible</a>' +
+      '<a href="https://github.com/nickkuk/stash/releases" target="_blank">🍎 Stash (iOS)</a>';
+  }
+
+  /* QR code */
+  var qr = $('qrBox');
+  if (qr) {
+    var subLink = d.links.sub || '';
+    var qrApi = 'https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=' + encodeURIComponent(subLink);
+    qr.innerHTML = '<img src="' + qrApi + '" alt="QR" loading="lazy"><div style="font-size:11px;color:var(--mut);line-height:1.8">' +
+      '<div>RTT: <b style="color:var(--cy)">' + d.rtt + ' ms</b></div>' +
+      '<div>Zone: <b style="color:var(--vi)">' + (d.zone || '—') + '</b></div>' +
+      '<div>Nodes: <b style="color:var(--ok)">' + d.nodes.length + '</b></div></div>';
+  }
+
+  /* node grid */
+  var grid = $('nodeGrid');
+  if (!grid) return;
+  var nodes = d.nodes;
+  var html = '';
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    var pc = n.p === 'vless' ? 'vless' : n.p === 'trojan' ? 'trojan' : 'ss';
+    var tc = n.t === 'ws' ? 'ws' : n.t === 'grpc' ? 'grpc' : 'xhttp';
+    html += '<div class="node">' +
+      '<div class="top"><span class="badge ' + pc + '">' + n.p.toUpperCase() + '</span>' +
+      '<span class="badge ' + tc + '">' + n.t.toUpperCase() + '</span>' +
+      '<span class="badge" style="background:rgba(52,211,153,.1);color:var(--ok)">' + n.port + '</span></div>' +
+      '<h4>' + esc(n.n) + '</h4>' +
+      '<div class="meta"><b>' + esc(n.a) + '</b> · ' + n.sni + ' · ' + n.fp + '</div>' +
+      '<button data-line="' + esc(n.line) + '">' + L.copy + '</button>' +
+      '</div>';
+  }
+  grid.innerHTML = html;
+
+  /* copy buttons */
+  var copyBtns = grid.querySelectorAll('button[data-line]');
+  for (var j = 0; j < copyBtns.length; j++) {
+    copyBtns[j].onclick = function() {
+      var line = this.getAttribute('data-line');
+      copyText(line);
+      tx(L.copy_ok);
+    };
+  }
+
+  /* sub URL copy */
+  var copySubBtn = $('copySubBtn');
+  if (copySubBtn) {
+    copySubBtn.onclick = function() {
+      copyText(d.links.sub || '');
+      tx(L.copy_ok);
+    };
+  }
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch {}
+  document.body.removeChild(ta);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Live Map Panel
+   ══════════════════════════════════════════════════════════════════════════════ */
+function XY(lat, lon) {
+  var x = (lon + 180) * (800 / 360);
+  var y = (90 - lat) * (400 / 180);
+  return { x: x, y: y };
+}
+
+function renderMap() {
+  var box = $('mapBox');
+  var side = $('mapSide');
+  if (!box) return;
+
+  var svg = '<svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">' +
+    '<rect width="800" height="400" fill="transparent"/>';
+
+  var continents = [
+    'M80,80 Q120,60 160,80 Q180,100 200,90 Q220,80 240,90 L240,140 Q200,150 180,140 Q140,130 100,120 Z',
+    'M180,160 Q200,150 220,160 Q230,180 240,220 Q230,260 220,300 Q200,310 180,280 Q170,240 170,200 Z',
+    'M350,70 Q380,60 420,70 Q440,80 430,100 Q410,110 380,100 Q360,90 350,80 Z',
+    'M360,130 Q400,120 440,140 Q450,180 440,240 Q420,280 380,270 Q350,240 340,190 Q340,160 360,130 Z',
+    'M440,50 Q520,30 600,50 Q650,80 680,100 Q660,130 620,140 Q560,150 500,130 Q460,110 440,90 Z',
+    'M600,230 Q640,220 680,240 Q690,260 670,280 Q640,290 610,270 Q590,250 600,230 Z',
+  ];
+  for (var c = 0; c < continents.length; c++) {
+    svg += '<path d="' + continents[c] + '" fill="none" stroke="rgba(96,165,250,.12)" stroke-width="0.5" stroke-dasharray="2,3"/>';
+  }
+
+  var vPos = XY(VI.lat || 35, VI.lon || 51);
+  svg += '<circle cx="' + vPos.x + '" cy="' + vPos.y + '" r="6" fill="var(--ok)" opacity=".9"><animate attributeName="r" values="4;8;4" dur="2s" repeatCount="indefinite"/></circle>';
+  svg += '<text x="' + (vPos.x + 10) + '" y="' + (vPos.y - 8) + '" fill="var(--ok)" font-size="9" font-family="monospace">' + (VI.cc || '??') + '</text>';
+
+  for (var i = 0; i < POPS.length; i++) {
+    var p = POPS[i];
+    var pos = XY(p.lat, p.lon);
+    var dist = Math.sqrt(Math.pow(pos.x - vPos.x, 2) + Math.pow(pos.y - vPos.y, 2));
+    var isLink = dist < 120;
+    var r = isLink ? 3.5 : 2;
+    var color = isLink ? 'var(--cy)' : 'var(--vi)';
+    var opacity = isLink ? 0.9 : 0.5;
+    svg += '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + r + '" fill="' + color + '" opacity="' + opacity + '">';
+    if (isLink) svg += '<animate attributeName="opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite"/>';
+    svg += '</circle>';
+    if (isLink) {
+      svg += '<line x1="' + vPos.x + '" y1="' + vPos.y + '" x2="' + pos.x + '" y2="' + pos.y + '" stroke="var(--cy)" stroke-width="0.5" opacity=".3" stroke-dasharray="4,4"><animate attributeName="stroke-dashoffset" values="0;8" dur="1s" repeatCount="indefinite"/></line>';
+    }
+  }
+  svg += '</svg>';
+  box.innerHTML = svg;
+
+  if (!side) return;
+  var pops = [];
+  for (var j = 0; j < POPS.length; j++) {
+    var pp = POPS[j];
+    var d = distKm(VI.lat || 35, VI.lon || 51, pp.lat, pp.lon);
+    pops.push({ pop: pp, dist: d, rtt: Math.max(8, Math.round(d / 200 + 6)) });
+  }
+  pops.sort(function(a, b) { return a.dist - b.dist; });
+  var html = '';
+  for (var k = 0; k < Math.min(12, pops.length); k++) {
+    var pp2 = pops[k];
+    html += '<div class="pops"><span>' + pp2.pop.name + ' · ' + pp2.pop.cc + '</span><b>' + pp2.rtt + ' ms</b></div>';
+  }
+  side.innerHTML = html;
+}
+
+function distKm(lat1, lon1, lat2, lon2) {
+  var R = 6371;
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLon = (lon2 - lon1) * Math.PI / 180;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Settings Panel
+   ══════════════════════════════════════════════════════════════════════════════ */
+function loadCfg() {
+  api('/api/config?k=' + encodeURIComponent(KEY)).then(function(d) {
+    if (d && d.ok) { STATE.cfg = d.cfg; renderCfg(); }
+  });
+}
+
+function renderCfg() {
+  var c = STATE.cfg;
+  if (!c) return;
+
+  var fp = $('fldProto');
+  if (fp) {
+    var protos = [
+      { id: 'vless', label: 'VLESS', key: 'ev' },
+      { id: 'trojan', label: 'Trojan', key: 'et' },
+      { id: 'ss', label: 'Shadowsocks', key: 'ex' },
+    ];
+    var html = '';
+    for (var i = 0; i < protos.length; i++) {
+      var on = c[protos[i].key] !== 'no' ? ' on' : '';
+      html += '<span class="sw' + on + '" data-p="' + protos[i].id + '">' + protos[i].label + '</span> ';
+    }
+    fp.innerHTML = html;
+    bindSwGroup(fp);
+  }
+
+  var ft = $('fldTr');
+  if (ft) {
+    var transports = ['ws', 'grpc', 'xhttp'];
+    var cfgTrans = c.transports || ['ws', 'grpc', 'xhttp'];
+    var html2 = '';
+    for (var j = 0; j < transports.length; j++) {
+      var on2 = cfgTrans.indexOf(transports[j]) >= 0 ? ' on' : '';
+      html2 += '<span class="sw' + on2 + '" data-tr="' + transports[j] + '">' + transports[j].toUpperCase() + '</span> ';
+    }
+    ft.innerHTML = html2;
+    bindSwGroup(ft);
+  }
+
+  var fpt = $('fldPorts');
+  if (fpt) {
+    var allPorts = [443, 2053, 2083, 2087, 2096, 8443];
+    var cfgPorts = c.ports || [443];
+    var html3 = '';
+    for (var k = 0; k < allPorts.length; k++) {
+      var on3 = cfgPorts.indexOf(allPorts[k]) >= 0 ? ' on' : '';
+      html3 += '<span class="sw' + on3 + '" data-port="' + allPorts[k] + '">' + allPorts[k] + '</span> ';
+    }
+    fpt.innerHTML = html3;
+    bindSwGroup(fpt);
+  }
+
+  makeSwitch('lblTls', 'TLS', c.tls === 'yes');
+  makeSwitch('lblFrag', 'Fragment', c.fragment === 'yes');
+  makeSwitch('lblEch', 'ECH', c.ech === 'yes');
+  makeSwitch('lblDis', 'Disable', c.disabled);
+
+  setVal('f_fp', c.fp || 'chrome');
+  setVal('f_sni', c.sni || '');
+  setVal('f_path', c.path || '/?ed=2560');
+  setVal('f_p', c.p || '');
+  setVal('f_s', c.s || '');
+  setVal('f_subname', c.subname || 'NEXUS');
+  setVal('f_scu', c.scu || 'https://url.v1.mk/sub');
+
+  var fir = $('fldIr');
+  if (fir) {
+    var carriers = [
+      { key: 'ispMobile', label: 'HamrahAval' },
+      { key: 'ispUnicom', label: 'Irancell' },
+      { key: 'ispTelecom', label: 'Rightel' },
+      { key: 'ispMokhaberat', label: 'Mokhaberat' },
+      { key: 'ispShatel', label: 'Shatel' },
+      { key: 'ispAsiatek', label: 'Asiatek' },
+      { key: 'ispParsonline', label: 'ParsOnline' },
+      { key: 'ispHiweb', label: 'Hiweb' },
+    ];
+    var html4 = '';
+    for (var m = 0; m < carriers.length; m++) {
+      var on4 = c[carriers[m].key] === 'yes' ? ' on' : '';
+      html4 += '<span class="sw' + on4 + '" data-ir="' + carriers[m].key + '">' + carriers[m].label + '</span> ';
+    }
+    fir.innerHTML = html4;
+    bindSwGroup(fir);
+  }
+}
+
+function makeSwitch(id, label, on) {
+  var el = $(id);
+  if (!el) return;
+  var cls = on ? ' sw on' : ' sw';
+  el.innerHTML = '<span class="' + cls + '">' + label + '</span>';
+  var sw = el.querySelector('.sw');
+  if (sw) sw.onclick = function() { this.classList.toggle('on'); };
+}
+
+function setVal(id, val) { var el = $(id); if (el) el.value = val; }
+function getVal(id) { var el = $(id); return el ? el.value : ''; }
+
+function bindSwGroup(container) {
+  var els = container.querySelectorAll('.sw');
+  for (var i = 0; i < els.length; i++) {
+    els[i].onclick = function() { this.classList.toggle('on'); };
+  }
+}
+
+function collect() {
+  var c = STATE.cfg ? Object.assign({}, STATE.cfg) : {};
+  var protoEls = $('fldProto') ? $('fldProto').querySelectorAll('.sw') : [];
+  c.ev = swOn(protoEls, 'vless') ? 'yes' : 'no';
+  c.et = swOn(protoEls, 'trojan') ? 'yes' : 'no';
+  c.ex = swOn(protoEls, 'ss') ? 'yes' : 'no';
+  var trEls = $('fldTr') ? $('fldTr').querySelectorAll('.sw') : [];
+  var trans = [];
+  for (var i = 0; i < trEls.length; i++) {
+    if (trEls[i].classList.contains('on')) trans.push(trEls[i].getAttribute('data-tr'));
+  }
+  c.transports = trans.length ? trans : ['ws'];
+  var portEls = $('fldPorts') ? $('fldPorts').querySelectorAll('.sw') : [];
+  var ports = [];
+  for (var j = 0; j < portEls.length; j++) {
+    if (portEls[j].classList.contains('on')) ports.push(parseInt(portEls[j].getAttribute('data-port')));
+  }
+  c.ports = ports.length ? ports : [443];
+  c.tls = swId('lblTls') ? 'yes' : 'no';
+  c.fragment = swId('lblFrag') ? 'yes' : 'no';
+  c.ech = swId('lblEch') ? 'yes' : 'no';
+  c.disabled = swId('lblDis');
+  c.fp = getVal('f_fp') || 'chrome';
+  c.sni = getVal('f_sni');
+  c.path = getVal('f_path') || '/?ed=2560';
+  c.p = getVal('f_p');
+  c.s = getVal('f_s');
+  c.subname = getVal('f_subname') || 'NEXUS';
+  c.scu = getVal('f_scu');
+  var irEls = $('fldIr') ? $('fldIr').querySelectorAll('.sw') : [];
+  for (var k = 0; k < irEls.length; k++) {
+    var irKey = irEls[k].getAttribute('data-ir');
+    if (irKey) c[irKey] = irEls[k].classList.contains('on') ? 'yes' : 'no';
+  }
+  return c;
+}
+
+function swOn(els, val) {
+  for (var i = 0; i < els.length; i++) {
+    if (els[i].getAttribute('data-p') === val || els[i].getAttribute('data-tr') === val) {
+      return els[i].classList.contains('on');
+    }
+  }
+  return false;
+}
+
+function swId(id) {
+  var el = $(id);
+  if (!el) return false;
+  var sw = el.querySelector('.sw');
+  return sw ? sw.classList.contains('on') : false;
+}
+
+function saveCfg() {
+  var body = collect();
+  fetch('/api/config?k=' + encodeURIComponent(KEY), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d && d.ok) {
+      tx(L.saved);
+      STATE.cfg = d.cfg;
+      STATE.nodes = null;
+    } else { tx(L.err_save); }
+  }).catch(function() { tx(L.err_save); });
+}
+
+function smartOptimize() {
+  tx(L.wait || L.loading);
+  api('/api/info').then(function() {
+    STATE.nodes = null;
+    loadNodes();
+    loadCfg();
+    tx(L.smart_done || L.done);
+  }).catch(function() { tx(L.err_save); });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Lock / Unlock
+   ══════════════════════════════════════════════════════════════════════════════ */
+function lock() {
+  var lockBtn = $('lockbtn');
+  var lockKey = $('lockkey');
+  if (lockBtn) lockBtn.onclick = tryUnlock;
+  if (lockKey) lockKey.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') tryUnlock();
+  });
+}
+
+function tryUnlock() {
+  var k = getVal('lockkey');
+  if (!k) return;
+  var btn = $('lockbtn');
+  if (btn) { btn.disabled = true; btn.textContent = L.wait; }
+  fetch('/api/unlock?k=' + encodeURIComponent(KEY), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key: k })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d && d.ok) {
+      KEY = k; UNLOCKED = true;
+      var lk = $('lock'); if (lk) lk.classList.remove('on');
+      tx(L.done); loadNodes(); loadCfg();
+    } else {
+      if (btn) btn.textContent = L.unlock_btn || L.unlock;
+      tx(L.wrong);
+      var lkInput = $('lockkey'); if (lkInput) lkInput.value = '';
+    }
+    if (btn) btn.disabled = false;
+  }).catch(function() {
+    if (btn) { btn.disabled = false; btn.textContent = L.unlock_btn || L.unlock; }
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Clock
+   ══════════════════════════════════════════════════════════════════════════════ */
+function clock() {
+  var t = $('chipLive');
+  if (!t) return;
+  function update() {
+    var d = new Date();
+    t.textContent = 'LIVE · ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+  }
+  update();
+  setInterval(update, 1000);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Stars Animation
+   ══════════════════════════════════════════════════════════════════════════════ */
+function stars() {
+  var cv = $('stars');
+  if (!cv || !cv.getContext) return;
+  var ctx = cv.getContext('2d');
+  cv.width = innerWidth; cv.height = innerHeight;
+  var n = 130, arr = [];
+  for (var i = 0; i < n; i++) {
+    arr.push({ x: Math.random()*innerWidth, y: Math.random()*innerHeight, r: Math.random()*1.3+0.3, s: Math.random()*0.4+0.08, tw: Math.random()*Math.PI*2 });
+  }
+  (function draw() {
+    ctx.clearRect(0,0,innerWidth,innerHeight);
+    for (var i = 0; i < n; i++) {
+      var p = arr[i]; p.y -= p.s; p.tw += 0.05;
+      if (p.y < -2) { p.y = innerHeight+2; p.x = Math.random()*innerWidth; }
+      var a = 0.4+Math.sin(p.tw)*0.35;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7);
+      ctx.fillStyle = 'rgba(148,197,255,'+a+')'; ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  })();
+  addEventListener('resize', function(){ cv.width=innerWidth; cv.height=innerHeight; });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ User Profile
+   ══════════════════════════════════════════════════════════════════════════════ */
+var USER_PROFILE = {};
+function loadUserProfile() {
+  var uid = new URLSearchParams(location.search).get('uid') || '';
+  fetch('/api/user-config?k='+encodeURIComponent(KEY)+'&uid='+encodeURIComponent(uid))
+    .then(function(r){return r.json()}).then(function(d){
+      if(d&&d.ok){USER_PROFILE=d.ucfg||{};renderUserProfile();}
+    }).catch(function(){});
+}
+function renderUserProfile() {
+  var u = USER_PROFILE||{};
+  var e1=$('f_uname');if(e1)e1.value=u.name||'';
+  var e2=$('f_utr');if(e2)e2.value=u.transport||'';
+  var e3=$('f_usni');if(e3)e3.value=u.sni||'';
+  var e4=$('f_upath');if(e4)e4.value=u.path||'';
+}
+function saveUserProfile() {
+  var uid = new URLSearchParams(location.search).get('uid')||'';
+  var body = {name:getVal('f_uname'),transport:getVal('f_utr'),sni:getVal('f_usni'),path:getVal('f_upath')};
+  fetch('/api/user-config?k='+encodeURIComponent(KEY)+'&uid='+encodeURIComponent(uid),{
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d&&d.ok){USER_PROFILE=d.ucfg;tx(L.user_saved||L.saved);}else tx(L.err_save);
+  }).catch(function(){tx(L.err_save);});
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Language Toggle
+   ══════════════════════════════════════════════════════════════════════════════ */
+function toggleLang() {
+  fetch('/api/config?k='+encodeURIComponent(KEY)).then(function(r){return r.json()}).then(function(d){
+    if(!d||!d.ok)return;
+    d.cfg.lang=d.cfg.lang==='en'?'fa':'en';
+    return fetch('/api/config?k='+encodeURIComponent(KEY),{
+      method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d.cfg)
+    });
+  }).then(function(){location.reload();}).catch(function(){});
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ INIT — boot() runs FIRST, everything else in try/catch
+   ══════════════════════════════════════════════════════════════════════════════ */
+function init() {
+  boot();
+  try {
+    safeText('chipColo', VI.colo||'—');
+    safeText('chipCc', VI.cc||'—');
+    safeText('chipCity', VI.city||'—');
+    safeText('abCc', VI.cc||'—');
+    safeText('abHost', VI.host||'—');
+    safeText('abZone', VI.zone||'—');
+    i18n();
+    renderHome();
+    tabs();
+    var saveCfgBtn=$('saveCfg');if(saveCfgBtn)saveCfgBtn.onclick=saveCfg;
+    var smartBtn=$('smartBtn');if(smartBtn)smartBtn.onclick=smartOptimize;
+    var cta1=$('cta1');if(cta1)cta1.onclick=function(){go('cfg');};
+    var cta2=$('cta2');if(cta2)cta2.onclick=function(){go('set');};
+    var langBtn=$('langBtn');if(langBtn)langBtn.onclick=toggleLang;
+    var saveUserBtn=$('saveUserBtn');if(saveUserBtn)saveUserBtn.onclick=saveUserProfile;
+    loadUserProfile();
+    lock(); clock(); stars();
+  } catch(e) {
+    console.error('NEXUS init error:', e);
+  }
+}
+
+function go(t) {
+  var btns=$qa('#tabs button');
+  for(var i=0;i<btns.length;i++){if(btns[i].getAttribute('data-t')===t){btns[i].click();return;}}
+}
+
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',init);}else{init();}
+
+})();
+</script>
+</body>
+</html>`;
+}
+

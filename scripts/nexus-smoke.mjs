@@ -51,7 +51,7 @@ async function run() {
   // ── info with CF headers (Iran profile) ──
   r = await worker.fetch(new Request(base + '/api/info', { headers: { 'cf-ipcountry': 'IR', 'cf-colo': 'FRA', 'user-agent': 'clash' } }), env)
   const infoIr = await r.json()
-  check('info IR zone', infoIr.zone === 'IR' && infoIr.city === 'Frankfurt')
+  check('info IR zone', infoIr.zone === 'IR' && infoIr.colo === 'FRA')
 
   // ── nodes: forbidden without key ──
   r = await worker.fetch(new Request(base + '/api/nodes'), env)
