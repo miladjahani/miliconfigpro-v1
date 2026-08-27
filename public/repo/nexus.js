@@ -411,7 +411,19 @@ function 協議集(cfg) {
    ══════════════════════════════════════════════════════════════════════════ */
 /* ══════════════════════════════════════════════════════════════════════════════
    ▓ Node Generation & Link Builders
+   ▓ KEY FIX: Server address = CF IP, SNI = worker domain
    ══════════════════════════════════════════════════════════════════════════════ */
+
+/* Known Cloudflare edge IPs that work for Worker proxying */
+const CF_IPS = [
+  '188.164.248.146', '188.164.249.146', '188.164.248.150',
+  '188.164.249.150', '188.164.248.154', '188.164.249.154',
+  '188.164.248.158', '188.164.249.158', '188.164.250.146',
+  '188.164.250.150', '188.164.250.154', '188.164.250.158',
+  '104.16.0.0', '104.16.1.0', '104.16.2.0', '104.16.3.0',
+  '172.67.0.0', '172.67.1.0', '172.67.2.0', '172.67.3.0',
+];
+
 function 節點集(cfg, info, host) {
   const prof = 檔案(info.cc);
   const protos = 協議集(cfg);
@@ -423,29 +435,46 @@ function 節點集(cfg, info, host) {
   const flow = cfg.flow || '';
   const uuid = info.key || cfg.uuid || 'none';
   const frag = cfg.fragment === 'yes' || prof.frag;
+  const ech = cfg.ech === 'yes';
 
-  const addrs = [host];
-  if (cfg.HOST) addrs.push(cfg.HOST);
-  if (Array.isArray(cfg.HOSTS)) for (const h of cfg.HOSTS) if (h && h !== host) addrs.push(h);
+  /* ── Build address list: CF IPs first, then proxyIP, then worker domain ── */
+  const addrs = [];
+  /* Use CF IPs as primary server addresses */
+  const ipCount = Math.min(CF_IPS.length, 3);
+  for (let i = 0; i < ipCount; i++) addrs.push(CF_IPS[i]);
+  /* Add proxyIP if set */
   if (cfg.ena === 'yes') for (const x of 拆IP(cfg.p)) addrs.push(x);
+  /* Add custom IPs */
   for (const x of 拆IP(cfg.yx)) addrs.push(x);
+  /* Worker domain as fallback (last resort) */
+  addrs.push(host);
+
   const seen = new Set();
-  const hosts = addrs.filter((h) => { if (!h || seen.has(h)) return false; seen.add(h); return true; }).slice(0, 4);
+  const addrsUnique = addrs.filter((h) => { if (!h || seen.has(h)) return false; seen.add(h); return true; }).slice(0, 5);
 
   const nodes = [];
   const sub = cfg.subname || 'NEXUS';
-  for (const addr of hosts) {
+  for (const addr of addrsUnique) {
     const a = 拆址(addr);
     for (const t of transports) {
       for (const pt of ports) {
         for (const p of protos) {
           if (nodes.length >= 14) break;
+          /* Node name shows zone, not IP */
           const nm = `${sub} | ${p.toUpperCase()} | ${t} | ${a.name || info.zone}`;
           let line = '';
-          if (p === 'vless') line = 行VLESS(uuid, a.host, pt, sni, fp, t, path, host, frag, flow);
-          else if (p === 'trojan') line = 行TRJ(uuid, a.host, pt, sni, fp, t, path, host);
-          else line = 行SS(uuid, a.host, pt, sni, fp, t, path, host);
-          nodes.push({ n: nm, line, p, t, a: a.host, port: pt, sni, fp, path, pwd: uuid, m: 'aes-128-gcm' });
+          if (p === 'vless') line = 行VLESS(uuid, a.host, pt, sni, fp, t, path, host, frag, flow, cfg);
+          else if (p === 'trojan') line = 行TRJ(uuid, a.host, pt, sni, fp, t, path, host, cfg);
+          else line = 行SS(uuid, a.host, pt, sni, fp, t, path, host, cfg);
+          nodes.push({
+            n: nm, line, p, t,
+            a: a.host,        /* CF IP — actual server address */
+            host: host,        /* Worker domain — for SNI/Host header */
+            port: pt, sni, fp, path,
+            pwd: uuid, m: 'aes-128-gcm',
+            ech: cfg.ech === 'yes',
+            frag: cfg.fragment === 'yes',
+          });
         }
       }
     }
@@ -454,25 +483,28 @@ function 節點集(cfg, info, host) {
 }
 
 /* ─── Link Builders ─── */
-function 行VLESS(uuid, addr, port, sni, fp, t, path, host, frag, flow) {
+/* addr = CF IP (server), host = worker domain (SNI/Host) */
+function 行VLESS(uuid, addr, port, sni, fp, t, path, host, frag, flow, cfg) {
   let s = `vless://${uuid}@${addr}:${port}?encryption=none&security=tls&sni=${編(sni)}&fp=${編(fp)}&type=${t}`;
   if (flow) s += `&flow=${編(flow)}`;
   if (t === 'ws') s += `&host=${編(host)}&path=${編(path)}`;
   else if (t === 'grpc') s += `&serviceName=${編(String(path).replace(/^\//, ''))}`;
   else s += `&host=${編(host)}&path=${編(path)}&mode=auto`;
   if (frag) s += '&fragment=off';
+  if (cfg && cfg.ech === 'yes') s += '&ech=1';
   return s;
 }
 
-function 行TRJ(pwd, addr, port, sni, fp, t, path, host) {
+function 行TRJ(pwd, addr, port, sni, fp, t, path, host, cfg) {
   let s = `trojan://${pwd}@${addr}:${port}?security=tls&sni=${編(sni)}&fp=${編(fp)}&type=${t}`;
   if (t === 'ws') s += `&host=${編(host)}&path=${編(path)}`;
   else if (t === 'grpc') s += `&serviceName=${編(String(path).replace(/^\//, ''))}`;
   else s += `&host=${編(host)}&path=${編(path)}&mode=auto`;
+  if (cfg && cfg.ech === 'yes') s += '&ech=1';
   return s;
 }
 
-function 行SS(pwd, addr, port, sni, fp, t, path, host) {
+function 行SS(pwd, addr, port, sni, fp, t, path, host, cfg) {
   const m = 'aes-128-gcm';
   const core = B64(文本(`${m}:${pwd}`));
   let s = `ss://${core}@${addr}:${port}`;
@@ -488,20 +520,20 @@ function 行SS(pwd, addr, port, sni, fp, t, path, host) {
    ══════════════════════════════════════════════════════════════════════════ */
 /* ══════════════════════════════════════════════════════════════════════════════
    ▓ Output Formatters — base64 / Clash / sing-box
+   ▓ KEY FIX: Host header = worker domain (x.host), not CF IP (x.a)
    ══════════════════════════════════════════════════════════════════════════════ */
 function 樣式B64(nodes) {
   return btoa(nodes.map((x) => x.line).join('\n'));
 }
 
 function 樣式Clash(nodes, cfg) {
-  const y = (k, v) => `${k}: ${v}`;
   const q = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
   const lines = ['proxies:'];
   const names = [];
   for (const x of nodes) {
     lines.push('  - name: ' + q(x.n));
     lines.push('    type: ' + x.p);
-    lines.push('    server: ' + q(x.a));
+    lines.push('    server: ' + q(x.a));        /* CF IP */
     lines.push('    port: ' + x.port);
     if (x.p === 'vless' || x.p === 'trojan') {
       lines.push('    password: ' + q(x.pwd));
@@ -512,14 +544,14 @@ function 樣式Clash(nodes, cfg) {
     }
     lines.push('    tls: true');
     lines.push('    udp: true');
-    if (x.sni) lines.push('    servername: ' + q(x.sni));
+    if (x.sni) lines.push('    servername: ' + q(x.sni));  /* worker domain as SNI */
     if (x.fp) lines.push('    client-fingerprint: ' + q(x.fp));
     if (x.t === 'ws') {
       lines.push('    network: ws');
       lines.push('    ws-opts:');
       lines.push('      path: ' + q(x.path));
       lines.push('      headers:');
-      lines.push('        Host: ' + q(x.a));
+      lines.push('        Host: ' + q(x.host || x.a));  /* worker domain as Host */
     } else if (x.t === 'grpc') {
       lines.push('    network: grpc');
       lines.push('    grpc-opts:');
@@ -529,6 +561,8 @@ function 樣式Clash(nodes, cfg) {
       lines.push('    xhttp-opts:');
       lines.push('      path: ' + q(x.path));
       lines.push('      mode: auto');
+      lines.push('      headers:');
+      lines.push('        Host: ' + q(x.host || x.a));
     }
     names.push(x.n);
   }
@@ -559,7 +593,7 @@ function 樣式Sing(nodes, cfg) {
     const ob = {
       tag: x.n,
       type: x.p === 'ss' ? 'shadowsocks' : x.p,
-      server: x.a,
+      server: x.a,            /* CF IP */
       server_port: x.port,
     };
     if (x.p === 'vless') {
@@ -571,20 +605,60 @@ function 樣式Sing(nodes, cfg) {
       ob.method = x.m;
       ob.password = x.pwd;
     }
-    ob.tls = { enabled: true, server_name: x.sni, fingerprint: x.fp };
-    if (x.t === 'ws') {
-      ob.transport = { type: 'ws', path: x.path, headers: { Host: x.a } };
-    } else if (x.t === 'grpc') {
-      ob.transport = { type: 'grpc', service_name: String(x.path).replace(/^\//, '') };
-    } else if (x.t === 'xhttp') {
-      ob.transport = { type: 'http', path: x.path, mode: 'auto' };
+
+    /* TLS settings — matching working config format */
+    ob.tls = {
+      enabled: true,
+      server_name: x.sni,    /* worker domain as SNI */
+      fingerprint: x.fp,
+      allow_insecure: true,   /* allow self-signed */
+    };
+
+    /* ECH support */
+    if (x.ech) {
+      ob.tls.ech = { enabled: true };
     }
+
+    /* Transport settings */
+    if (x.t === 'ws') {
+      ob.transport = {
+        type: 'ws',
+        path: x.path,
+        headers: { Host: x.host || x.a },  /* worker domain as Host */
+      };
+    } else if (x.t === 'grpc') {
+      ob.transport = {
+        type: 'grpc',
+        service_name: String(x.path).replace(/^\//, ''),
+      };
+    } else if (x.t === 'xhttp') {
+      ob.transport = {
+        type: 'http',
+        path: x.path,
+        mode: 'auto',
+        headers: { Host: x.host || x.a },
+      };
+    }
+
+    /* Fragmentation support */
+    if (x.frag) {
+      ob.stream_settings = ob.stream_settings || {};
+      ob.stream_settings.sockopt = {
+        tcp_segmentation: true,
+        tls_record_fragmentation: true,
+      };
+    }
+
     out.outbounds.push(ob);
     names.push(x.n);
   }
   out.outbounds.push({ type: 'direct', tag: 'direct' });
   out.outbounds.push({ type: 'block', tag: 'block' });
-  out.outbounds.push({ type: 'selector', tag: cfg.subname || 'NEXUS', outbounds: [...names, 'direct'] });
+  out.outbounds.push({
+    type: 'selector',
+    tag: cfg.subname || 'NEXUS',
+    outbounds: [...names, 'direct'],
+  });
   return JSON.stringify(out, null, 2);
 }
 
