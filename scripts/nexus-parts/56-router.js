@@ -58,7 +58,7 @@ async function 請求(request, env) {
     const k = 觸('k', url, 頭);
     if (鑰 && !開(鑰, k)) return 誤('forbidden', 403);
     if (cfg.disabled) return 誤('disabled', 403);
-    const r = 節點集(cfg, info, host);
+    const r = await 節點集(cfg, info, host, env);
     const links = {
       base64: 樣式B64(r.nodes),
       plain: r.nodes.map((x) => x.line).join('\n'),
@@ -140,7 +140,7 @@ async function 給Sub(request, env, cfg, info, host) {
   const url = new URL(request.url);
   const target = (url.searchParams.get('target') || url.searchParams.get('format') || '').toLowerCase();
   const ua = String(request.headers.get('user-agent') || '').toLowerCase();
-  const r = 節點集(cfg, info, host);
+  const r = await 節點集(cfg, info, host, env);
   let ct = 'text/plain; charset=utf-8';
   let body = '';
   let f = target;

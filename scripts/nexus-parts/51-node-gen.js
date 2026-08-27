@@ -1,19 +1,9 @@
 /* ══════════════════════════════════════════════════════════════════════════════
    ▓ Node Generation & Link Builders
-   ▓ KEY FIX: Server address = CF IP, SNI = worker domain
+   ▓ Uses dynamic CF IPs from DNS resolver, not hardcoded
    ══════════════════════════════════════════════════════════════════════════════ */
 
-/* Known Cloudflare edge IPs that work for Worker proxying */
-const CF_IPS = [
-  '188.164.248.146', '188.164.249.146', '188.164.248.150',
-  '188.164.249.150', '188.164.248.154', '188.164.249.154',
-  '188.164.248.158', '188.164.249.158', '188.164.250.146',
-  '188.164.250.150', '188.164.250.154', '188.164.250.158',
-  '104.16.0.0', '104.16.1.0', '104.16.2.0', '104.16.3.0',
-  '172.67.0.0', '172.67.1.0', '172.67.2.0', '172.67.3.0',
-];
-
-function 節點集(cfg, info, host) {
+async function 節點集(cfg, info, host, env) {
   const prof = 檔案(info.cc);
   const protos = 協議集(cfg);
   const transports = (Array.isArray(cfg.transports) && cfg.transports.length ? cfg.transports : prof.transports).slice(0, 3);
@@ -24,18 +14,16 @@ function 節點集(cfg, info, host) {
   const flow = cfg.flow || '';
   const uuid = info.key || cfg.uuid || 'none';
   const frag = cfg.fragment === 'yes' || prof.frag;
-  const ech = cfg.ech === 'yes';
 
-  /* ── Build address list: CF IPs first, then proxyIP, then worker domain ── */
+  /* ── Resolve CF IPs dynamically ── */
+  const cfIPs = await resolveCFIPs(host, env);
+
+  /* ── Build address list: resolved CF IPs first, then proxyIP, then worker domain ── */
   const addrs = [];
-  /* Use CF IPs as primary server addresses */
-  const ipCount = Math.min(CF_IPS.length, 3);
-  for (let i = 0; i < ipCount; i++) addrs.push(CF_IPS[i]);
-  /* Add proxyIP if set */
+  const ipCount = Math.min(cfIPs.length, 4);
+  for (let i = 0; i < ipCount; i++) addrs.push(cfIPs[i]);
   if (cfg.ena === 'yes') for (const x of 拆IP(cfg.p)) addrs.push(x);
-  /* Add custom IPs */
   for (const x of 拆IP(cfg.yx)) addrs.push(x);
-  /* Worker domain as fallback (last resort) */
   addrs.push(host);
 
   const seen = new Set();
@@ -49,7 +37,6 @@ function 節點集(cfg, info, host) {
       for (const pt of ports) {
         for (const p of protos) {
           if (nodes.length >= 14) break;
-          /* Node name shows zone, not IP */
           const nm = `${sub} | ${p.toUpperCase()} | ${t} | ${a.name || info.zone}`;
           let line = '';
           if (p === 'vless') line = 行VLESS(uuid, a.host, pt, sni, fp, t, path, host, frag, flow, cfg);
@@ -57,8 +44,8 @@ function 節點集(cfg, info, host) {
           else line = 行SS(uuid, a.host, pt, sni, fp, t, path, host, cfg);
           nodes.push({
             n: nm, line, p, t,
-            a: a.host,        /* CF IP — actual server address */
-            host: host,        /* Worker domain — for SNI/Host header */
+            a: a.host,        /* Resolved CF IP */
+            host: host,        /* Worker domain — SNI/Host */
             port: pt, sni, fp, path,
             pwd: uuid, m: 'aes-128-gcm',
             ech: cfg.ech === 'yes',
@@ -72,7 +59,6 @@ function 節點集(cfg, info, host) {
 }
 
 /* ─── Link Builders ─── */
-/* addr = CF IP (server), host = worker domain (SNI/Host) */
 function 行VLESS(uuid, addr, port, sni, fp, t, path, host, frag, flow, cfg) {
   let s = `vless://${uuid}@${addr}:${port}?encryption=none&security=tls&sni=${編(sni)}&fp=${編(fp)}&type=${t}`;
   if (flow) s += `&flow=${編(flow)}`;

@@ -20,6 +20,7 @@ const parts = [
   '02-crypto.js',
   '03-kv.js',
   '04-datacenters.js',
+  '45-ip-resolver.js',
   '50-smart-engine.js',
   '51-node-gen.js',
   '52-outputs.js',

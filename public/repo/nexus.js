@@ -361,6 +361,109 @@ function 運算子(cfg, cc) {
 
 
 /* ══════════════════════════════════════════════════════════════════════════
+   ▓ 45-ip-resolver.js
+   ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════════
+   ▓ Dynamic Cloudflare IP Resolver
+   ▓ Resolves worker domain via DNS-over-HTTPS, caches in KV (1h TTL)
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* Fallback IPs — used only if DNS resolution fails */
+const CF_FALLBACK = [
+  '188.164.248.146', '188.164.249.146', '188.164.248.150',
+  '188.164.249.150', '188.164.248.154', '188.164.249.154',
+  '188.164.250.146', '188.164.250.150', '188.164.250.154',
+  '104.16.0.1', '104.16.1.1', '104.16.2.1',
+];
+
+const CF_IP_CACHE_KEY = 'cf_ips';
+const CF_IP_TTL = 3600; /* 1 hour in seconds */
+
+/**
+ * Resolve CF edge IPs for the worker's own domain.
+ * Uses Cloudflare DNS-over-HTTPS (1.1.1.1).
+ * Results cached in KV for 1 hour.
+ */
+async function resolveCFIPs(host, env) {
+  /* 1. Try KV cache first */
+  try {
+    const kv = KV(env);
+    if (kv) {
+      const raw = await kv.get(CF_IP_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached.ts && (Date.now() - cached.ts) < CF_IP_TTL * 1000 && cached.ips && cached.ips.length > 0) {
+          return cached.ips;
+        }
+      }
+    }
+  } catch {}
+
+  /* 2. Resolve via DNS-over-HTTPS */
+  const ips = [];
+  try {
+    const url = new URL('https://1.1.1.1/dns-query');
+    url.searchParams.set('name', host);
+    url.searchParams.set('type', 'A');
+    const resp = await fetch(url.toString(), {
+      headers: {
+        'accept': 'application/dns-json',
+      },
+    });
+    if (resp.ok) {
+      const dns = await resp.json();
+      if (dns.Answer) {
+        for (const ans of dns.Answer) {
+          if (ans.type === 1 && ans.data) {
+            ips.push(ans.data);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  /* 3. Also try resolving common CF domains to get more IPs */
+  const probeDomains = ['www.cloudflare.com', 'www.apple.com', 'www.microsoft.com'];
+  for (const domain of probeDomains) {
+    if (ips.length >= 6) break;
+    try {
+      const url2 = new URL('https://1.1.1.1/dns-query');
+      url2.searchParams.set('name', domain);
+      url2.searchParams.set('type', 'A');
+      const resp2 = await fetch(url2.toString(), {
+        headers: { 'accept': 'application/dns-json' },
+      });
+      if (resp2.ok) {
+        const dns2 = await resp2.json();
+        if (dns2.Answer) {
+          for (const ans of dns2.Answer) {
+            if (ans.type === 1 && ans.data && !ips.includes(ans.data)) {
+              ips.push(ans.data);
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  /* 4. If DNS failed, use fallback */
+  const result = ips.length > 0 ? ips : CF_FALLBACK;
+
+  /* 5. Cache in KV */
+  try {
+    const kv = KV(env);
+    if (kv) {
+      await kv.put(CF_IP_CACHE_KEY, JSON.stringify({ ips: result, ts: Date.now() }), {
+        expirationTtl: CF_IP_TTL + 300, /* KV TTL slightly longer than cache TTL */
+      });
+    }
+  } catch {}
+
+  return result;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
    ▓ 50-smart-engine.js
    ══════════════════════════════════════════════════════════════════════════ */
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -411,20 +514,10 @@ function 協議集(cfg) {
    ══════════════════════════════════════════════════════════════════════════ */
 /* ══════════════════════════════════════════════════════════════════════════════
    ▓ Node Generation & Link Builders
-   ▓ KEY FIX: Server address = CF IP, SNI = worker domain
+   ▓ Uses dynamic CF IPs from DNS resolver, not hardcoded
    ══════════════════════════════════════════════════════════════════════════════ */
 
-/* Known Cloudflare edge IPs that work for Worker proxying */
-const CF_IPS = [
-  '188.164.248.146', '188.164.249.146', '188.164.248.150',
-  '188.164.249.150', '188.164.248.154', '188.164.249.154',
-  '188.164.248.158', '188.164.249.158', '188.164.250.146',
-  '188.164.250.150', '188.164.250.154', '188.164.250.158',
-  '104.16.0.0', '104.16.1.0', '104.16.2.0', '104.16.3.0',
-  '172.67.0.0', '172.67.1.0', '172.67.2.0', '172.67.3.0',
-];
-
-function 節點集(cfg, info, host) {
+async function 節點集(cfg, info, host, env) {
   const prof = 檔案(info.cc);
   const protos = 協議集(cfg);
   const transports = (Array.isArray(cfg.transports) && cfg.transports.length ? cfg.transports : prof.transports).slice(0, 3);
@@ -435,18 +528,16 @@ function 節點集(cfg, info, host) {
   const flow = cfg.flow || '';
   const uuid = info.key || cfg.uuid || 'none';
   const frag = cfg.fragment === 'yes' || prof.frag;
-  const ech = cfg.ech === 'yes';
 
-  /* ── Build address list: CF IPs first, then proxyIP, then worker domain ── */
+  /* ── Resolve CF IPs dynamically ── */
+  const cfIPs = await resolveCFIPs(host, env);
+
+  /* ── Build address list: resolved CF IPs first, then proxyIP, then worker domain ── */
   const addrs = [];
-  /* Use CF IPs as primary server addresses */
-  const ipCount = Math.min(CF_IPS.length, 3);
-  for (let i = 0; i < ipCount; i++) addrs.push(CF_IPS[i]);
-  /* Add proxyIP if set */
+  const ipCount = Math.min(cfIPs.length, 4);
+  for (let i = 0; i < ipCount; i++) addrs.push(cfIPs[i]);
   if (cfg.ena === 'yes') for (const x of 拆IP(cfg.p)) addrs.push(x);
-  /* Add custom IPs */
   for (const x of 拆IP(cfg.yx)) addrs.push(x);
-  /* Worker domain as fallback (last resort) */
   addrs.push(host);
 
   const seen = new Set();
@@ -460,7 +551,6 @@ function 節點集(cfg, info, host) {
       for (const pt of ports) {
         for (const p of protos) {
           if (nodes.length >= 14) break;
-          /* Node name shows zone, not IP */
           const nm = `${sub} | ${p.toUpperCase()} | ${t} | ${a.name || info.zone}`;
           let line = '';
           if (p === 'vless') line = 行VLESS(uuid, a.host, pt, sni, fp, t, path, host, frag, flow, cfg);
@@ -468,8 +558,8 @@ function 節點集(cfg, info, host) {
           else line = 行SS(uuid, a.host, pt, sni, fp, t, path, host, cfg);
           nodes.push({
             n: nm, line, p, t,
-            a: a.host,        /* CF IP — actual server address */
-            host: host,        /* Worker domain — for SNI/Host header */
+            a: a.host,        /* Resolved CF IP */
+            host: host,        /* Worker domain — SNI/Host */
             port: pt, sni, fp, path,
             pwd: uuid, m: 'aes-128-gcm',
             ech: cfg.ech === 'yes',
@@ -483,7 +573,6 @@ function 節點集(cfg, info, host) {
 }
 
 /* ─── Link Builders ─── */
-/* addr = CF IP (server), host = worker domain (SNI/Host) */
 function 行VLESS(uuid, addr, port, sni, fp, t, path, host, frag, flow, cfg) {
   let s = `vless://${uuid}@${addr}:${port}?encryption=none&security=tls&sni=${編(sni)}&fp=${編(fp)}&type=${t}`;
   if (flow) s += `&flow=${編(flow)}`;
@@ -896,7 +985,7 @@ async function 請求(request, env) {
     const k = 觸('k', url, 頭);
     if (鑰 && !開(鑰, k)) return 誤('forbidden', 403);
     if (cfg.disabled) return 誤('disabled', 403);
-    const r = 節點集(cfg, info, host);
+    const r = await 節點集(cfg, info, host, env);
     const links = {
       base64: 樣式B64(r.nodes),
       plain: r.nodes.map((x) => x.line).join('\n'),
@@ -978,7 +1067,7 @@ async function 給Sub(request, env, cfg, info, host) {
   const url = new URL(request.url);
   const target = (url.searchParams.get('target') || url.searchParams.get('format') || '').toLowerCase();
   const ua = String(request.headers.get('user-agent') || '').toLowerCase();
-  const r = 節點集(cfg, info, host);
+  const r = await 節點集(cfg, info, host, env);
   let ct = 'text/plain; charset=utf-8';
   let body = '';
   let f = target;
