@@ -941,10 +941,6 @@ export default {
   },
 };
 
-
-/* ══════════════════════════════════════════════════════════════════════════
-   ▓ 60-page-template.js
-   ══════════════════════════════════════════════════════════════════════════ */
 /* ══════════════════════════════════════════════════════════════════════════════
    ▓ HTML Page Template — Complete CSS + HTML + Client-side JavaScript
    ▓ This is the core UI: boot screen, home, config, live map, settings, about
@@ -1449,15 +1445,13 @@ field textarea { min-height: 60px; resize: vertical; }
 
 <!-- CLIENT_JS_BELOW -->
 
-
-/* ══════════════════════════════════════════════════════════════════════════
-   ▓ 99-footer.js
-   ══════════════════════════════════════════════════════════════════════════ */
-/* ══════════════════════════════════════════════════════════════════════════════
-   ▓ Client-Side JavaScript — embedded in HTML template
-   ▓ CRITICAL: boot() is called FIRST. All other init is wrapped in try/catch.
-   ══════════════════════════════════════════════════════════════════════════════ */
 <script>
+/*
+ * NEXUS Client-Side JavaScript
+ * ─────────────────────────────
+ * CRITICAL: boot() is called FIRST. All other init is wrapped in try/catch.
+ * Every DOM access uses null-safe helpers.
+ */
 (function(){
 'use strict';
 
@@ -1634,11 +1628,9 @@ function renderNodes() {
   var d = STATE.nodes;
   if (!d || !d.nodes) return;
 
-  /* subscription URL */
   var subUrl = $('subUrl');
   if (subUrl) subUrl.textContent = d.links.sub || '—';
 
-  /* format buttons */
   var fmtBtns = $('fmtBtns');
   if (fmtBtns) {
     var fmts = ['base64', 'clash', 'singbox', 'plain'];
@@ -1656,7 +1648,6 @@ function renderNodes() {
     }
   }
 
-  /* client links */
   var cl = $('clientLinks');
   if (cl) {
     cl.innerHTML =
@@ -1666,7 +1657,6 @@ function renderNodes() {
       '<a href="https://github.com/nickkuk/stash/releases" target="_blank">🍎 Stash (iOS)</a>';
   }
 
-  /* QR code */
   var qr = $('qrBox');
   if (qr) {
     var subLink = d.links.sub || '';
@@ -1677,7 +1667,6 @@ function renderNodes() {
       '<div>Nodes: <b style="color:var(--ok)">' + d.nodes.length + '</b></div></div>';
   }
 
-  /* node grid */
   var grid = $('nodeGrid');
   if (!grid) return;
   var nodes = d.nodes;
@@ -1697,7 +1686,6 @@ function renderNodes() {
   }
   grid.innerHTML = html;
 
-  /* copy buttons */
   var copyBtns = grid.querySelectorAll('button[data-line]');
   for (var j = 0; j < copyBtns.length; j++) {
     copyBtns[j].onclick = function() {
@@ -1707,7 +1695,6 @@ function renderNodes() {
     };
   }
 
-  /* sub URL copy */
   var copySubBtn = $('copySubBtn');
   if (copySubBtn) {
     copySubBtn.onclick = function() {

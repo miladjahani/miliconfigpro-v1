@@ -36,9 +36,13 @@ for (const p of parts) {
   const fp = join(PARTS_DIR, p);
   try {
     const content = readFileSync(fp, 'utf8');
-    out += '\n/* ══════════════════════════════════════════════════════════════════════════\n';
-    out += `   ▓ ${p}\n`;
-    out += '   ══════════════════════════════════════════════════════════════════════════ */\n';
+    // Build comment: only inside JS blocks (not in HTML template area)
+    const isInsideTemplate = p.startsWith('60-') || p.startsWith('99-');
+    if (!isInsideTemplate) {
+      out += '\n/* ══════════════════════════════════════════════════════════════════════════\n';
+      out += `   ▓ ${p}\n`;
+      out += '   ══════════════════════════════════════════════════════════════════════════ */\n';
+    }
     out += content;
     out += '\n';
     console.log(`  ✓ ${p} (${content.split('\n').length} lines)`);
