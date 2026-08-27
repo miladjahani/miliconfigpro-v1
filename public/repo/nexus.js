@@ -5,6 +5,9 @@
    ⬢  bindings:  KV = "C" (اختیاری)  ·  vars: u / d / p (اختیاری)
    ⬢  KV key "c" = کانفیگ JSON (سازگار با پنل میلی‌کانفیگ)
    ═══════════════════════════════════════════════════════════════════════════ */
+let connect;
+try { ({ connect } = await import('cloudflare:sockets')); } catch { connect = null; }
+
 'use strict';
 
 /* ───────────────────────────── ۰۱ · خزانهٔ رشته‌ها ───────────────────────── */
@@ -741,13 +744,19 @@ pre.out.on{display:block}
         <field><legend id="st_ir"></legend><div id="fldIr"></div></field>
         <field><legend id="st_danger"></legend>
           <label id="lblDis"></label></field>
-      </form>
-      <div class="actions">
-        <button class="btn prim" id="saveCfg"></button>
-        <button class="btn ghost" id="smartBtn"></button>
+      
+      <div class="card" style="margin-top:16px;border-color:rgba(167,139,250,.3)">
+        <h2>👤 <span style="color:var(--vi)">پروفایل کاربر</span></h2>
+        <p style="font-size:12px;color:var(--mut);margin-top:6px">تنظیمات شخصی خود را ذخیره کنید — برای هر کاربر متفاوت خواهد بود</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px">
+          <field><legend>نام نمایشی</legend><input type="text" id="f_uname" dir="auto" placeholder="مثلاً ali"></field>
+          <field><legend>ترانSPORT ترجیحی</legend><select id="f_utr"><option value="">خودکار</option><option value="ws">WebSocket</option><option value="grpc">gRPC</option><option value="xhttp">XHTTP</option></select></field>
+          <field><legend>SNI دلخواه</legend><input type="text" id="f_usni" dir="ltr" placeholder="sni.example.com"></field>
+          <field><legend>مسیر دلخواه</legend><input type="text" id="f_upath" dir="ltr" placeholder="/?ed=2560"></field>
+        </div>
+        <div class="actions"><button class="btn prim" id="saveUser" style="background:linear-gradient(90deg,var(--vi),#c084fc)">ذخیره پروفایل</button></div>
       </div>
-    </div>
-  </section>
+
 
   <section class="panel" id="p-about">
     <div class="card">
@@ -1092,11 +1101,11 @@ function collect(){
   c.ev = protoOn('vless') ? 'yes' : 'no';
   c.et = protoOn('trojan') ? 'yes' : 'no';
   c.ex = protoOn('ss') ? 'yes' : 'no';
-  c.tls = $('swTls').classList.contains('on') ? 'yes' : 'no';
-  c.fragment = $('swFrag').classList.contains('on') ? 'yes' : 'no';
-  c.ech = $('swEch').classList.contains('on') ? 'yes' : 'no';
-  c.disabled = $('swDis').classList.contains('on');
-  c.fp = $('f_fp').value;
+  var $_swTls = $('swTls'); c.tls = ($_swTls && $_swTls.classList && $_swTls.classList.contains('on')) ? 'yes' : 'no';
+  var $_swFrag = $('swFrag'); c.fragment = ($_swFrag && $_swFrag.classList && $_swFrag.classList.contains('on')) ? 'yes' : 'no';
+  var $_swEch = $('swEch'); c.ech = ($_swEch && $_swEch.classList && $_swEch.classList.contains('on')) ? 'yes' : 'no';
+  var $_swDis = $('swDis'); c.disabled = $_swDis && $_swDis.classList && $_swDis.classList.contains('on');
+  var $_fp = $('f_fp'); c.fp = $_fp ? $_fp.value : (c.fp || 'chrome');
   c.sni = $('f_sni').value.trim();
   c.path = $('f_path').value.trim() || '/?ed=2560';
   c.p = $('f_p').value.trim();
@@ -1187,6 +1196,31 @@ function stars(){
   addEventListener('resize', function(){ cv.width = innerWidth; cv.height = innerHeight; });
 }
 
+
+/* ── user profile ── */
+var USER_PROFILE = {};
+function loadUserProfile(){
+  var uid = new URLSearchParams(location.search).get('uid') || '';
+  fetch('/api/user-config?k=' + encodeURIComponent(KEY) + '&uid=' + encodeURIComponent(uid))
+    .then(function(r){return r.json()}).then(function(d){
+      if(d&&d.ok){ USER_PROFILE=d.ucfg||{}; renderUserProfile(); }
+    }).catch(function(){});
+}
+function renderUserProfile(){
+  var u=USER_PROFILE;
+  if() .value=u.name||'';
+  if() .value=u.transport||'';
+  if() .value=u.sni||'';
+  if() .value=u.path||'';
+}
+function saveUserProfile(){
+  var uid = new URLSearchParams(location.search).get('uid') || '';
+  var body={name:(||{}).value||'',transport:(||{}).value||'',sni:(||{}).value||'',path:(||{}).value||''};
+  fetch('/api/user-config?k='+encodeURIComponent(KEY)+'&uid='+encodeURIComponent(uid),{
+    method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)
+  }).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){USER_PROFILE=d.ucfg;tx('پروفایل ذخیره شد ✓');}else tx('خطا');}).catch(function(){tx('خطا');});
+}
+
 /* ── init ── */
 function init(){
   $('chipColo').textContent = VI.colo || '—';
@@ -1218,6 +1252,8 @@ function init(){
       });
     }).then(function(){ location.reload(); });
   };
+  var saveUserBtn=\; if(saveUserBtn) saveUserBtn.onclick=saveUserProfile;
+  loadUserProfile();
   lock();
   clock();
   stars();
@@ -1235,6 +1271,107 @@ else init();
 </script>
 </body>
 </html>`;
+}
+
+
+/* ───────────────────────────── ۱۰·۱ · موتور پروکسی WebSocket ────────────── */
+function UUID2hex(bytes) {
+  const h = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20,32);
+}
+function parseVLESS(buf, uuid) {
+  if (buf.length < 18 || buf[0] !== 0) return null;
+  const cid = UUID2hex(buf.slice(1,17));
+  if (cid !== uuid) return null;
+  const cmd = buf[17];
+  const port = (buf[18]<<8)|buf[19];
+  const atyp = buf[20];
+  let addr='', hdrLen=21;
+  if (atyp===1) { addr=[buf[21],buf[22],buf[23],buf[24]].join('.'); hdrLen=25; }
+  else if (atyp===2) { const dl=buf[21]; addr=new TextDecoder().decode(buf.slice(22,22+dl)); hdrLen=22+dl; }
+  else if (atyp===3) { const p=[]; for(let i=0;i<8;i++) p.push(((buf[21+i*2]<<8)|buf[22+i*2]).toString(16)); addr=p.join(':'); hdrLen=37; }
+  return { cmd, addr, port, hdrLen, remaining: buf.slice(hdrLen) };
+}
+async function sha224hex(str) {
+  const buf = await crypto.subtle.digest('SHA-224', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+function parseTrojan(buf, uuid) {
+  const txt = new TextDecoder().decode(buf);
+  const CRLF_HASH = '\r\n';
+  if (!buf.length || buf[0] !== 0x0D || buf[1] !== 0x0A) return null;
+  let end = 2;
+  while (end < buf.length - 1 && !(buf[end] === 0x0D && buf[end+1] === 0x0A)) end++;
+  if (end >= buf.length - 1) return null;
+  const hex56 = new TextDecoder().decode(buf.slice(2, end));
+  if (hex56.length !== 56) return null;
+  return { hex56, hdrEnd: end + 2 };
+}
+async function 代理(request, env, cfg) {
+  const uuid = cfg.uuid || env.u || '';
+  if (!uuid) return new Response('no uuid', { status: 403 });
+  if (!connect) return new Response('proxy not available', { status: 503 });
+  const pair = new WebSocketPair();
+  const [client, server] = [pair[0], pair[1]];
+  server.accept();
+  let ready = false;
+  server.addEventListener('message', async (ev) => {
+    if (ready) return;
+    ready = true;
+    const buf = new Uint8Array(ev.data);
+    /* ── VLESS ── */
+    if (buf.length > 0 && buf[0] === 0) {
+      const vless = parseVLESS(buf, uuid);
+      if (!vless || vless.cmd !== 1) { try { server.close(1008, 'bad'); } catch {} return; }
+      const proxyIP = cfg.p || '';
+      const target = proxyIP || vless.addr;
+      const targetPort = vless.port || 443;
+      try {
+        const tcp = connect({ hostname: target, port: targetPort });
+        server.send(new Uint8Array([0, 0]));
+        const writer = tcp.writable.getWriter();
+        if (vless.remaining.length > 0) await writer.write(vless.remaining);
+        server.addEventListener('message', async (e) => { try { await writer.write(new Uint8Array(e.data)); } catch {} });
+        const reader = tcp.readable.getReader();
+        (async () => { try { for (;;) { const { done, value } = await reader.read(); if (done) break; server.send(value); } } catch {} try { server.close(); } catch {} })();
+        tcp.closed.then(() => { try { server.close(); } catch {} }).catch(() => { try { server.close(); } catch {} });
+      } catch { try { server.close(1011, 'connect failed'); } catch {} }
+      return;
+    }
+    /* ── Trojan ── */
+    const trojan = parseTrojan(buf, uuid);
+    if (trojan) {
+      const expected = await sha224hex(uuid);
+      if (trojan.hex56 !== expected) { try { server.close(1008, 'auth'); } catch {} return; }
+      const afterHash = buf.slice(trojan.hdrEnd);
+      if (afterHash.length < 6) { try { server.close(1008, 'short'); } catch {} return; }
+      const cmd = afterHash[0];
+      if (cmd !== 1) { try { server.close(1008, 'not-tcp'); } catch {} return; }
+      const atyp = afterHash[1];
+      let addr = '', addrLen = 0;
+      if (atyp === 1) { addr = [afterHash[2], afterHash[3], afterHash[4], afterHash[5]].join('.'); addrLen = 4; }
+      else if (atyp === 2) { const dl = afterHash[2]; addr = new TextDecoder().decode(afterHash.slice(3, 3+dl)); addrLen = dl + 1; }
+      else if (atyp === 3) { const p = []; for (let i = 0; i < 8; i++) p.push(((afterHash[2+i*2]<<8)|afterHash[3+i*2]).toString(16)); addr = p.join(':'); addrLen = 16; }
+      const port = (afterHash[2+addrLen] << 8) | afterHash[3+addrLen];
+      const dataStart = trojan.hdrEnd + 4 + addrLen;
+      const remaining = buf.slice(dataStart);
+      const proxyIP = cfg.p || '';
+      const target = proxyIP || addr;
+      try {
+        const tcp = connect({ hostname: target, port: port || 443 });
+        server.send(new Uint8Array([1, 0, 0])); // trojan response header
+        const writer = tcp.writable.getWriter();
+        if (remaining.length > 0) await writer.write(remaining);
+        server.addEventListener('message', async (e) => { try { await writer.write(new Uint8Array(e.data)); } catch {} });
+        const reader = tcp.readable.getReader();
+        (async () => { try { for (;;) { const { done, value } = await reader.read(); if (done) break; server.send(value); } } catch {} try { server.close(); } catch {} })();
+        tcp.closed.then(() => { try { server.close(); } catch {} }).catch(() => { try { server.close(); } catch {} });
+      } catch { try { server.close(1011, 'connect failed'); } catch {} }
+      return;
+    }
+    try { server.close(1008, 'unsupported'); } catch {}
+  });
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 /* ───────────────────────────── ۱۱ · مسیریاب ─────────────────────────────── */
@@ -1263,7 +1400,10 @@ async function 請求(request, env) {
     });
   }
 
-  const info = 訪客(request, cfg);
+  /* ── تشخیص WebSocket proxy ── */
+  if (頭.get("upgrade") === "websocket") { return await 代理(request, env, cfg); }
+
+    const info = 訪客(request, cfg);
 
   /* ── endpoints عمومی ── */
   if (路 === '/healthz' || 路 === '/__health') {
@@ -1324,6 +1464,26 @@ async function 請求(request, env) {
     try { body = await request.json(); } catch { /* ignore */ }
     const k = String(body.key || '').trim();
     return 響({ ok: !鑰 || 密時(鑰, k) });
+  }
+
+
+  if (路 === '/api/user-config') {
+    const k = 觸('k', url, 頭);
+    if (鑰 && !開(鑰, k)) return 誤('forbidden', 403);
+    const uid = url.searchParams.get('uid') || '';
+    const ukey = uid ? 'u_' + uid : 'u_default';
+    if (法 === 'GET') {
+      const raw = await 取(env, ukey);
+      const ucfg = raw ? JSON.parse(raw) : {};
+      return 響({ ok: true, ucfg });
+    }
+    if (法 === 'POST') {
+      let body = {};
+      try { body = await request.json(); } catch {}
+      await 放(env, ukey, JSON.stringify(body));
+      return 響({ ok: true, ucfg: body });
+    }
+    return 誤('method', 405);
   }
 
   if (路.startsWith('/api/')) return 誤('not found', 404);
