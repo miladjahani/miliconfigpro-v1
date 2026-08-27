@@ -1456,6 +1456,7 @@ field textarea { min-height: 60px; resize: vertical; }
 'use strict';
 
 /* ─── Template-injected data ─── */
+var VERSION = '${VERSION}';
 var L = ${label};
 var VI = ${vinfo};
 var POPS = ${popJson};

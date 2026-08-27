@@ -9,6 +9,7 @@
 'use strict';
 
 /* ─── Template-injected data ─── */
+var VERSION = '${VERSION}';
 var L = ${label};
 var VI = ${vinfo};
 var POPS = ${popJson};
