@@ -745,6 +745,9 @@ pre.out.on{display:block}
         <field><legend id="st_danger"></legend>
           <label id="lblDis"></label></field>
       
+      <div class="actions"><button class="btn prim" id="saveCfg"></button></div>
+      </form>
+
       <div class="card" style="margin-top:16px;border-color:rgba(167,139,250,.3)">
         <h2>👤 <span style="color:var(--vi)">پروفایل کاربر</span></h2>
         <p style="font-size:12px;color:var(--mut);margin-top:6px">تنظیمات شخصی خود را ذخیره کنید — برای هر کاربر متفاوت خواهد بود</p>
@@ -756,7 +759,9 @@ pre.out.on{display:block}
         </div>
         <div class="actions"><button class="btn prim" id="saveUser" style="background:linear-gradient(90deg,var(--vi),#c084fc)">ذخیره پروفایل</button></div>
       </div>
+    </div>
 
+  </section>
 
   <section class="panel" id="p-about">
     <div class="card">
@@ -1207,18 +1212,26 @@ function loadUserProfile(){
     }).catch(function(){});
 }
 function renderUserProfile(){
-  var u=USER_PROFILE;
-  if() .value=u.name||'';
-  if() .value=u.transport||'';
-  if() .value=u.sni||'';
-  if() .value=u.path||'';
+  var u=USER_PROFILE||{};
+  var e1=$('f_uname'); if(e1) e1.value=u.name||'';
+  var e2=$('f_utr'); if(e2) e2.value=u.transport||'';
+  var e3=$('f_usni'); if(e3) e3.value=u.sni||'';
+  var e4=$('f_upath'); if(e4) e4.value=u.path||'';
 }
 function saveUserProfile(){
   var uid = new URLSearchParams(location.search).get('uid') || '';
-  var body={name:(||{}).value||'',transport:(||{}).value||'',sni:(||{}).value||'',path:(||{}).value||''};
+  var body={
+    name: ($('f_uname')||{}).value||'',
+    transport: ($('f_utr')||{}).value||'',
+    sni: ($('f_usni')||{}).value||'',
+    path: ($('f_upath')||{}).value||''
+  };
   fetch('/api/user-config?k='+encodeURIComponent(KEY)+'&uid='+encodeURIComponent(uid),{
     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)
-  }).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){USER_PROFILE=d.ucfg;tx('پروفایل ذخیره شد ✓');}else tx('خطا');}).catch(function(){tx('خطا');});
+  }).then(function(r){return r.json()}).then(function(d){
+    if(d&&d.ok){USER_PROFILE=d.ucfg; tx('پروفایل ذخیره شد ✓');}
+    else tx('خطا');
+  }).catch(function(){tx('خطا');});
 }
 
 /* ── init ── */
@@ -1252,7 +1265,7 @@ function init(){
       });
     }).then(function(){ location.reload(); });
   };
-  var saveUserBtn=\; if(saveUserBtn) saveUserBtn.onclick=saveUserProfile;
+  var saveUserBtn = document.getElementById("saveUser"); if(saveUserBtn) saveUserBtn.onclick=saveUserProfile;
   loadUserProfile();
   lock();
   clock();
