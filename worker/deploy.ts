@@ -17,8 +17,9 @@ interface WorkerSourceConfig {
   configFormat: 'edgetunnel' | 'custom'
   uuidEnvName: string
   fallbackUrls?: string[]
-  /** 'kv' (default): edgetunnel-style KV worker. 'zeus': full D1 panel. */
-  kind?: 'kv' | 'zeus'
+  /** 'kv' (default): edgetunnel-style KV worker. 'zeus': full D1 panel.
+   *  'nexus': next-gen KV worker (internal smart panel + live map). */
+  kind?: 'kv' | 'zeus' | 'nexus'
 }
 
 const WORKER_SOURCES: Record<string, WorkerSourceConfig> = {
@@ -51,6 +52,19 @@ const WORKER_SOURCES: Record<string, WorkerSourceConfig> = {
     fallbackUrls: [
       'https://raw.githubusercontent.com/miladjahani/miliconfigpro-v1/main/public/repo/worker-source.js',
     ],
+  },
+  nexus: {
+    url: 'https://raw.githubusercontent.com/miladjahani/miliconfigpro-v1/main/public/repo/nexus.js',
+    label: 'NEXUS — نسل جدید (پنل داخلی + نقشه زنده + مبهم‌سازی)',
+    compat: '2025-01-01',
+    kvBinding: 'C',
+    configKey: 'c',
+    configFormat: 'custom',
+    uuidEnvName: 'u',
+    fallbackUrls: [
+      'https://raw.githubusercontent.com/Alibakhshi-qr/miliconfig-pro/main/public/repo/nexus.js',
+    ],
+    kind: 'nexus',
   },
   miliconfigzeus: {
     url: 'https://raw.githubusercontent.com/miladjahani/miliconfigzeus/main/Source-2.js',
@@ -148,7 +162,9 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
     // the copy bundled with this panel so the default source can never 404.
     const fallbackUrls = [
       ...(sourceConfig.fallbackUrls ?? []),
-      `${job.origin}/repo/worker-source.js`,
+      // The bundled copy is the custom (CFnew) worker only — never fall a
+      // different source (e.g. NEXUS) over to a foreign worker silently.
+      ...(worker_source === 'custom' ? [`${job.origin}/repo/worker-source.js`] : []),
     ]
     for (const [i, url] of [sourceConfig.url, ...fallbackUrls].entries()) {
       try {
@@ -259,7 +275,10 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
       await appendLog(env, deployment_id, '✓ zeus source: D1 schema self-initializes on first request')
     } else {
 
-    if (configFormat === 'custom') {
+    if (sourceConfig.kind === 'nexus') {
+      // NEXUS merges over its own defaults — just seed identity + proxyip.
+      initialConfig = { name: 'NEXUS', lang: 'fa', theme: 'dark', uuid, p: proxyip || '' }
+    } else if (configFormat === 'custom') {
       initialConfig = {
         wk: '', ev: 'yes', et: 'no', ex: 'no', ech: 'no', tp: '',
         customDNS: 'https://223.5.5.5/dns-query',
@@ -354,7 +373,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
             { type: 'plain_text', name: 'PATH', text: panelPath },
             { type: 'plain_text', name: 'PROXYIP', text: proxyip },
             ...(admin_password ? [{ type: 'plain_text', name: 'ADMIN', text: admin_password }] : []),
-          ] : [
+          ] : sourceConfig.kind === 'nexus' ? [] : [
             { type: 'plain_text', name: 'P', text: proxyip },
           ]),
         ],
@@ -490,7 +509,7 @@ export async function runDeployment(env: Env, job: DeployJob): Promise<void> {
               ...(admin_password ? { ADMIN: { value: admin_password, type: 'plain_text' } } : {}),
             } : {
               [uuidEnv]: { value: uuid, type: 'plain_text' },
-              P: { value: proxyip, type: 'plain_text' },
+              ...(sourceConfig.kind === 'nexus' ? {} : { P: { value: proxyip, type: 'plain_text' } }),
             },
           },
         },

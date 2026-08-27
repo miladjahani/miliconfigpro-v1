@@ -6,6 +6,7 @@ const KV_KEYS: Record<string, { config: string; addTxt: string }> = {
   edgetunnel: { config: 'config.json', addTxt: 'ADD.txt' },
   edgetunnel_kv: { config: 'config.json', addTxt: 'ADD.txt' },
   custom: { config: 'c', addTxt: 'ADD.txt' },
+  nexus: { config: 'c', addTxt: 'ADD.txt' },
 }
 
 function getKvKeys(workerSource: string | null) {

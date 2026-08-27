@@ -391,11 +391,14 @@ export default function DeployWizard() {
                 <option value="edgetunnel">cmliu/edgetunnel — ورکر کامل (VLESS/Trojan/SS + پنل)</option>
                 <option value="edgetunnel_kv">cmliu/edgetunnel — حالت KV (پیکربندی از KV)</option>
                 <option value="custom">ورکر سفارشی ما — CFnew v2.9.8c (پنل داخلی با تنظیمات کامل)</option>
+                <option value="nexus">NEXUS — نسل جدید (پنل داخلی هوشمند + نقشهٔ زنده + مبهم‌سازی پیشرفته)</option>
                 <option value="miliconfigzeus">miliconfig zeus — پنل کامل D1 (مدیریت کاربران، سهمیه، اسکنر)</option>
               </select>
               <p className="text-xs text-slate-500 mt-2">
                 {workerSource === 'custom'
                   ? <>ورکر سفارشی ما با پنل داخلی کامل، اسکنر IP داخلی، و آپدیت خودکار. KV binding با نام <code className="text-brand-300">C</code> و کلید پیکربندی <code className="text-brand-300">c</code>.</>
+                  : workerSource === 'nexus'
+                  ? <>NEXUS — نسل جدید ورکر با پنل داخلی تنظیمات هوشمند، نقشهٔ زندهٔ سراسری، مبهم‌سازی پیشرفته و ساب‌نویس خودکار. پنل با همان UUID در مسیر <code className="text-brand-300">/{uuid}</code> باز می‌شود و تنظیمات در KV (<code className="text-brand-300">C</code> / <code className="text-brand-300">c</code>) ذخیره می‌شود.</>
                   : workerSource === 'miliconfigzeus'
                   ? <>پنل کامل miliconfigzeus با دیتابیس اختصاصی D1 مستقر می‌شود (خودکار ساخته می‌شود). مدیریت کاربران، سهمیه‌ها و اسکنر داخل خود پنل مستقر است؛ آدرس پنل، ریشه همان ورکر خواهد بود. این سورس همیشه به‌صورت Workers مستقر می‌شود.</>
                   : <>ورکر از مخزن رسمی <a href="https://github.com/cmliu/edgetunnel" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">cmliu/edgetunnel</a> بارگذاری می‌شود. پنل داخلی ورکر حذف شده و همه تنظیمات از این برنامه مدیریت می‌شود.</>
@@ -416,7 +419,7 @@ export default function DeployWizard() {
               <p className="text-xs text-slate-500 mt-2">برای دور زدن محدودیت Worker→Origin. می‌توانید بعداً از اسکنر IP انتخاب کنید. <a href="https://github.com/EDT-Pages/Proxy-List" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">EDT-Pages/Proxy-List</a></p>
             </div>
 
-            {workerSource !== 'custom' && (
+            {workerSource !== 'custom' && workerSource !== 'nexus' && (
               <div>
                 <label className="block text-sm text-slate-300 mb-2 font-medium">رمز ادمین — اختیاری</label>
                 <input
@@ -456,13 +459,13 @@ export default function DeployWizard() {
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">منبع ورکر</p>
-                  <p className="text-white font-medium" dir="ltr">{workerSource === 'custom' ? 'ورکر سفارشی ما' : workerSource === 'miliconfigzeus' ? 'miliconfig zeus' : workerSource === 'edgetunnel' ? 'cmliu/edgetunnel' : 'cmliu/edgetunnel (KV)'}</p>
+                  <p className="text-white font-medium" dir="ltr">{workerSource === 'custom' ? 'ورکر سفارشی ما' : workerSource === 'nexus' ? 'NEXUS — نسل جدید' : workerSource === 'miliconfigzeus' ? 'miliconfig zeus' : workerSource === 'edgetunnel' ? 'cmliu/edgetunnel' : 'cmliu/edgetunnel (KV)'}</p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">Proxy IP</p>
                   <p className="text-white font-medium" dir="ltr">{proxyIP || 'auto'}</p>
                 </div>
-                {adminPassword && workerSource !== 'custom' && (
+                {adminPassword && workerSource !== 'custom' && workerSource !== 'nexus' && (
                   <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                     <p className="text-xs text-slate-500 mb-1">رمز ادمین</p>
                     <p className="text-white font-medium" dir="ltr">{'•'.repeat(Math.min(adminPassword.length, 20))}</p>
@@ -474,7 +477,7 @@ export default function DeployWizard() {
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">مسیر پنل</p>
-                  <p className="text-white font-medium" dir="ltr">/{customPath || 'admin'}</p>
+                  <p className="text-white font-medium" dir="ltr">{workerSource === 'nexus' ? `/${uuid || '…'}` : `/${customPath || 'admin'}`}</p>
                 </div>
               </div>
             </div>
