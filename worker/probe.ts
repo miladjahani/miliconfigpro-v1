@@ -48,16 +48,23 @@ const COLO_CITY_MAP: Record<string, string> = {
 }
 
 export function runWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length)
+  const len = items.length
+  if (len === 0) return Promise.resolve([])
+  const results = new Array<R>(len)
   let next = 0
+  
   async function worker(): Promise<void> {
-    while (next < items.length) {
+    while (next < len) {
       const i = next++
       results[i] = await fn(items[i]!)
     }
   }
+  
   const workers: Promise<void>[] = []
-  for (let i = 0; i < Math.min(limit, items.length); i++) workers.push(worker())
+  const count = Math.min(limit, len)
+  for (let i = 0; i < count; i++) {
+    workers.push(worker())
+  }
   return Promise.all(workers).then(() => results)
 }
 

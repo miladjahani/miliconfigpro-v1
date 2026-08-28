@@ -1,9 +1,29 @@
-node_modules
+```
+# Dependencies
+node_modules/
+
+# Environment
 .env
+.env.local
 .env.*
-dist
-.wrangler
-isolate
-tsconfig.tsbuildinfo
-wrangler.deploy.toml
-*.local
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+.env
+.env.local
+.env.*
+```
