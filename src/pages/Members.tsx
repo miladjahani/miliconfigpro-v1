@@ -389,10 +389,19 @@ export default function Members() {
   }
 
   const toggleCountry = (code: string) => {
-    const newCountries = form.countries.includes(code) ? form.countries.filter(x => x !== code) : [...form.countries, code]
+    const country = COUNTRIES.find(c => c.code === code)
+    const isAdding = !form.countries.includes(code)
+    const newCountries = isAdding
+      ? [...form.countries, code]
+      : form.countries.filter(x => x !== code)
     set('countries', newCountries)
-    if (!form.countries.includes(code) && !form.countryLocations[code]) {
-      set('countryLocations', { ...form.countryLocations, [code]: [{ name: '', proxy: '' }] })
+    if (isAdding) {
+      // When adding a country, auto-add 1 location with its name as default
+      const newLocations = { ...form.countryLocations }
+      if (!newLocations[code]) {
+        newLocations[code] = [{ name: country?.labelEn || code, proxy: '' }]
+      }
+      set('countryLocations', newLocations)
     }
   }
 
@@ -664,18 +673,53 @@ export default function Members() {
             {/* Sing-box JSON preview */}
             {form.countries.length > 0 && (
               <div className="bg-slate-950/50 rounded-xl border border-slate-800 p-3">
-                <p className="text-[11px] text-slate-500 mb-2">📦 sing-box JSON preview</p>
-                <pre className="text-[10px] text-emerald-400/70 font-mono overflow-x-auto max-h-[120px] overflow-y-auto">
-{JSON.stringify({
-  outbounds: form.countries.slice(0, 3).map(cc => ({
-    tag: `${cc}-proxy`, type: 'vless',
-    ...(form.fragment ? { fragment: { enabled: true } } : {}),
-    ...(form.ech ? { ech: { enabled: true } } : {}),
-    ...(form.fingerprint ? { utls: { enabled: true, fingerprint: form.fingerprint } } : {}),
-    ...(form.sniChoice !== 'none' ? { tls: { server_name: form.sniChoice || form.sniCustom } } : {}),
-    ...(form.transport ? { transport: { type: form.transport } } : {}),
-  })),
-}, null, 2)}
+                <p className="text-[11px] text-slate-500 mb-2">📦 sing-box JSON preview — تمام تنظیمات تزریق‌شده</p>
+                <pre className="text-[10px] text-emerald-400/70 font-mono overflow-x-auto max-h-[200px] overflow-y-auto">
+{(() => {
+  const sni = form.sniChoice === 'none' ? '' : form.sniChoice || form.sniCustom
+  const totalNodes = form.countries.length * Number(form.maxNodesPerLocation || 3)
+    + form.customIps.split(/[\n,]/).filter(s => s.trim()).length
+  return JSON.stringify({
+    outbounds: [
+      ...form.countries.slice(0, 5).flatMap(cc => {
+        const country = COUNTRIES.find(c => c.code === cc)
+        const locs = form.countryLocations[cc] || []
+        const maxPerLoc = Number(form.maxNodesPerLocation || 3)
+        // If user defined locations, generate per-location; else generate 1 for the country
+        const entries = locs.length > 0 ? locs.slice(0, maxPerLoc) : [{ name: country?.labelEn || cc, proxy: '' }]
+        return entries.map((loc, i) => ({
+          tag: `${cc}-${(loc.name || country?.labelEn || cc).toLowerCase().replace(/\s+/g, '-').slice(0, 20)}-${i + 1}`,
+          type: 'vless',
+          ...(form.fragment ? { fragment: { enabled: true, ...(form.fm.trim() ? JSON.parse(form.fm.trim() || '{}') : { packets: 'tlshello', length: '10-50', interval: '10-20' }) } } : {}),
+          ...(form.ech ? { tls: { enabled: true, server_name: sni || undefined, ech: { enabled: true } } } : {}),
+          ...(form.fingerprint ? { utls: { enabled: true, fingerprint: form.fingerprint } } : {}),
+          ...(sni ? { server: { server: sni } } : {}),
+          ...(form.transport ? { transport: { type: form.transport } } : {}),
+          ...(loc.proxy ? { detour: { type: 'socks5', server: loc.proxy } } : {}),
+        }))
+      }),
+      ...form.customIps.split(/[\n,]/).map(s => s.trim()).filter(Boolean).map((ip, i) => ({
+        tag: `custom-${ip.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 20)}-${i + 1}`,
+        type: 'vless',
+        server: ip,
+        server_port: 443,
+        ...(form.fragment ? { fragment: { enabled: true, ...(form.fm.trim() ? JSON.parse(form.fm.trim() || '{}') : { packets: 'tlshello', length: '10-50', interval: '10-20' }) } } : {}),
+        ...(form.ech ? { tls: { enabled: true, server_name: sni || undefined, ech: { enabled: true } } } : {}),
+        ...(form.fingerprint ? { utls: { enabled: true, fingerprint: form.fingerprint } } : {}),
+      })),
+    ],
+    _meta: {
+      total_nodes: totalNodes,
+      countries: form.countries.length,
+      custom_ips: form.customIps.split(/[\n,]/).filter(s => s.trim()).length,
+      fragment: form.fragment ? { fm: form.fm || '(preset)', cs: form.cs || '(preset)' } : null,
+      ech: form.ech || null,
+      fingerprint: form.fingerprint || null,
+      sni: sni || null,
+      transport: form.transport || 'default',
+    },
+  }, null, 2)
+})()}
                 </pre>
               </div>
             )}
@@ -712,6 +756,8 @@ export default function Members() {
             const expired = m.expires_at && m.expires_at < new Date().toISOString()
             const cc = (m.settings as unknown as { country_locations?: Record<string, unknown[]> }).country_locations ?? {}
             const locCount = Object.values(cc).reduce((sum, arr) => sum + (arr as unknown[]).length, 0) as number
+            const customIpCount = (m.settings.custom_ips ?? []).length
+            const totalLocations = locCount + customIpCount
             return (
               <div key={m.id} className={`glass-card p-5 ${!m.enabled || expired ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -722,8 +768,8 @@ export default function Members() {
                       <p className="text-xs text-slate-500 mt-0.5">
                         {m.settings.countries.map((c) => COUNTRIES.find((x) => x.code === c)?.flag ?? c).join(' ') || 'پیش‌فرض'}
                         {m.settings.countries.length > 0 && <span className="text-brand-400"> · {m.settings.countries.length} کشور</span>}
-                        {locCount > 0 && <span className="text-emerald-400"> · {locCount} لوکیشن</span>}
-                        <span> · ≤{MAX_NODES_PER_LOCATION} نود</span>
+                        {totalLocations > 0 && <span className="text-emerald-400"> · {totalLocations} لوکیشن</span>}
+                        <span> · ≤{m.settings.max_nodes_per_location ?? 3} نود/لوکیشن</span>
                         {m.settings.fragment ? ' · 🧩' : ''}
                         {m.settings.sanctions_mode === 'warp' ? ' · WARP' : ''}
                         {expired ? ' · ⏰ منقضی' : ''}

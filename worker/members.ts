@@ -35,8 +35,14 @@ async function maybeNotifyQuota(env: Env, member: Record<string, unknown>, level
   }
 }
 
+export interface CountryLocationConfig {
+  location: string
+  proxy: string
+}
+
 export interface MemberSettings {
   countries: string[]
+  country_locations?: Record<string, CountryLocationConfig[]>
   custom_ips: string[]
   transport: '' | 'ws' | 'grpc' | 'httpupgrade'
   fragment: boolean
@@ -95,7 +101,7 @@ export interface MemberRow {
 export const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'] as const
 
 const DEFAULT_SETTINGS: MemberSettings = {
-  countries: [], custom_ips: [], transport: '',
+  countries: [], country_locations: {}, custom_ips: [], transport: '',
   fragment: false, fragment_preset: '', fragment_config: {},
   fingerprint: '', custom_sni: '', custom_host: '', bypass_sanctions: false,
   sanctions_mode: '',
@@ -113,8 +119,25 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
   const countries = (s?.countries ?? []).filter((c) => /^[a-z]{2}$|^(multi)$/.test(c)).slice(0, 8)
   const customIps = (s?.custom_ips ?? []).filter((ip) => /^(\d{1,3}(\.\d{1,3}){3}|[a-z0-9.-]+\.[a-z]{2,})$/i.test(ip)).slice(0, 20)
   const transport = (['', 'ws', 'grpc', 'httpupgrade'] as const).includes(s?.transport as never) ? (s?.transport ?? '') : ''
+  // Sanitize country_locations: keep only valid country codes with valid location arrays
+  const countryLocations: Record<string, CountryLocationConfig[]> = {}
+  if (s?.country_locations && typeof s.country_locations === 'object') {
+    for (const [code, locs] of Object.entries(s.country_locations)) {
+      if (/^[a-z]{2}$|^multi$/.test(code) && Array.isArray(locs)) {
+        const validLocs = locs
+          .filter((l) => l && typeof l === 'object')
+          .map((l) => ({
+            location: typeof l.location === 'string' ? l.location.trim().slice(0, 100) : '',
+            proxy: typeof l.proxy === 'string' ? l.proxy.trim().slice(0, 300) : '',
+          }))
+          .slice(0, 5)
+        if (validLocs.length > 0) countryLocations[code] = validLocs
+      }
+    }
+  }
   return {
     countries,
+    country_locations: countryLocations,
     custom_ips: customIps,
     transport: transport as MemberSettings['transport'],
     fragment: !!s?.fragment,
@@ -162,6 +185,7 @@ interface MemberBody extends Partial<MemberSettings> {
   ip_limit?: number | null
   start_on_connect?: boolean
   reset_period_days?: number | null
+  country_locations?: Record<string, CountryLocationConfig[]>
 }
 
 export async function handleMemberCreate(env: Env, userId: string, request: Request): Promise<Response> {
@@ -233,6 +257,7 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     fingerprint: body.fingerprint !== undefined ? body.fingerprint : prevSettings.fingerprint,
     custom_sni: body.custom_sni !== undefined ? body.custom_sni : prevSettings.custom_sni,
     custom_host: body.custom_host !== undefined ? body.custom_host : prevSettings.custom_host,
+    country_locations: body.country_locations ?? prevSettings.country_locations,
     bypass_sanctions: body.bypass_sanctions ?? prevSettings.bypass_sanctions,
     sanctions_mode: body.sanctions_mode !== undefined ? body.sanctions_mode : prevSettings.sanctions_mode,
     proxyip: body.proxyip !== undefined ? body.proxyip : prevSettings.proxyip,
