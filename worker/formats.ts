@@ -116,13 +116,15 @@ export async function fetchMultiSubLines(input: string, timeoutMs = 30_000): Pro
     .slice(0, 10)
   if (!urls.length) return []
 
-  const results = await Promise.all(
-    urls.map((u) => fetchSubLines(u, timeoutMs).catch(() => [] as string[])),
+  const results = await Promise.allSettled(
+    urls.map((u) => fetchSubLines(u, timeoutMs)),
   )
+  
   const seen = new Set<string>()
   const out: string[] = []
-  for (const list of results) {
-    for (const line of list) {
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue
+    for (const line of result.value) {
       const key = line.split('#')[0]!
       if (seen.has(key)) continue
       seen.add(key)

@@ -28,16 +28,26 @@ export async function probeBatch<T extends { host: string; port: number }>(
   concurrency = 10,
   timeoutMs = 3000,
 ): Promise<Array<T & { latencyMs: number | null }>> {
-  const results: Array<T & { latencyMs: number | null }> = targets.map((t) => ({ ...t, latencyMs: null }))
+  const len = targets.length
+  const latencies = new Array<number | null>(len)
   let index = 0
+  
   async function worker(): Promise<void> {
-    while (index < results.length) {
-      const item = results[index++]
-      item.latencyMs = await tcpProbe(item.host, item.port, timeoutMs)
+    while (index < len) {
+      const i = index++
+      const target = targets[i]!
+      latencies[i] = await tcpProbe(target.host, target.port, timeoutMs)
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, results.length) }, () => worker()))
-  return results
+  
+  const workers: Promise<void>[] = []
+  for (let i = 0, n = Math.min(concurrency, len); i < n; i++) {
+    workers.push(worker())
+  }
+  await Promise.all(workers)
+  
+  // Reuse input array structure for compatibility
+  return targets.map((t, i) => ({ ...t, latencyMs: latencies[i]! }))
 }
 
 /** Expand simple CIDRv4 ranges (e.g. 1.1.1.0/24) into individual IPs, capped. */
