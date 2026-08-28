@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X, FlaskConical } from 'lucide-react'
+import { useCallback, useEffect, useState, useRef } from 'react'
+import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X, FlaskConical, Download } from 'lucide-react'
 import { api } from '../lib/api'
 import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from '../../worker/presets'
 import type { Deployment, WorkerMember } from '../lib/types'
 
 const COUNTRIES = [
-  { code: 'us', label: '🇺🇸 آمریکا' },
-  { code: 'de', label: '🇩🇪 آلمان' },
-  { code: 'nl', label: '🇳🇱 هلند' },
-  { code: 'tr', label: '🇹🇷 ترکیه' },
-  { code: 'ae', label: '🇦🇪 امارات' },
-  { code: 'fi', label: '🇫🇮 مولتی' },
+  { code: 'us', label: '🇺🇸 آمریکا', flag: '🇺🇸', labelEn: 'United States' },
+  { code: 'de', label: '🇩🇪 آلمان', flag: '🇩🇪', labelEn: 'Germany' },
+  { code: 'nl', label: '🇳🇱 هلند', flag: '🇳🇱', labelEn: 'Netherlands' },
+  { code: 'tr', label: '🇹🇷 ترکیه', flag: '🇹🇷', labelEn: 'Turkey' },
+  { code: 'ae', label: '🇦🇪 امارات', flag: '🇦🇪', labelEn: 'United Arab Emirates' },
+  { code: 'fi', label: '🇫🇮 مولتی', flag: '🇫🇮', labelEn: 'Multi' },
+  { code: 'gb', label: '🇬🇧 بریتانیا', flag: '🇬🇧', labelEn: 'United Kingdom' },
+  { code: 'fr', label: '🇫🇷 فرانسه', flag: '🇫🇷', labelEn: 'France' },
+  { code: 'jp', label: '🇯🇵 ژاپن', flag: '🇯🇵', labelEn: 'Japan' },
+  { code: 'sg', label: '🇸🇬 سنگاپور', flag: '🇸🇬', labelEn: 'Singapore' },
+  { code: 'kr', label: '🇰🇷 کره جنوبی', flag: '🇰🇷', labelEn: 'South Korea' },
+  { code: 'in', label: '🇮🇳 هند', flag: '🇮🇳', labelEn: 'India' },
+  { code: 'br', label: '🇧🇷 برزیل', flag: '🇧🇷', labelEn: 'Brazil' },
+  { code: 'ca', label: '🇨🇦 کانادا', flag: '🇨🇦', labelEn: 'Canada' },
+  { code: 'au', label: '🇦🇺 استرالیا', flag: '🇦🇺', labelEn: 'Australia' },
 ]
 
 const TRANSPORTS = [
@@ -26,6 +35,67 @@ const SANCTIONS_MODES = [
   { v: 'warp', label: 'WARP (جمنی/OpenAI + UDP واقعی)' },
 ]
 
+const MAX_NODES_PER_LOCATION = 3
+
+// ── EDT-Pages Proxy List ──────────────────────────────────────────────
+const EDT_PROXY_REPO = 'https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data'
+
+interface EtdProxy {
+  proxy: string
+  protocol: string
+  ip: string
+  port: number
+  country: string
+  city: string
+  asn: string
+  asOrganization: string
+}
+
+const proxyCache = new Map<string, EtdProxy[]>()
+
+async function fetchEtdProxies(protocol: 'socks5' | 'https'): Promise<Record<string, EtdProxy[]>> {
+  const cacheKey = `edt:${protocol}`
+  if (proxyCache.has(cacheKey)) {
+    const cached = proxyCache.get(cacheKey)!
+    const grouped: Record<string, EtdProxy[]> = {}
+    for (const p of cached) {
+      const key = p.country.toLowerCase()
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push(p)
+    }
+    return grouped
+  }
+
+  try {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 15000)
+    const resp = await fetch(`${EDT_PROXY_REPO}/${protocol}.json`, { signal: ctrl.signal })
+    clearTimeout(t)
+    if (!resp.ok) return {}
+    const data = await resp.json() as EtdProxy[]
+    proxyCache.set(cacheKey, data)
+
+    const grouped: Record<string, EtdProxy[]> = {}
+    for (const p of data) {
+      if (p.country) {
+        const key = p.country.toLowerCase()
+        if (!grouped[key]) grouped[key] = []
+        grouped[key].push(p)
+      }
+    }
+    return grouped
+  } catch {
+    return {}
+  }
+}
+
+// ── Types ─────────────────────────────────────────────────────────────
+
+interface CountryLocation {
+  name: string
+  proxy: string
+}
+
 interface FormState {
   name: string
   quotaGb: string
@@ -37,17 +107,17 @@ interface FormState {
   expires: string
   transport: string
   countries: string[]
+  countryLocations: Record<string, CountryLocation[]>
   customIps: string
   fragment: boolean
   preset: string
   fm: string
   cs: string
   fingerprint: string
-  sniChoice: string // '' = custom, otherwise a KNOWN_SNIS entry or 'none'
+  sniChoice: string
   sniCustom: string
   hostMask: string
   sanctionsMode: string
-  // EDT advanced
   proxyip: string
   chainProto: string
   chainCred: string
@@ -55,41 +125,31 @@ interface FormState {
   ed0rtt: boolean
   randomPath: boolean
   fragmentClient: string
-  // ── Multi-config & quantity settings ──
-  configCount: string // how many configs to generate per location
-  configsPerLocation: Record<string, number> // override per country
-  enableMultiConfig: boolean
-  // ── Time-based access control ──
-  timeBasedAccess: boolean
-  accessHours: string // e.g., "18-23" for 6PM to 11PM
-  accessDays: string[] // e.g., ["mon", "wed", "fri"]
-  // ── Volume shaping per node ──
-  volumeShaping: boolean
-  dailyVolumeMb: string
-  hourlyVolumeMb: string
-  // ── Node naming & organization ──
-  nodePrefix: string
-  nodeSuffix: string
-  groupByCountry: boolean
+  maxNodesPerLocation: string
 }
 
 const EMPTY_FORM: FormState = {
   name: '', quotaGb: '', reqQuota: '', ipLimit: '', startOnConnect: false,
   resetDays: '', rotateMin: '', expires: '', transport: '', countries: [],
+  countryLocations: {},
   customIps: '', fragment: false, preset: '', fm: '', cs: '',
   fingerprint: '', sniChoice: '', sniCustom: '', hostMask: '', sanctionsMode: '',
   proxyip: '', chainProto: '', chainCred: '', ech: false, ed0rtt: false, randomPath: false, fragmentClient: '',
-  configCount: '1', configsPerLocation: {}, enableMultiConfig: false,
-  timeBasedAccess: false, accessHours: '', accessDays: [],
-  volumeShaping: false, dailyVolumeMb: '', hourlyVolumeMb: '',
-  nodePrefix: '', nodeSuffix: '', groupByCountry: false,
+  maxNodesPerLocation: '3',
 }
 
 function formToBody(f: FormState) {
   const sni = f.sniChoice === '' ? f.sniCustom.trim() : f.sniChoice === 'none' ? '' : f.sniChoice
   const chainProxy = f.chainProto && f.chainCred.trim() ? `${f.chainProto}://${f.chainCred.trim()}` : ''
+
+  const countryLocationConfigs: Record<string, Array<{ location: string; proxy: string }>> = {}
+  for (const [cc, locs] of Object.entries(f.countryLocations)) {
+    countryLocationConfigs[cc] = locs.map(l => ({ location: l.name, proxy: l.proxy }))
+  }
+
   return {
     countries: f.countries,
+    country_locations: countryLocationConfigs,
     custom_ips: f.customIps.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
     transport: f.transport,
     fragment: f.fragment,
@@ -115,28 +175,14 @@ function formToBody(f: FormState) {
     start_on_connect: f.startOnConnect,
     reset_period_days: f.resetDays ? Number(f.resetDays) : null,
     expires_at: f.expires ? new Date(f.expires).toISOString() : null,
-    // ── Multi-config & quantity settings ──
-    config_count: f.configCount ? Number(f.configCount) : 1,
-    configs_per_location: f.configsPerLocation || {},
-    enable_multi_config: f.enableMultiConfig,
-    // ── Time-based access control ──
-    time_based_access: f.timeBasedAccess,
-    access_hours: f.accessHours,
-    access_days: f.accessDays,
-    // ── Volume shaping per node ──
-    volume_shaping: f.volumeShaping,
-    daily_volume_mb: f.dailyVolumeMb ? Number(f.dailyVolumeMb) : null,
-    hourly_volume_mb: f.hourlyVolumeMb ? Number(f.hourlyVolumeMb) : null,
-    // ── Node naming & organization ──
-    node_prefix: f.nodePrefix,
-    node_suffix: f.nodeSuffix,
-    group_by_country: f.groupByCountry,
+    max_nodes_per_location: f.maxNodesPerLocation ? Number(f.maxNodesPerLocation) : MAX_NODES_PER_LOCATION,
   }
 }
 
 function memberToForm(m: WorkerMember): FormState {
   const s = m.settings
   const sni = s.custom_sni ?? ''
+  const cl = (s as unknown as { country_locations?: Record<string, Array<{ location: string; proxy: string }>> }).country_locations ?? {}
   return {
     name: m.name, quotaGb: m.quota_gb != null ? String(m.quota_gb) : '',
     reqQuota: m.request_quota != null ? String(m.request_quota) : '',
@@ -146,6 +192,9 @@ function memberToForm(m: WorkerMember): FormState {
     rotateMin: s.ip_rotation_minutes ? String(s.ip_rotation_minutes) : '',
     expires: m.expires_at ? m.expires_at.slice(0, 10) : '',
     transport: s.transport ?? '', countries: s.countries ?? [],
+    countryLocations: Object.fromEntries(
+      Object.entries(cl).map(([k, v]) => [k, v.map(l => ({ name: l.location || '', proxy: l.proxy || '' }))])
+    ),
     customIps: (s.custom_ips ?? []).join('\n'),
     fragment: !!s.fragment, preset: s.fragment_preset ?? '',
     fm: s.fragment_config?.fm ?? '', cs: s.fragment_config?.cs ?? '',
@@ -159,30 +208,15 @@ function memberToForm(m: WorkerMember): FormState {
     chainCred: (s.chain_proxy ?? '').replace(/^[a-z0-9]+:\/\//i, ''),
     ech: !!s.ech, ed0rtt: !!s.ed_0rtt, randomPath: !!s.random_path,
     fragmentClient: s.fragment_client ?? '',
-    // ── Multi-config & quantity settings ──
-    configCount: String((s as any).config_count ?? 1),
-    configsPerLocation: (s as any).configs_per_location || {},
-    enableMultiConfig: !!(s as any).enable_multi_config,
-    // ── Time-based access control ──
-    timeBasedAccess: !!(s as any).time_based_access,
-    accessHours: (s as any).access_hours ?? '',
-    accessDays: (s as any).access_days ?? [],
-    // ── Volume shaping per node ──
-    volumeShaping: !!(s as any).volume_shaping,
-    dailyVolumeMb: (s as any).daily_volume_mb != null ? String((s as any).daily_volume_mb) : '',
-    hourlyVolumeMb: (s as any).hourly_volume_mb != null ? String((s as any).hourly_volume_mb) : '',
-    // ── Node naming & organization ──
-    nodePrefix: (s as any).node_prefix ?? '',
-    nodeSuffix: (s as any).node_suffix ?? '',
-    groupByCountry: !!(s as any).group_by_country,
+    maxNodesPerLocation: '3',
   }
 }
 
-function Field({ label, value, onChange, placeholder, type = 'text', textarea, rows = 2, guide }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; textarea?: boolean; rows?: number; guide?: string
+function Field({ label, value, onChange, placeholder, type = 'text', textarea, rows = 2 }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; textarea?: boolean; rows?: number
 }) {
   return (
-    <label className="block" data-guide={guide}>
+    <label className="block">
       <span className="text-xs text-slate-400 mb-1 block">{label}</span>
       {textarea ? (
         <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows}
@@ -195,12 +229,12 @@ function Field({ label, value, onChange, placeholder, type = 'text', textarea, r
   )
 }
 
-function Select({ label, value, onChange, options, guide }: {
-  label: string; value: string; onChange: (v: string) => void; guide?: string
+function Select({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void
   options: { v: string; label: string }[]
 }) {
   return (
-    <label className="block" data-guide={guide}>
+    <label className="block">
       <span className="text-xs text-slate-400 mb-1 block">{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
         {options.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
@@ -209,11 +243,11 @@ function Select({ label, value, onChange, options, guide }: {
   )
 }
 
-function Toggle({ checked, onChange, label, guide }: { checked: boolean; onChange: () => void; label: string; guide?: string }) {
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
   return (
-    <button onClick={onChange} data-guide={guide} className="flex items-center gap-2 text-sm text-slate-300">
+    <button onClick={onChange} className="flex items-center gap-2 text-sm text-slate-300">
       <span className={`w-9 h-5 rounded-full transition-colors relative ${checked ? 'bg-brand-500' : 'bg-slate-700'}`}>
-        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${checked ? 'right-0.5' : 'right-4.5'}`}
+        <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
           style={{ right: checked ? '2px' : '18px' }} />
       </span>
       {label}
@@ -239,7 +273,6 @@ export default function Members() {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
 
-  // Form: shown for create (editingId = null) or edit (editingId = member id)
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
@@ -248,6 +281,11 @@ export default function Members() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [testResult, setTestResult] = useState<{ id: string; data: MemberTestResult } | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
+
+  const [proxyProtocol, setProxyProtocol] = useState<'socks5' | 'https'>('socks5')
+  const [proxyLists, setProxyLists] = useState<Record<string, EtdProxy[]>>({})
+  const [proxyLoading, setProxyLoading] = useState(false)
+  const proxyLoadStarted = useRef(false)
 
   const load = useCallback(async () => {
     if (!depId) { setMembers([]); return }
@@ -263,6 +301,21 @@ export default function Members() {
       .catch(() => setDeployments([]))
   }, [])
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (proxyLoadStarted.current) return
+    proxyLoadStarted.current = true
+    setProxyLoading(true)
+    fetchEtdProxies(proxyProtocol).then((data) => { setProxyLists(data); setProxyLoading(false) })
+  }, [proxyProtocol])
+
+  const refreshProxies = async () => {
+    setProxyLoading(true)
+    proxyCache.delete(`edt:${proxyProtocol}`)
+    const data = await fetchEtdProxies(proxyProtocol)
+    setProxyLists(data)
+    setProxyLoading(false)
+  }
 
   const saveForm = async () => {
     if (!depId) { setError('اول یک ورکر انتخاب کنید'); return }
@@ -290,9 +343,7 @@ export default function Members() {
   }
 
   const openEdit = (m: WorkerMember) => {
-    setEditingId(m.id)
-    setForm(memberToForm(m))
-    setFormOpen(true)
+    setEditingId(m.id); setForm(memberToForm(m)); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
@@ -312,12 +363,12 @@ export default function Members() {
   const refreshUsage = async (id: string) => {
     setBusy(true); setError(null)
     try { await api(`/members/${id}/usage`, { method: 'POST' }); await load() }
-    catch (e) { setError(e instanceof Error ? e.message : 'آمار در دسترس نیست (توکن باید دسترسی Analytics داشته باشد)') }
+    catch (e) { setError(e instanceof Error ? e.message : 'آمار در دسترس نیست') }
     setBusy(false)
   }
 
-  const subUrl = (m: WorkerMember, clash = false) =>
-    `${window.location.origin}/api/sub/member/${m.token}${clash ? '?target=clash' : ''}`
+  const subUrl = (m: WorkerMember, format = '') =>
+    `${window.location.origin}/api/sub/member/${m.token}${format ? `?target=${format}` : ''}`
 
   const runTest = async (m: WorkerMember) => {
     if (!depId) return
@@ -326,15 +377,50 @@ export default function Members() {
       const { data } = await api<{ data: MemberTestResult }>(`/members/${m.id}/test`)
       setTestResult({ id: m.id, data })
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'تست ناموفق بود')
-      setTestResult(null)
+      setError(e instanceof Error ? e.message : 'تست ناموفق بود'); setTestResult(null)
     }
     setTestingId(null)
   }
 
-  const copy = async (m: WorkerMember, clash = false) => {
-    await navigator.clipboard.writeText(subUrl(m, clash)).catch(() => null)
-    setCopied(m.id + (clash ? '-c' : '')); setTimeout(() => setCopied(null), 2000)
+  const copy = async (m: WorkerMember, format = '') => {
+    await navigator.clipboard.writeText(subUrl(m, format)).catch(() => null)
+    const key = m.id + (format || 'sub')
+    setCopied(key); setTimeout(() => setCopied(null), 2000)
+  }
+
+  const toggleCountry = (code: string) => {
+    const newCountries = form.countries.includes(code) ? form.countries.filter(x => x !== code) : [...form.countries, code]
+    set('countries', newCountries)
+    if (!form.countries.includes(code) && !form.countryLocations[code]) {
+      set('countryLocations', { ...form.countryLocations, [code]: [{ name: '', proxy: '' }] })
+    }
+  }
+
+  const addLocationForCountry = (code: string) => {
+    const current = form.countryLocations[code] || []
+    set('countryLocations', { ...form.countryLocations, [code]: [...current, { name: '', proxy: '' }] })
+  }
+
+  const removeLocationForCountry = (code: string, idx: number) => {
+    const current = (form.countryLocations[code] || []).filter((_, i) => i !== idx)
+    const next = { ...form.countryLocations }
+    if (current.length === 0) delete next[code]; else next[code] = current
+    set('countryLocations', next)
+  }
+
+  const updateLocation = (code: string, idx: number, field: keyof CountryLocation, value: string) => {
+    const current = [...(form.countryLocations[code] || [])]
+    current[idx] = { ...current[idx], [field]: value }
+    set('countryLocations', { ...form.countryLocations, [code]: current })
+  }
+
+  const applyProxyToCountry = (code: string, proxy: string) => {
+    const current = form.countryLocations[code] || []
+    if (current.length === 0) {
+      set('countryLocations', { ...form.countryLocations, [code]: [{ name: '', proxy }] })
+    } else {
+      set('countryLocations', { ...form.countryLocations, [code]: current.map(l => ({ ...l, proxy })) })
+    }
   }
 
   return (
@@ -345,33 +431,24 @@ export default function Members() {
           <h2 className="text-lg font-bold text-white">کاربران ورکر</h2>
         </div>
         <p className="text-sm text-slate-400">
-          برای هر ورکر چند کاربر بسازید — هر کدام لینک ساب خصوصی و تنظیمات منحصربه‌فرد:
-          کشور IP (آی‌پی واقعی و زنده از مخزن EDT)، ترنسپورت، فرگمنت و Cipher Suite،
-          دور زدن تحریم با SNI یا WARP (باز کردن جمنی)، سقف حجم و انقضا.
+          حداکثر {MAX_NODES_PER_LOCATION} نود بهینه در هر لوکیشن · پروکسی از EDT-Pages · فرگمنت در sing-box JSON
         </p>
-        <div className="mt-3 rounded-lg bg-amber-500/10 border border-amber-500/20 p-3">
-          <p className="text-xs text-amber-300 leading-relaxed">
-            💡 <b>نکته مهم برای مرورگر:</b> اگر کاربران فقط تلگرام و یوتیوب باز می‌کنند ولی سایت‌های دیگر (مثل speedtest، جمنی) باز نمی‌شود،
-            دلیلش این است که IP خروجی ورکر کلودفلر است. برای باز کردن همهٔ سایت‌ها در مرورگر، فیلد <b>ProxyIP</b> را در تنظیمات کاربر با IP یک سرور پروکسی پر کنید.
-          </p>
-        </div>
       </div>
 
       <div className="glass-card p-6 space-y-4">
         <div className="flex items-center gap-2 flex-wrap">
-          <select value={depId} onChange={(e) => setDepId(e.target.value)} data-guide="m-worker-select" className="input-field text-sm py-2 min-w-[220px]">
+          <select value={depId} onChange={(e) => setDepId(e.target.value)} className="input-field text-sm py-2 min-w-[220px]">
             <option value="">انتخاب ورکر...</option>
             {deployments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
           {depId && (
-            <button onClick={quickCreate} disabled={busy} data-guide="m-quick-create" title="ساخت کاربر با تنظیمات پیش‌فرض، بدون فرم"
-              className="btn-secondary text-sm px-3 py-2 flex items-center gap-1.5">
+            <button onClick={quickCreate} disabled={busy} className="btn-secondary text-sm px-3 py-2 flex items-center gap-1.5">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-amber-400" />}
-              ساخت سریع کاربر
+              ساخت سریع
             </button>
           )}
           {depId && !formOpen && (
-            <button onClick={() => { setEditingId(null); setForm(EMPTY_FORM); setFormOpen(true) }} data-guide="m-advanced-create"
+            <button onClick={() => { setEditingId(null); setForm(EMPTY_FORM); setFormOpen(true) }}
               className="btn-primary text-sm px-3 py-2 flex items-center gap-1.5">
               <Plus className="w-4 h-4" /> کاربر پیشرفته
             </button>
@@ -381,234 +458,234 @@ export default function Members() {
         {depId && formOpen && (
           <div className="space-y-3 border border-slate-800 rounded-xl p-4 bg-slate-900/40">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-white">
-                {editingId ? '✏️ ویرایش کاربر — تغییرات بعد از ذخیره فوراً روی ساب اعمال می‌شود' : 'کاربر جدید (پیشرفته)'}
-              </p>
+              <p className="text-sm font-medium text-white">{editingId ? '✏️ ویرایش کاربر' : 'کاربر جدید'}</p>
               <button onClick={() => { setFormOpen(false); setEditingId(null); setForm(EMPTY_FORM) }}
                 className="p-1.5 rounded-lg text-slate-500 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="نام (مثلاً علی یا US-User)" value={form.name} onChange={(v) => set('name', v)} placeholder="علی" guide="m-name" />
-              <Field label="سقف حجم ماهانه (گیگ — خالی = بی‌نهایت)" value={form.quotaGb} onChange={(v) => set('quotaGb', v)} placeholder="50" guide="m-quota" />
-              <Field label="سقف درخواست ماهانه (خالی = بی‌نهایت)" value={form.reqQuota} onChange={(v) => set('reqQuota', v)} placeholder="100000" guide="m-req-quota" />
-              <Field label="حداکثر دستگاه همزمان (خالی = بی‌نهایت)" value={form.ipLimit} onChange={(v) => set('ipLimit', v)} placeholder="2" guide="m-ip-limit" />
+              <Field label="نام" value={form.name} onChange={(v) => set('name', v)} placeholder="علی" />
+              <Field label="سقف حجم (گیگ)" value={form.quotaGb} onChange={(v) => set('quotaGb', v)} placeholder="50" />
+              <Field label="سقف درخواست" value={form.reqQuota} onChange={(v) => set('reqQuota', v)} placeholder="100000" />
+              <Field label="حداکثر دستگاه" value={form.ipLimit} onChange={(v) => set('ipLimit', v)} placeholder="2" />
               <div className="flex items-end">
-                <Toggle checked={form.startOnConnect} onChange={() => set('startOnConnect', !form.startOnConnect)} label="شمارش از اولین اتصال" guide="m-start-on-connect" />
+                <Toggle checked={form.startOnConnect} onChange={() => set('startOnConnect', !form.startOnConnect)} label="شمارش از اولین اتصال" />
               </div>
-              <Field label="ریست خودکار هر N روز (خالی = خاموش)" value={form.resetDays} onChange={(v) => set('resetDays', v)} placeholder="30" guide="m-reset-days" />
-              <Field label="چرخش خودکار IP هر N دقیقه (خالی = خاموش)" value={form.rotateMin} onChange={(v) => set('rotateMin', v)} placeholder="30" guide="m-rotate-min" />
-              <Field label="تاریخ انقضا (خالی = بی‌نهایت)" value={form.expires} onChange={(v) => set('expires', v)} type="date" guide="m-expires" />
-              <Select label="ترنسپورت" value={form.transport} onChange={(v) => set('transport', v)} options={TRANSPORTS} guide="m-transport" />
-              <Select label="دور زدن تحریم (جمنی/OpenAI)" value={form.sanctionsMode} onChange={(v) => set('sanctionsMode', v)} options={SANCTIONS_MODES} guide="m-sanctions" />
+              <Field label="ریست هر N روز" value={form.resetDays} onChange={(v) => set('resetDays', v)} placeholder="30" />
+              <Field label="چرخش IP (دقیقه)" value={form.rotateMin} onChange={(v) => set('rotateMin', v)} placeholder="30" />
+              <Field label="تاریخ انقضا" value={form.expires} onChange={(v) => set('expires', v)} type="date" />
+              <Select label="ترنسپورت" value={form.transport} onChange={(v) => set('transport', v)} options={TRANSPORTS} />
+              <Select label="دور زدن تحریم" value={form.sanctionsMode} onChange={(v) => set('sanctionsMode', v)} options={SANCTIONS_MODES} />
+              <Select label="حداکثر نود/لوکیشن" value={form.maxNodesPerLocation} onChange={(v) => set('maxNodesPerLocation', v)}
+                options={[{ v: '1', label: '۱ نود' }, { v: '2', label: '۲ نود' }, { v: '3', label: '۳ نود (پیش‌فرض)' }, { v: '5', label: '۵ نود' }]} />
             </div>
-            <div data-guide="m-countries">
-              <span className="text-xs text-slate-400 mb-1 block">کشور IP — IP واقعی و تست‌شده، زنده از مخزن EDT بارگیری می‌شود</span>
-              <div className="flex items-center gap-2 flex-wrap">
-                {COUNTRIES.map((c) => (
-                  <button key={c.code}
-                    onClick={() => set('countries', form.countries.includes(c.code) ? form.countries.filter((x) => x !== c.code) : [...form.countries, c.code])}
-                    className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${form.countries.includes(c.code) ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
-                    {c.label}
+
+            {/* ── Countries + Locations ──────────────────────────── */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-slate-400">کشور + لوکیشن — حداکثر {form.maxNodesPerLocation || '3'} نود بهینه</span>
+                <div className="flex items-center gap-2">
+                  <select value={proxyProtocol} onChange={(e) => setProxyProtocol(e.target.value as 'socks5' | 'https')}
+                    className="text-[11px] bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300">
+                    <option value="socks5">SOCKS5</option>
+                    <option value="https">HTTPS</option>
+                  </select>
+                  <button onClick={refreshProxies} disabled={proxyLoading}
+                    className="text-[11px] text-brand-400 hover:text-brand-300 flex items-center gap-1">
+                    <Download className={`w-3 h-3 ${proxyLoading ? 'animate-spin' : ''}`} />
+                    {proxyLoading ? '...' : 'EDT'}
                   </button>
-                ))}
+                </div>
               </div>
+              <div className="flex flex-wrap gap-2">
+                {COUNTRIES.map((c) => {
+                  const isActive = form.countries.includes(c.code)
+                  const proxyCount = (proxyLists[c.code] || []).length
+                  return (
+                    <div key={c.code} className="relative group">
+                      <button onClick={() => toggleCountry(c.code)}
+                        className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${isActive ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/50 text-slate-400 border-slate-700/50 hover:text-white'}`}>
+                        {c.label}{proxyCount > 0 && <span className="ml-1 text-[10px] text-emerald-400">({proxyCount})</span>}
+                      </button>
+                      {isActive && proxyLists[c.code]?.length > 0 && (
+                        <div className="absolute top-full left-0 mt-1 z-50 hidden group-hover:block">
+                          <div className="bg-slate-800 border border-slate-600 rounded-lg p-2 shadow-xl min-w-[260px] max-h-[180px] overflow-y-auto">
+                            <p className="text-[10px] text-slate-500 mb-1">پروکسی خروجی {c.labelEn}</p>
+                            <button onClick={() => applyProxyToCountry(c.code, '')}
+                              className="w-full text-left text-[11px] text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700 mb-1">
+                              ❌ بدون پروکسی
+                            </button>
+                            {(proxyLists[c.code] || []).slice(0, 8).map((p, i) => (
+                              <button key={i} onClick={() => applyProxyToCountry(c.code, p.proxy)}
+                                className="w-full text-left text-[11px] text-slate-300 hover:text-emerald-300 px-2 py-1 rounded hover:bg-slate-700">
+                                {p.city || p.ip}:{p.port} <span className="text-slate-500">{p.protocol}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {form.countries.length > 0 && (
+                <div className="mt-3 space-y-3">
+                  {form.countries.map(cc => {
+                    const country = COUNTRIES.find(c => c.code === cc)
+                    const locs = form.countryLocations[cc] || []
+                    return (
+                      <div key={cc} className="bg-slate-900/50 rounded-xl border border-slate-800 p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-medium text-white">{country?.flag} {country?.labelEn || cc}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-slate-500">{locs.length} لوکیشن · حداکثر {form.maxNodesPerLocation || '3'} نود</span>
+                            {locs.length < 5 && (
+                              <button onClick={() => addLocationForCountry(cc)}
+                                className="text-[10px] text-brand-400 hover:text-brand-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">
+                                + لوکیشن
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {locs.map((loc, idx) => (
+                          <div key={idx} className="flex items-center gap-2 mb-1.5">
+                            <input value={loc.name} onChange={(e) => updateLocation(cc, idx, 'name', e.target.value)}
+                              placeholder={`لوکیشن ${idx + 1} (مثلاً Frankfurt)`}
+                              className="input-field text-xs flex-1 py-1.5" />
+                            <select value={loc.proxy} onChange={(e) => updateLocation(cc, idx, 'proxy', e.target.value)}
+                              className="input-field text-xs py-1.5 min-w-[160px]">
+                              <option value="">بدون پروکسی</option>
+                              {(proxyLists[cc] || []).slice(0, 12).map((p, pi) => (
+                                <option key={pi} value={p.proxy}>{p.city || p.ip}:{p.port}</option>
+                              ))}
+                            </select>
+                            {locs.length > 1 && (
+                              <button onClick={() => removeLocationForCountry(cc, idx)} className="text-red-400 hover:text-red-300 p-1">
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
-            <Field label="IPهای سفارشی ثابت (هر خط یک IP — اولویت با این‌هاست)" value={form.customIps} onChange={(v) => set('customIps', v)} placeholder="104.16.1.1" guide="m-custom-ips" />
+
+            <Field label="IPهای سفارشی ثابت" value={form.customIps} onChange={(v) => set('customIps', v)} placeholder="104.16.1.1" />
+
+            {/* Fragment */}
             <div className="flex items-center gap-5 flex-wrap">
-              <Toggle checked={form.fragment} onChange={() => set('fragment', !form.fragment)} label="فرگمنت (TLS split — ضد DPI)" guide="m-fragment" />
+              <Toggle checked={form.fragment} onChange={() => set('fragment', !form.fragment)} label="فرگمنت (TLS split)" />
+              {form.fragment && <span className="text-[11px] text-emerald-400">✅ تزریق در JSON sing-box</span>}
             </div>
             {form.fragment && (
               <div className="space-y-3">
-                <label className="block max-w-xs" data-guide="m-isp-preset">
-                  <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور (روی تنظیم دستی اولویت دارد)</span>
+                <label className="block max-w-xs">
+                  <span className="text-xs text-slate-400 mb-1 block">پریست اپراتور</span>
                   <select value={form.preset} onChange={(e) => set('preset', e.target.value)} className="input-field text-sm py-2 w-full">
-                    <option value="">دستی / پیش‌فرض</option>
+                    <option value="">دستی</option>
                     {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)}
                   </select>
                 </label>
                 <div className="flex gap-1.5 flex-wrap">
                   {FM_PRESETS.map((p) => (
                     <button key={p.code} onClick={() => set('fm', p.json)}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-brand-300 hover:bg-brand-600/20 border border-slate-700 transition-colors">
+                      className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-brand-300 border border-slate-700 transition-colors">
                       ⚡ {p.label}
                     </button>
                   ))}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="فرگمنت JSON — fm= (عیناً تزریق می‌شود)" value={form.fm} onChange={(v) => set('fm', v)}
-                    placeholder='{"tcp":[{"type":"fragment",...}]}' textarea rows={3} guide="m-fm" />
-                  <Field label="Cipher Suiteها — cs= (عیناً تزریق می‌شود)" value={form.cs} onChange={(v) => set('cs', v)}
-                    placeholder="TLS_AES_256_GCM_SHA384:..." textarea rows={3} guide="m-cs" />
+                  <Field label="fm= JSON" value={form.fm} onChange={(v) => set('fm', v)} textarea rows={3} />
+                  <Field label="cs= Cipher Suite" value={form.cs} onChange={(v) => set('cs', v)} textarea rows={3} />
                 </div>
                 <div className="flex gap-1.5 flex-wrap">
                   {CS_PRESETS.map((p) => (
                     <button key={p.code} onClick={() => set('cs', p.value)}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-emerald-300 hover:bg-emerald-600/20 border border-slate-700 transition-colors">
+                      className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-emerald-300 border border-slate-700 transition-colors">
                       🔐 {p.label}
                     </button>
                   ))}
                 </div>
-              </div>
-            )}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Select label="اثرانگشت ClientHello (fp)" value={form.fingerprint} onChange={(v) => set('fingerprint', v)} guide="m-fingerprint"
-                options={[
-                  { v: '', label: 'پیش‌فرض ورکر' },
-                  ...['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized', 'unsafe'].map((f) => ({ v: f, label: f })),
-                ]} />
-              <Select label="SNI واقعی (تست‌شده — ماسک TLS)" value={form.sniChoice} onChange={(v) => set('sniChoice', v)} guide="m-sni"
-                options={[
-                  { v: 'none', label: 'پیش‌فرض ورکر' },
-                  ...KNOWN_SNIS.map((s) => ({ v: s, label: s })),
-                  { v: '', label: 'سفارشی...' },
-                ]} />
-              {form.sniChoice === '' && (
-                <Field label="SNI سفارشی" value={form.sniCustom} onChange={(v) => set('sniCustom', v)} placeholder="example.com" />
-              )}
-              {form.sniChoice !== '' && <div />}
-            </div>
-            <Field label="Host سفارشی (ماسک)" value={form.hostMask} onChange={(v) => set('hostMask', v)} placeholder="example.com" guide="m-host" />
-            {form.fragment && (
-              <div className="sm:col-span-3" data-guide="m-client-fragment">
-                <span className="text-xs text-slate-400 mb-1 block">فرگمنت مخصوص کلاینت (فرمت edgetunnel — جایگزین fm می‌شود)</span>
-                <div className="flex gap-1.5 flex-wrap">
-                  <button onClick={() => set('fragmentClient', '')}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${!form.fragmentClient ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700'}`}>
-                    خاموش
-                  </button>
-                  {CLIENT_FRAGMENT_PRESETS.map((p) => (
-                    <button key={p.code} onClick={() => set('fragmentClient', form.fragmentClient === p.code ? '' : p.code)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${form.fragmentClient === p.code ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-white'}`}>
-                      🧩 {p.label}
+                <div>
+                  <span className="text-xs text-slate-400 mb-1 block">فرگمنت کلاینت</span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    <button onClick={() => set('fragmentClient', '')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${!form.fragmentClient ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700'}`}>
+                      خاموش
                     </button>
-                  ))}
+                    {CLIENT_FRAGMENT_PRESETS.map((p) => (
+                      <button key={p.code} onClick={() => set('fragmentClient', form.fragmentClient === p.code ? '' : p.code)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${form.fragmentClient === p.code ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-white'}`}>
+                        🧩 {p.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
-            {/* ── edgetunnel advanced per-member params ── */}
-            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
-              <p className="text-xs font-medium text-slate-300 mb-2">⚙️ تنظیمات پیشرفته edgetunnel — مستقیم روی ورکر اعمال می‌شود (پارامترهای URL)</p>
+
+            {/* TLS/SNI/FP */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Select label="Fingerprint (fp)" value={form.fingerprint} onChange={(v) => set('fingerprint', v)}
+                options={[{ v: '', label: 'پیش‌فرض' }, ...['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'randomized'].map((f) => ({ v: f, label: f }))]} />
+              <Select label="SNI" value={form.sniChoice} onChange={(v) => set('sniChoice', v)}
+                options={[{ v: 'none', label: 'پیش‌فرض' }, ...KNOWN_SNIS.map((s) => ({ v: s, label: s })), { v: '', label: 'سفارشی...' }]} />
+              {form.sniChoice === '' && <Field label="SNI سفارشی" value={form.sniCustom} onChange={(v) => set('sniCustom', v)} placeholder="example.com" />}
+            </div>
+            <Field label="Host سفارشی" value={form.hostMask} onChange={(v) => set('hostMask', v)} placeholder="example.com" />
+
+            {/* Advanced */}
+            <div className="border-t border-slate-800 pt-3 mt-1">
+              <p className="text-xs font-medium text-slate-300 mb-2">⚙️ پیشرفته</p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div data-guide="m-proxyip">
-                  <Field label="ProxyIP اختصاصی" value={form.proxyip} onChange={(v) => set('proxyip', v)} placeholder="1.2.3.4 یا domain:port" />
-                  <p className="text-[11px] text-amber-400/80 mt-1 leading-relaxed">
-                    ⚠️ بدون این تنظیم، مرورگر وب سایت‌ها را باز نمی‌کند (فقط تلگرام/یوتیوب کار می‌کند).<br/>
-                    IP خروجی ورکر کلودفلر است و سایت‌هایی مثل speedtest.net آن را مسدود می‌کنند.<br/>
-                    اینجا IP یک سرور پروکسی خارجی (مثلاً سرور شخصی خودتان) وارد کنید تا خروجی از آن IP انجام شود.
-                  </p>
-                </div>
-                <label className="block" data-guide="m-chain-proto">
-                  <span className="text-xs text-slate-400 mb-1 block">پروتکل زنجیره (Chain Proxy)</span>
+                <Field label="ProxyIP" value={form.proxyip} onChange={(v) => set('proxyip', v)} placeholder="1.2.3.4" />
+                <label className="block">
+                  <span className="text-xs text-slate-400 mb-1 block">Chain Proxy</span>
                   <select value={form.chainProto} onChange={(e) => set('chainProto', e.target.value)} className="input-field text-sm py-2 w-full" dir="ltr">
                     <option value="">خاموش</option>
                     {CHAIN_PROTOCOLS.map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
                 </label>
-                {form.chainProto && (
-                  <Field label={`اعتبار ${form.chainProto} (user:pass@host:port)`} value={form.chainCred} onChange={(v) => set('chainCred', v)} placeholder="user:pass@1.2.3.4:1080" guide="m-chain-cred" />
-                )}
+                {form.chainProto && <Field label={`Credential`} value={form.chainCred} onChange={(v) => set('chainCred', v)} placeholder="user:pass@1.2.3.4:1080" />}
               </div>
               <div className="flex items-center gap-5 flex-wrap mt-3">
-                <Toggle checked={form.ech} onChange={() => set('ech', !form.ech)} label="ECH (TLS رمزنگاری SNI)" guide="m-ech" />
-                <Toggle checked={form.ed0rtt} onChange={() => set('ed0rtt', !form.ed0rtt)} label="0-RTT (ed=2560)" guide="m-ed0rtt" />
-                <Toggle checked={form.randomPath} onChange={() => set('randomPath', !form.randomPath)} label="مسیر تصادفی (ضد DPI)" guide="m-random-path" />
+                <Toggle checked={form.ech} onChange={() => set('ech', !form.ech)} label="ECH" />
+                <Toggle checked={form.ed0rtt} onChange={() => set('ed0rtt', !form.ed0rtt)} label="0-RTT" />
+                <Toggle checked={form.randomPath} onChange={() => set('randomPath', !form.randomPath)} label="مسیر تصادفی" />
               </div>
             </div>
-            {/* ── Multi-config & quantity settings ── */}
-            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
-              <p className="text-xs font-medium text-slate-300 mb-2">📦 تنظیمات تعداد کانفیگ — مناسب برای فروش و مدیریت کاربران</p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <Field label="تعداد کانفیگ به ازای هر لوکیشن" value={form.configCount} onChange={(v) => set('configCount', v)} placeholder="1" guide="m-config-count" />
-                <label className="block" data-guide="m-enable-multi">
-                  <span className="text-xs text-slate-400 mb-1 block">فعال‌سازی چند کانفیگه</span>
-                  <select value={form.enableMultiConfig ? '1' : '0'} onChange={(e) => set('enableMultiConfig', e.target.value === '1')} className="input-field text-sm py-2 w-full">
-                    <option value="0">خاموش</option>
-                    <option value="1">روشن</option>
-                  </select>
-                </label>
-                <Field label="پیشوند نام نود (اختیاری)" value={form.nodePrefix} onChange={(v) => set('nodePrefix', v)} placeholder="VIP-" guide="m-node-prefix" />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
-                <Field label="پسوند نام نود (اختیاری)" value={form.nodeSuffix} onChange={(v) => set('nodeSuffix', v)} placeholder="-EDT" guide="m-node-suffix" />
-                <label className="block" data-guide="m-group-by-country">
-                  <span className="text-xs text-slate-400 mb-1 block">گروه‌بندی بر اساس کشور</span>
-                  <select value={form.groupByCountry ? '1' : '0'} onChange={(e) => set('groupByCountry', e.target.value === '1')} className="input-field text-sm py-2 w-full">
-                    <option value="0">خاموش</option>
-                    <option value="1">روشن</option>
-                  </select>
-                </label>
-              </div>
-              {form.enableMultiConfig && form.countries.length > 0 && (
-                <div className="mt-3 p-3 rounded-lg bg-slate-800/40 border border-slate-700">
-                  <p className="text-xs text-slate-400 mb-2">تنظیم تعداد کانفیگ به ازای هر کشور (اختیاری — اگر خالی باشد از مقدار کلی استفاده می‌شود)</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {form.countries.map((c) => (
-                      <label key={c} className="block">
-                        <span className="text-[11px] text-slate-500">{COUNTRIES.find((x) => x.code === c)?.label ?? c}</span>
-                        <input type="number" min="0" max="10" value={form.configsPerLocation[c] ?? ''} onChange={(e) => set('configsPerLocation', { ...form.configsPerLocation, [c]: Number(e.target.value) || 0 })}
-                          className="input-field text-xs py-1 w-full mt-0.5" placeholder={form.configCount} />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            {/* ── Time-based access control ── */}
-            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
-              <p className="text-xs font-medium text-slate-300 mb-2">⏰ کنترل دسترسی زمانی — محدودیت ساعت و روزهای هفته</p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <label className="block" data-guide="m-time-access">
-                  <span className="text-xs text-slate-400 mb-1 block">کنترل دسترسی زمانی</span>
-                  <select value={form.timeBasedAccess ? '1' : '0'} onChange={(e) => set('timeBasedAccess', e.target.value === '1')} className="input-field text-sm py-2 w-full">
-                    <option value="0">خاموش</option>
-                    <option value="1">روشن</option>
-                  </select>
-                </label>
-                {form.timeBasedAccess && (
-                  <>
-                    <Field label="ساعت دسترسی (مثلاً 18-23)" value={form.accessHours} onChange={(v) => set('accessHours', v)} placeholder="18-23" guide="m-access-hours" />
-                    <div data-guide="m-access-days">
-                      <span className="text-xs text-slate-400 mb-1 block">روزهای هفته</span>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map((d) => (
-                          <button key={d} onClick={() => set('accessDays', form.accessDays.includes(d) ? form.accessDays.filter((x) => x !== d) : [...form.accessDays, d])}
-                            className={`px-2 py-1 rounded text-[11px] border transition-colors ${form.accessDays.includes(d) ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-white'}`}>
-                            {d.slice(0, 3)}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-            {/* ── Volume shaping per node ── */}
-            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
-              <p className="text-xs font-medium text-slate-300 mb-2">📊 شکل‌دهی حجم — محدودیت روزانه و ساعتی روی هر نود</p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <label className="block" data-guide="m-volume-shaping">
-                  <span className="text-xs text-slate-400 mb-1 block">شکل‌دهی حجم</span>
-                  <select value={form.volumeShaping ? '1' : '0'} onChange={(e) => set('volumeShaping', e.target.value === '1')} className="input-field text-sm py-2 w-full">
-                    <option value="0">خاموش</option>
-                    <option value="1">روشن</option>
-                  </select>
-                </label>
-                {form.volumeShaping && (
-                  <>
-                    <Field label="حجم روزانه (MB)" value={form.dailyVolumeMb} onChange={(v) => set('dailyVolumeMb', v)} placeholder="500" guide="m-daily-volume" />
-                    <Field label="حجم ساعتی (MB)" value={form.hourlyVolumeMb} onChange={(v) => set('hourlyVolumeMb', v)} placeholder="50" guide="m-hourly-volume" />
-                  </>
-                )}
-              </div>
-            </div>
+
             {error && <p className="text-sm text-error-400">{error}</p>}
+
+            {/* Sing-box JSON preview */}
+            {form.countries.length > 0 && (
+              <div className="bg-slate-950/50 rounded-xl border border-slate-800 p-3">
+                <p className="text-[11px] text-slate-500 mb-2">📦 sing-box JSON preview</p>
+                <pre className="text-[10px] text-emerald-400/70 font-mono overflow-x-auto max-h-[120px] overflow-y-auto">
+{JSON.stringify({
+  outbounds: form.countries.slice(0, 3).map(cc => ({
+    tag: `${cc}-proxy`, type: 'vless',
+    ...(form.fragment ? { fragment: { enabled: true } } : {}),
+    ...(form.ech ? { ech: { enabled: true } } : {}),
+    ...(form.fingerprint ? { utls: { enabled: true, fingerprint: form.fingerprint } } : {}),
+    ...(form.sniChoice !== 'none' ? { tls: { server_name: form.sniChoice || form.sniCustom } } : {}),
+    ...(form.transport ? { transport: { type: form.transport } } : {}),
+  })),
+}, null, 2)}
+                </pre>
+              </div>
+            )}
+
             <div className="flex gap-2">
-              <button onClick={saveForm} disabled={busy} data-guide="m-save" className="btn-primary flex items-center gap-2 text-sm">
+              <button onClick={saveForm} disabled={busy} className="btn-primary flex items-center gap-2 text-sm">
                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : editingId ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-                {editingId ? 'ذخیره تغییرات' : 'ساخت کاربر'}
+                {editingId ? 'ذخیره' : 'ساخت'}
               </button>
-              <button onClick={() => { setFormOpen(false); setEditingId(null); setForm(EMPTY_FORM) }}
-                className="btn-secondary text-sm">انصراف</button>
+              <button onClick={() => { setFormOpen(false); setEditingId(null); setForm(EMPTY_FORM) }} className="btn-secondary text-sm">انصراف</button>
             </div>
           </div>
         )}
@@ -623,62 +700,62 @@ export default function Members() {
             </button>
             {selected.size > 0 && <>
               <span className="text-xs text-slate-400">{selected.size} انتخاب‌شده</span>
-              <button onClick={() => bulk('enable')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">فعال‌سازی</button>
+              <button onClick={() => bulk('enable')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">فعال</button>
               <button onClick={() => bulk('disable')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">غیرفعال</button>
-              <button onClick={() => bulk('reset_quota')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">ریست سهمیه</button>
+              <button onClick={() => bulk('reset_quota')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">ریست حجم</button>
               <button onClick={() => bulk('reset_time')} disabled={busy} className="btn-secondary text-xs px-3 py-1.5">ریست زمان</button>
-              <button onClick={() => bulk('delete')} disabled={busy}
-                className="text-xs px-3 py-1.5 rounded-lg bg-error-500/15 border border-error-500/30 text-error-400 hover:bg-error-500/25">حذف</button>
+              <button onClick={() => bulk('delete')} disabled={busy} className="text-xs px-3 py-1.5 rounded-lg bg-error-500/15 border border-error-500/30 text-error-400">حذف</button>
             </>}
           </div>
           {members.map((m) => {
             const pct = m.quota_gb ? Math.min(100, (m.used_gb / m.quota_gb) * 100) : 0
             const expired = m.expires_at && m.expires_at < new Date().toISOString()
+            const cc = (m.settings as unknown as { country_locations?: Record<string, unknown[]> }).country_locations ?? {}
+            const locCount = Object.values(cc).reduce((sum, arr) => sum + (arr as unknown[]).length, 0) as number
             return (
               <div key={m.id} className={`glass-card p-5 ${!m.enabled || expired ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2">
-                    <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleSel(m.id)}
-                      className="w-4 h-4 accent-brand-500" />
+                    <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleSel(m.id)} className="w-4 h-4 accent-brand-500" />
                     <div>
                       <p className="text-white font-medium">{m.name}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        {m.settings.countries.map((c) => COUNTRIES.find((x) => x.code === c)?.label ?? c).join('، ') || 'IP پیش‌فرض'}
-                        {m.settings.transport ? ` · ${m.settings.transport}` : ''}
-                        {m.settings.fragment ? ' · فرگمنت' : ''}
-                        {m.settings.sanctions_mode === 'warp' ? ' · WARP' : m.settings.sanctions_mode === 'sni' || m.settings.bypass_sanctions ? ' · ضدتحریم' : ''}
-                        {expired ? ' · منقضی' : ''}
+                        {m.settings.countries.map((c) => COUNTRIES.find((x) => x.code === c)?.flag ?? c).join(' ') || 'پیش‌فرض'}
+                        {m.settings.countries.length > 0 && <span className="text-brand-400"> · {m.settings.countries.length} کشور</span>}
+                        {locCount > 0 && <span className="text-emerald-400"> · {locCount} لوکیشن</span>}
+                        <span> · ≤{MAX_NODES_PER_LOCATION} نود</span>
+                        {m.settings.fragment ? ' · 🧩' : ''}
+                        {m.settings.sanctions_mode === 'warp' ? ' · WARP' : ''}
+                        {expired ? ' · ⏰ منقضی' : ''}
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => openEdit(m)} data-guide="m-row-edit" title="ویرایش تنظیمات"
-                      className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
-                      <Pencil className="w-4 h-4" />
+                    <button onClick={() => openEdit(m)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300"><Pencil className="w-4 h-4" /></button>
+                    <button onClick={() => copy(m, '')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      {copied === m.id + 'sub' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
                     </button>
-                    <button onClick={() => copy(m)} data-guide="m-row-sub" className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
-                      {copied === m.id ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
+                    <button onClick={() => copy(m, 'clash')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      {copied === m.id + 'clash' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
                     </button>
-                    <button onClick={() => copy(m, true)} data-guide="m-row-clash" className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
-                      {copied === m.id + '-c' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
+                    <button onClick={() => copy(m, 'singbox')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      {copied === m.id + 'singbox' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} sing-box
                     </button>
-                    <button onClick={() => runTest(m)} disabled={testingId === m.id} data-guide="m-row-test" title="تست زنده: بررسی واقعی نودهای خروجی این ساب"
-                      className={`p-2 rounded-lg bg-slate-800/60 flex items-center ${testingId === m.id ? 'text-brand-300' : 'text-slate-400 hover:text-emerald-300'}`}>
+                    <button onClick={() => runTest(m)} disabled={testingId === m.id}
+                      className={`p-2 rounded-lg bg-slate-800/60 ${testingId === m.id ? 'text-brand-300' : 'text-slate-400 hover:text-emerald-300'}`}>
                       {testingId === m.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
                     </button>
-                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" data-guide="m-row-status" title="صفحه وضعیت + QR + افزودن به کلاینت"
-                      className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300 flex items-center">
+                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
                       <Activity className="w-4 h-4" />
                     </a>
-                    <button onClick={() => refreshUsage(m.id)} disabled={busy} data-guide="m-row-usage" title="به‌روزرسانی مصرف"
-                      className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
+                    <button onClick={() => refreshUsage(m.id)} disabled={busy} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
                       <RefreshCw className="w-4 h-4" />
                     </button>
-                    <button onClick={() => patch(m.id, { enabled: !m.enabled })} data-guide="m-row-power" title={m.enabled ? 'غیرفعال کردن' : 'فعال کردن'}
+                    <button onClick={() => patch(m.id, { enabled: !m.enabled })}
                       className={`p-2 rounded-lg bg-slate-800/60 ${m.enabled ? 'text-emerald-400' : 'text-slate-500'} hover:text-white`}>
                       <Power className="w-4 h-4" />
                     </button>
-                    <button onClick={async () => { await api(`/members/${m.id}`, { method: 'DELETE' }).catch(() => null); load() }} data-guide="m-row-delete"
+                    <button onClick={async () => { await api(`/members/${m.id}`, { method: 'DELETE' }).catch(() => null); load() }}
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -686,7 +763,7 @@ export default function Members() {
                 </div>
                 <div className="mt-3">
                   <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                    <span>مصرف: {m.used_gb} GB {m.quota_gb ? `از ${m.quota_gb} GB` : '(بی‌نهایت)'}</span>
+                    <span>مصرف: {m.used_gb} GB {m.quota_gb ? `از ${m.quota_gb}` : '(نامحدود)'}</span>
                     {pct > 0 && <span className={pct > 90 ? 'text-red-400' : ''}>{Math.round(pct)}%</span>}
                   </div>
                   {m.quota_gb && (
@@ -701,22 +778,14 @@ export default function Members() {
                     {testResult.data.output_count > 0 ? (
                       <>
                         <p className="text-xs font-medium text-emerald-300">
-                          ✅ تست زنده: {testResult.data.output_count} نود آماده خروجی
-                          {testResult.data.source_live ? '' : ' (از حافظهٔ محلی — اتصال زنده به ورکر برقرار نبود)'}
+                          ✅ {testResult.data.output_count} نود — {testResult.data.source_live ? 'زنده' : 'محلی'}
                         </p>
                         <p className="text-[11px] text-slate-400">
-                          منبع: {testResult.data.source_count} نود · TLS: {testResult.data.tls_nodes} · WebSocket: {testResult.data.ws_nodes}
+                          منبع: {testResult.data.source_count} · TLS: {testResult.data.tls_nodes} · WS: {testResult.data.ws_nodes}
                         </p>
-                        {testResult.data.sample.length > 0 && (
-                          <p className="text-[11px] text-slate-500 truncate" dir="rtl">نمونه: {testResult.data.sample.join(' | ')}</p>
-                        )}
                       </>
-                    ) : (
-                      <p className="text-xs font-medium text-error-400">❌ هیچ نودی از ورکر دریافت نشد</p>
-                    )}
-                    {testResult.data.warnings.map((w, i) => (
-                      <p key={i} className="text-[11px] text-amber-300">⚠️ {w}</p>
-                    ))}
+                    ) : <p className="text-xs text-error-400">❌ نودی دریافت نشد</p>}
+                    {testResult.data.warnings.map((w, i) => <p key={i} className="text-[11px] text-amber-300">⚠️ {w}</p>)}
                   </div>
                 )}
               </div>

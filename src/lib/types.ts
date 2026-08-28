@@ -131,8 +131,14 @@ export interface InjectedSub {
   created_at: string
 }
 
+export interface CountryLocationConfig {
+  location: string
+  proxy: string
+}
+
 export interface MemberSettings {
   countries: string[]
+  country_locations?: Record<string, CountryLocationConfig[]>
   custom_ips: string[]
   transport: '' | 'ws' | 'grpc' | 'httpupgrade'
   fragment: boolean
@@ -144,7 +150,6 @@ export interface MemberSettings {
   bypass_sanctions: boolean
   sanctions_mode?: '' | 'sni' | 'warp'
   ip_rotation_minutes?: number
-  // edgetunnel per-request params
   proxyip?: string
   chain_proxy?: string
   ech?: boolean
@@ -153,6 +158,7 @@ export interface MemberSettings {
   ed_0rtt?: boolean
   random_path?: boolean
   fragment_client?: string
+  max_nodes_per_location?: number
 }
 
 export interface WorkerMember {
