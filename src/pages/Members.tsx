@@ -37,6 +37,97 @@ const SANCTIONS_MODES = [
 
 const MAX_NODES_PER_LOCATION = 3
 
+// ── World map coordinates (lat/lng → SVG x/y) ─────────────────────
+const MAP_DOTS: Record<string, { x: number; y: number; color: string }> = {
+  us: { x: 165, y: 105, color: '#60a5fa' },
+  de: { x: 310, y: 82, color: '#f59e0b' },
+  nl: { x: 300, y: 78, color: '#f97316' },
+  tr: { x: 355, y: 105, color: '#ef4444' },
+  ae: { x: 395, y: 125, color: '#10b981' },
+  fi: { x: 335, y: 60, color: '#8b5cf6' },
+  gb: { x: 288, y: 76, color: '#3b82f6' },
+  fr: { x: 296, y: 90, color: '#6366f1' },
+  jp: { x: 530, y: 100, color: '#ec4899' },
+  sg: { x: 470, y: 148, color: '#14b8a6' },
+  kr: { x: 520, y: 100, color: '#a855f7' },
+  in: { x: 425, y: 125, color: '#f59e0b' },
+  br: { x: 215, y: 175, color: '#22c55e' },
+  ca: { x: 170, y: 80, color: '#ef4444' },
+  au: { x: 510, y: 195, color: '#06b6d4' },
+}
+
+function WorldMap({ selected, onToggle }: { selected: string[]; onToggle: (code: string) => void }) {
+  return (
+    <div className="relative rounded-xl border border-slate-800 bg-slate-950/60 overflow-hidden">
+      <svg viewBox="0 0 600 260" className="w-full h-auto" style={{ minHeight: 140 }}>
+        {/* Grid lines */}
+        {[0, 65, 130, 195].map((y) => (
+          <line key={`h${y}`} x1={0} y1={y} x2={600} y2={y} stroke="rgba(59,130,246,0.06)" strokeWidth={0.5} />
+        ))}
+        {[0, 150, 300, 450, 600].map((x) => (
+          <line key={`v${x}`} x1={x} y1={0} x2={x} y2={260} stroke="rgba(59,130,246,0.06)" strokeWidth={0.5} />
+        ))}
+
+        {/* Connection lines between selected countries */}
+        {selected.length > 1 && selected.map((c1, i) =>
+          selected.slice(i + 1).map((c2) => {
+            const d1 = MAP_DOTS[c1]
+            const d2 = MAP_DOTS[c2]
+            if (!d1 || !d2) return null
+            return (
+              <line key={`${c1}-${c2}`} x1={d1.x} y1={d1.y} x2={d2.x} y2={d2.y}
+                stroke="rgba(59,110,245,0.15)" strokeWidth={0.8} strokeDasharray="4 2" />
+            )
+          })
+        )}
+
+        {/* Country dots */}
+        {Object.entries(MAP_DOTS).map(([code, dot]) => {
+          const isActive = selected.includes(code)
+          const country = COUNTRIES.find((c) => c.code === code)
+          return (
+            <g key={code} onClick={() => onToggle(code)} className="cursor-pointer">
+              {/* Glow ring for selected */}
+              {isActive && (
+                <circle cx={dot.x} cy={dot.y} r={12}
+                  fill={dot.color} opacity={0.12} />
+              )}
+              {/* Main dot */}
+              <circle cx={dot.x} cy={dot.y} r={isActive ? 5 : 3}
+                fill={isActive ? dot.color : 'rgba(148,163,184,0.4)'}
+                stroke={isActive ? '#fff' : 'none'}
+                strokeWidth={isActive ? 1.5 : 0}
+                style={{ transition: 'all 0.3s ease' }} />
+              {/* Label */}
+              {isActive && country && (
+                <text x={dot.x} y={dot.y - 10}
+                  textAnchor="middle" fill="white" fontSize={8}
+                  fontWeight={600} style={{ pointerEvents: 'none' }}>
+                  {country.flag} {country.labelEn}
+                </text>
+              )}
+            </g>
+          )
+        })}
+
+        {/* Empty state */}
+        {selected.length === 0 && (
+          <text x={300} y={135} textAnchor="middle" fill="rgba(148,163,184,0.4)" fontSize={11}>
+            کشوری انتخاب نشده — روی دکمه‌ها کلیک کنید
+          </text>
+        )}
+
+        {/* Stats */}
+        {selected.length > 0 && (
+          <text x={590} y={250} textAnchor="end" fill="rgba(59,110,245,0.6)" fontSize={8}>
+            {selected.length} کشور فعال
+          </text>
+        )}
+      </svg>
+    </div>
+  )
+}
+
 // ── EDT-Pages Proxy List ──────────────────────────────────────────────
 const EDT_PROXY_REPO = 'https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data'
 
@@ -536,6 +627,11 @@ export default function Members() {
                     </div>
                   )
                 })}
+              </div>
+
+              {/* World Map */}
+              <div className="mt-3">
+                <WorldMap selected={form.countries} onToggle={toggleCountry} />
               </div>
 
               {form.countries.length > 0 && (

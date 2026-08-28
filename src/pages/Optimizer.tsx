@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Zap, Play, Copy, Trash2, RefreshCw, Check, Syringe } from 'lucide-react'
+import { useCallback, useEffect, useState, useRef } from 'react'
+import { Zap, Play, Copy, Trash2, RefreshCw, Check, Syringe, Download } from 'lucide-react'
 import { api, API_BASE } from '../lib/api'
+import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS } from '../../worker/presets'
 import type { OptimizerJob, OptimizerNode, InjectedSub } from '../lib/types'
 
 const statusLabel: Record<OptimizerJob['status'], string> = {
@@ -30,6 +31,48 @@ export default function Optimizer() {
   const [injBusy, setInjBusy] = useState(false)
   const [injError, setInjError] = useState<string | null>(null)
 
+  // ── Fragment injection ──
+  const [fragEnabled, setFragEnabled] = useState(false)
+  const [fragPreset, setFragPreset] = useState('')
+  const [fragFm, setFragFm] = useState('')
+  const [fragCs, setFragCs] = useState('')
+
+  // ── EDT-Pages proxy auto-fetch ──
+  const [proxyProtocol, setProxyProtocol] = useState<'socks5' | 'https'>('socks5')
+  const [proxyLists, setProxyLists] = useState<Record<string, string[]>>({})
+  const [proxyLoading, setProxyLoading] = useState(false)
+  const proxyFetched = useRef(false)
+
+  const EDT_PROXY_REPO = 'https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data'
+
+  const fetchEtdProxies = async () => {
+    setProxyLoading(true)
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 15000)
+      const resp = await fetch(`${EDT_PROXY_REPO}/${proxyProtocol}.json`, { signal: ctrl.signal })
+      clearTimeout(t)
+      if (!resp.ok) { setProxyLoading(false); return }
+      const data = await resp.json() as Array<{ proxy: string; country?: string }>
+      const grouped: Record<string, string[]> = {}
+      for (const p of data) {
+        if (p.country) {
+          const key = p.country.toLowerCase()
+          if (!grouped[key]) grouped[key] = []
+          grouped[key].push(p.proxy)
+        }
+      }
+      setProxyLists(grouped)
+    } catch { /* ignore */ }
+    setProxyLoading(false)
+  }
+
+  useEffect(() => {
+    if (proxyFetched.current) return
+    proxyFetched.current = true
+    fetchEtdProxies()
+  }, [])
+
   const loadInjections = useCallback(async () => {
     try {
       const { data } = await api<{ data: InjectedSub[] }>('/injector')
@@ -56,7 +99,7 @@ export default function Optimizer() {
           ...(m[2] ? { username: m[2] } : {}), ...(m[3] ? { password: m[3] } : {}),
         }
       }).filter(Boolean)
-      await api('/injector', { method: 'POST', body: { name: injName.trim(), source: injSource.trim(), ips, proxies, rotate_minutes: injRotate ? Number(injRotate) : null } })
+      await api('/injector', { method: 'POST', body: { name: injName.trim(), source: injSource.trim(), ips, proxies, rotate_minutes: injRotate ? Number(injRotate) : null, ...(fragEnabled ? { fragment: { enabled: true, fm: fragFm || undefined, cs: fragCs || undefined, preset: fragPreset || undefined } } : {}) } })
       setInjSource(''); setInjIps(''); setInjProxies(''); setInjName('')
       await loadInjections()
     } catch (e) {
@@ -229,7 +272,7 @@ export default function Optimizer() {
           <Syringe className="w-5 h-5 text-brand-400" />
           <div>
             <h2 className="text-lg font-semibold text-white">تزریق IP و پروکسی — ساب سفارشی miliconfig</h2>
-            <p className="text-xs text-slate-500">آی‌پی‌های اسکن‌شده ورودی نودها را ثابت می‌کنند و پروکسی‌های HTTP/SOCKS5 به‌صورت زنجیره خروجی ثابت (dialer-proxy در Clash Meta) اضافه می‌شوند</p>
+            <p className="text-xs text-slate-500">آی‌پی‌های اسکن‌شده ورودی نودها را ثابت می‌کنند و پروکسی‌های HTTP/SOCKS5 از EDT-Pages خودکار دریافت می‌شوند</p>
           </div>
         </div>
 
@@ -240,16 +283,103 @@ export default function Optimizer() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-sm text-slate-400 mb-1 block">IPهای ترجیحی (هر خط یکی — از اسکنر کپی کنید)</label>
+            <label className="text-sm text-slate-400 mb-1 block">IPهای ترجیحی (هر خط یکی)</label>
             <textarea value={injIps} onChange={(e) => setInjIps(e.target.value)} rows={3} dir="ltr"
               placeholder={'104.16.0.1\n172.64.0.1:2053'} className="input-field font-mono text-xs" />
           </div>
           <div>
-            <label className="text-sm text-slate-400 mb-1 block">پروکسی‌های خروجی (هر خط یکی — خروجی ثابت نود)</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-sm text-slate-400">پروکسی‌های خروجی</label>
+              <div className="flex items-center gap-2">
+                <select value={proxyProtocol} onChange={(e) => setProxyProtocol(e.target.value as 'socks5' | 'https')}
+                  className="text-[11px] bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-300">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="https">HTTPS</option>
+                </select>
+                <button onClick={fetchEtdProxies} disabled={proxyLoading}
+                  className="text-[11px] text-brand-400 hover:text-brand-300 flex items-center gap-1">
+                  <Download className={`w-3 h-3 ${proxyLoading ? 'animate-spin' : ''}`} />
+                  {proxyLoading ? '...' : 'EDT'}
+                </button>
+              </div>
+            </div>
             <textarea value={injProxies} onChange={(e) => setInjProxies(e.target.value)} rows={3} dir="ltr"
               placeholder={'socks5://user:pass@1.2.3.4:1080\nhttp://5.6.7.8:8080'} className="input-field font-mono text-xs" />
-            <p className="text-[11px] text-slate-500 mt-1">خروجی Clash Meta با زنجیره نود ← پروکسی ساخته می‌شود</p>
+            {/* EDT-Pages proxy quick-add chips */}
+            {Object.keys(proxyLists).length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                <p className="text-[10px] text-slate-500">پروکسی‌های زنده EDT — کلیک کنید تا اضافه شوند:</p>
+                <div className="flex flex-wrap gap-1">
+                  {Object.entries(proxyLists).slice(0, 10).map(([country, proxies]) => (
+                    <button key={country}
+                      onClick={() => {
+                        const first = proxies[0]
+                        if (first && !injProxies.includes(first)) {
+                          setInjProxies((p) => p ? `${p}\n${first}` : first)
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded text-[10px] bg-slate-800/60 border border-slate-700 text-slate-300 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors">
+                      {country.toUpperCase()} ({proxies.length})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+        </div>
+
+        {/* Fragment injection toggle */}
+        <div className="border-t border-slate-800 pt-3 mt-1">
+          <button onClick={() => setFragEnabled(!fragEnabled)} className="flex items-center gap-2 text-sm text-slate-300">
+            <span className={`w-9 h-5 rounded-full transition-colors relative ${fragEnabled ? 'bg-brand-500' : 'bg-slate-700'}`}>
+              <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                style={{ right: fragEnabled ? '2px' : '18px' }} />
+            </span>
+            🧩 فرگمنت (TLS Fragment) — تزریق در JSON sing-box
+          </button>
+          {fragEnabled && (
+            <div className="mt-3 space-y-3">
+              <label className="block max-w-xs">
+                <span className="text-xs text-slate-400 mb-1 block">پریست</span>
+                <select value={fragPreset} onChange={(e) => {
+                  setFragPreset(e.target.value)
+                  const preset = FRAGMENT_PRESETS.find((p) => p.code === e.target.value)
+                  if (preset) { setFragFm(preset.code); setFragCs('') }
+                }} className="input-field text-sm py-2 w-full">
+                  <option value="">دستی</option>
+                  {FRAGMENT_PRESETS.map((p) => <option key={p.code} value={p.code}>{p.flag} {p.label}</option>)},
+                </select>
+              </label>
+              <div className="flex gap-1.5 flex-wrap">
+                {FM_PRESETS.map((p) => (
+                  <button key={p.code} onClick={() => setFragFm(p.json)}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-brand-300 border border-slate-700 transition-colors">
+                    ⚡ {p.label}
+                  </button>
+                ))},
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400 mb-1 block">fm= JSON</label>
+                  <textarea value={fragFm} onChange={(e) => setFragFm(e.target.value)} rows={2}
+                    className="input-field font-mono text-[11px] w-full" dir="ltr" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 mb-1 block">cs= Cipher Suite</label>
+                  <textarea value={fragCs} onChange={(e) => setFragCs(e.target.value)} rows={2}
+                    className="input-field font-mono text-[11px] w-full" dir="ltr" />
+                </div>
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {CS_PRESETS.map((p) => (
+                  <button key={p.code} onClick={() => setFragCs(p.value)}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800/60 text-[11px] text-slate-300 hover:text-emerald-300 border border-slate-700 transition-colors">
+                    🔐 {p.label}
+                  </button>
+                ))},
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex gap-2 flex-wrap">
           <input value={injName} onChange={(e) => setInjName(e.target.value)} placeholder="نام (اختیاری)" className="input-field text-sm flex-1 min-w-[160px]" />
