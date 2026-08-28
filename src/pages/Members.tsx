@@ -55,6 +55,22 @@ interface FormState {
   ed0rtt: boolean
   randomPath: boolean
   fragmentClient: string
+  // ── Multi-config & quantity settings ──
+  configCount: string // how many configs to generate per location
+  configsPerLocation: Record<string, number> // override per country
+  enableMultiConfig: boolean
+  // ── Time-based access control ──
+  timeBasedAccess: boolean
+  accessHours: string // e.g., "18-23" for 6PM to 11PM
+  accessDays: string[] // e.g., ["mon", "wed", "fri"]
+  // ── Volume shaping per node ──
+  volumeShaping: boolean
+  dailyVolumeMb: string
+  hourlyVolumeMb: string
+  // ── Node naming & organization ──
+  nodePrefix: string
+  nodeSuffix: string
+  groupByCountry: boolean
 }
 
 const EMPTY_FORM: FormState = {
@@ -63,6 +79,10 @@ const EMPTY_FORM: FormState = {
   customIps: '', fragment: false, preset: '', fm: '', cs: '',
   fingerprint: '', sniChoice: '', sniCustom: '', hostMask: '', sanctionsMode: '',
   proxyip: '', chainProto: '', chainCred: '', ech: false, ed0rtt: false, randomPath: false, fragmentClient: '',
+  configCount: '1', configsPerLocation: {}, enableMultiConfig: false,
+  timeBasedAccess: false, accessHours: '', accessDays: [],
+  volumeShaping: false, dailyVolumeMb: '', hourlyVolumeMb: '',
+  nodePrefix: '', nodeSuffix: '', groupByCountry: false,
 }
 
 function formToBody(f: FormState) {
@@ -95,6 +115,22 @@ function formToBody(f: FormState) {
     start_on_connect: f.startOnConnect,
     reset_period_days: f.resetDays ? Number(f.resetDays) : null,
     expires_at: f.expires ? new Date(f.expires).toISOString() : null,
+    // ── Multi-config & quantity settings ──
+    config_count: f.configCount ? Number(f.configCount) : 1,
+    configs_per_location: f.configsPerLocation || {},
+    enable_multi_config: f.enableMultiConfig,
+    // ── Time-based access control ──
+    time_based_access: f.timeBasedAccess,
+    access_hours: f.accessHours,
+    access_days: f.accessDays,
+    // ── Volume shaping per node ──
+    volume_shaping: f.volumeShaping,
+    daily_volume_mb: f.dailyVolumeMb ? Number(f.dailyVolumeMb) : null,
+    hourly_volume_mb: f.hourlyVolumeMb ? Number(f.hourlyVolumeMb) : null,
+    // ── Node naming & organization ──
+    node_prefix: f.nodePrefix,
+    node_suffix: f.nodeSuffix,
+    group_by_country: f.groupByCountry,
   }
 }
 
@@ -123,6 +159,22 @@ function memberToForm(m: WorkerMember): FormState {
     chainCred: (s.chain_proxy ?? '').replace(/^[a-z0-9]+:\/\//i, ''),
     ech: !!s.ech, ed0rtt: !!s.ed_0rtt, randomPath: !!s.random_path,
     fragmentClient: s.fragment_client ?? '',
+    // ── Multi-config & quantity settings ──
+    configCount: String((s as any).config_count ?? 1),
+    configsPerLocation: (s as any).configs_per_location || {},
+    enableMultiConfig: !!(s as any).enable_multi_config,
+    // ── Time-based access control ──
+    timeBasedAccess: !!(s as any).time_based_access,
+    accessHours: (s as any).access_hours ?? '',
+    accessDays: (s as any).access_days ?? [],
+    // ── Volume shaping per node ──
+    volumeShaping: !!(s as any).volume_shaping,
+    dailyVolumeMb: (s as any).daily_volume_mb != null ? String((s as any).daily_volume_mb) : '',
+    hourlyVolumeMb: (s as any).hourly_volume_mb != null ? String((s as any).hourly_volume_mb) : '',
+    // ── Node naming & organization ──
+    nodePrefix: (s as any).node_prefix ?? '',
+    nodeSuffix: (s as any).node_suffix ?? '',
+    groupByCountry: !!(s as any).group_by_country,
   }
 }
 
@@ -460,6 +512,93 @@ export default function Members() {
                 <Toggle checked={form.ech} onChange={() => set('ech', !form.ech)} label="ECH (TLS رمزنگاری SNI)" guide="m-ech" />
                 <Toggle checked={form.ed0rtt} onChange={() => set('ed0rtt', !form.ed0rtt)} label="0-RTT (ed=2560)" guide="m-ed0rtt" />
                 <Toggle checked={form.randomPath} onChange={() => set('randomPath', !form.randomPath)} label="مسیر تصادفی (ضد DPI)" guide="m-random-path" />
+              </div>
+            </div>
+            {/* ── Multi-config & quantity settings ── */}
+            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
+              <p className="text-xs font-medium text-slate-300 mb-2">📦 تنظیمات تعداد کانفیگ — مناسب برای فروش و مدیریت کاربران</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="تعداد کانفیگ به ازای هر لوکیشن" value={form.configCount} onChange={(v) => set('configCount', v)} placeholder="1" guide="m-config-count" />
+                <label className="block" data-guide="m-enable-multi">
+                  <span className="text-xs text-slate-400 mb-1 block">فعال‌سازی چند کانفیگه</span>
+                  <select value={form.enableMultiConfig ? '1' : '0'} onChange={(e) => set('enableMultiConfig', e.target.value === '1')} className="input-field text-sm py-2 w-full">
+                    <option value="0">خاموش</option>
+                    <option value="1">روشن</option>
+                  </select>
+                </label>
+                <Field label="پیشوند نام نود (اختیاری)" value={form.nodePrefix} onChange={(v) => set('nodePrefix', v)} placeholder="VIP-" guide="m-node-prefix" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                <Field label="پسوند نام نود (اختیاری)" value={form.nodeSuffix} onChange={(v) => set('nodeSuffix', v)} placeholder="-EDT" guide="m-node-suffix" />
+                <label className="block" data-guide="m-group-by-country">
+                  <span className="text-xs text-slate-400 mb-1 block">گروه‌بندی بر اساس کشور</span>
+                  <select value={form.groupByCountry ? '1' : '0'} onChange={(e) => set('groupByCountry', e.target.value === '1')} className="input-field text-sm py-2 w-full">
+                    <option value="0">خاموش</option>
+                    <option value="1">روشن</option>
+                  </select>
+                </label>
+              </div>
+              {form.enableMultiConfig && form.countries.length > 0 && (
+                <div className="mt-3 p-3 rounded-lg bg-slate-800/40 border border-slate-700">
+                  <p className="text-xs text-slate-400 mb-2">تنظیم تعداد کانفیگ به ازای هر کشور (اختیاری — اگر خالی باشد از مقدار کلی استفاده می‌شود)</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {form.countries.map((c) => (
+                      <label key={c} className="block">
+                        <span className="text-[11px] text-slate-500">{COUNTRIES.find((x) => x.code === c)?.label ?? c}</span>
+                        <input type="number" min="0" max="10" value={form.configsPerLocation[c] ?? ''} onChange={(e) => set('configsPerLocation', { ...form.configsPerLocation, [c]: Number(e.target.value) || 0 })}
+                          className="input-field text-xs py-1 w-full mt-0.5" placeholder={form.configCount} />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* ── Time-based access control ── */}
+            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
+              <p className="text-xs font-medium text-slate-300 mb-2">⏰ کنترل دسترسی زمانی — محدودیت ساعت و روزهای هفته</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label className="block" data-guide="m-time-access">
+                  <span className="text-xs text-slate-400 mb-1 block">کنترل دسترسی زمانی</span>
+                  <select value={form.timeBasedAccess ? '1' : '0'} onChange={(e) => set('timeBasedAccess', e.target.value === '1')} className="input-field text-sm py-2 w-full">
+                    <option value="0">خاموش</option>
+                    <option value="1">روشن</option>
+                  </select>
+                </label>
+                {form.timeBasedAccess && (
+                  <>
+                    <Field label="ساعت دسترسی (مثلاً 18-23)" value={form.accessHours} onChange={(v) => set('accessHours', v)} placeholder="18-23" guide="m-access-hours" />
+                    <div data-guide="m-access-days">
+                      <span className="text-xs text-slate-400 mb-1 block">روزهای هفته</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map((d) => (
+                          <button key={d} onClick={() => set('accessDays', form.accessDays.includes(d) ? form.accessDays.filter((x) => x !== d) : [...form.accessDays, d])}
+                            className={`px-2 py-1 rounded text-[11px] border transition-colors ${form.accessDays.includes(d) ? 'bg-brand-500/20 text-brand-300 border-brand-500/40' : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:text-white'}`}>
+                            {d.slice(0, 3)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            {/* ── Volume shaping per node ── */}
+            <div className="sm:col-span-3 border-t border-slate-800 pt-3 mt-1">
+              <p className="text-xs font-medium text-slate-300 mb-2">📊 شکل‌دهی حجم — محدودیت روزانه و ساعتی روی هر نود</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label className="block" data-guide="m-volume-shaping">
+                  <span className="text-xs text-slate-400 mb-1 block">شکل‌دهی حجم</span>
+                  <select value={form.volumeShaping ? '1' : '0'} onChange={(e) => set('volumeShaping', e.target.value === '1')} className="input-field text-sm py-2 w-full">
+                    <option value="0">خاموش</option>
+                    <option value="1">روشن</option>
+                  </select>
+                </label>
+                {form.volumeShaping && (
+                  <>
+                    <Field label="حجم روزانه (MB)" value={form.dailyVolumeMb} onChange={(v) => set('dailyVolumeMb', v)} placeholder="500" guide="m-daily-volume" />
+                    <Field label="حجم ساعتی (MB)" value={form.hourlyVolumeMb} onChange={(v) => set('hourlyVolumeMb', v)} placeholder="50" guide="m-hourly-volume" />
+                  </>
+                )}
               </div>
             </div>
             {error && <p className="text-sm text-error-400">{error}</p>}
