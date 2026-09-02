@@ -1274,7 +1274,7 @@ function ScannerTab() {
 
       {results.length > 0 && (
         <div className="glass-card overflow-hidden">
-          <div className="p-4 border-b border-slate-700/50 flex items-center justify-between flex-wrap gap-3">
+          <div className="p-4 border-b border-slate-700/50 space-y-3 sm:flex sm:items-center sm:justify-between sm:flex-wrap sm:gap-3">
             <div className="flex items-center gap-3">
               <h3 className="text-sm font-bold text-white">{results.length} IP پیدا شد</h3>
               <button onClick={() => setSelectedIPs(selectedIPs.size === results.length ? new Set() : new Set(results.map((r) => r.ip)))}
@@ -1283,7 +1283,7 @@ function ScannerTab() {
               </button>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <select value={targetDep} onChange={(e) => setTargetDep(e.target.value)} className="input-field text-sm py-2 min-w-[180px]">
+              <select value={targetDep} onChange={(e) => setTargetDep(e.target.value)} className="input-field text-sm py-2 sm:min-w-[180px] w-full sm:w-auto">
                 <option value="">انتخاب ورکر هدف...</option>
                 {deployments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
@@ -1294,7 +1294,7 @@ function ScannerTab() {
               </button>
               {injections.length > 0 && (
                 <>
-                  <select value={targetInj} onChange={(e) => setTargetInj(e.target.value)} className="input-field text-sm py-2 min-w-[180px]">
+                  <select value={targetInj} onChange={(e) => setTargetInj(e.target.value)} className="input-field text-sm py-2 sm:min-w-[180px] w-full sm:w-auto">
                     <option value="">تزریق به ساب سفارشی...</option>
                     {injections.map((inj) => <option key={inj.id} value={inj.id}>{inj.name}</option>)}
                   </select>
