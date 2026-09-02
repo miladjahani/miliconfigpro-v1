@@ -831,6 +831,15 @@ export default function Members() {
         )}
       </div>
 
+      {depId && members.length === 0 && !busy && (
+        <div className="glass-card p-8 text-center">
+          <Users className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+          <p className="text-slate-400 text-sm mb-3">هنوز کاربری برای این ورکر ساخته نشده</p>
+          <button onClick={() => { setEditingId(null); setForm(EMPTY_FORM); setFormOpen(true) }} className="btn-primary text-sm">
+            <Plus className="w-4 h-4 inline ml-1" /> ساخت اولین کاربر
+          </button>
+        </div>
+      )}
       {members.length > 0 && (
         <div className="space-y-3">
           <div className="glass-card p-4 flex items-center gap-2 flex-wrap">
@@ -872,34 +881,32 @@ export default function Members() {
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => openEdit(m)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300"><Pencil className="w-4 h-4" /></button>
-                    <button onClick={() => copy(m, '')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
-                      {copied === m.id + 'sub' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} ساب
+                  <div className="flex items-center gap-1 flex-wrap justify-end">
+                    <button onClick={() => openEdit(m)} className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      <Pencil className="w-3.5 h-3.5" /> ویرایش
                     </button>
-                    <button onClick={() => copy(m, 'clash')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
-                      {copied === m.id + 'clash' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Clash
+                    <button onClick={() => copy(m, '')} className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      {copied === m.id + 'sub' ? <><Check className="w-3 h-3 text-emerald-400" /> کپی شد</> : <><Copy className="w-3 h-3" /> ساب</>}
                     </button>
-                    <button onClick={() => copy(m, 'singbox')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
-                      {copied === m.id + 'singbox' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} sing-box
+                    <a href={`/status/${m.token}`} target="_blank" rel="noopener"
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
+                      <Activity className="w-3.5 h-3.5" /> وضعیت
+                    </a>
+                    <button onClick={() => patch(m.id, { enabled: !m.enabled })}
+                      className={`px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs flex items-center gap-1 ${m.enabled ? 'text-emerald-400 hover:text-emerald-300' : 'text-slate-500 hover:text-white'}`}>
+                      <Power className="w-3.5 h-3.5" /> {m.enabled ? 'فعال' : 'غیرفعال'}
                     </button>
                     <button onClick={() => runTest(m)} disabled={testingId === m.id}
-                      className={`p-2 rounded-lg bg-slate-800/60 ${testingId === m.id ? 'text-brand-300' : 'text-slate-400 hover:text-emerald-300'}`}>
-                      {testingId === m.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-emerald-300 flex items-center gap-1">
+                      {testingId === m.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FlaskConical className="w-3.5 h-3.5" />} تست
                     </button>
-                    <a href={`/status/${m.token}`} target="_blank" rel="noopener" className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
-                      <Activity className="w-4 h-4" />
-                    </a>
-                    <button onClick={() => refreshUsage(m.id)} disabled={busy} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-brand-300">
-                      <RefreshCw className="w-4 h-4" />
+                    <button onClick={() => refreshUsage(m.id)} disabled={busy}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-brand-300 flex items-center gap-1">
+                      <RefreshCw className="w-3.5 h-3.5" /> بروزرسانی
                     </button>
-                    <button onClick={() => patch(m.id, { enabled: !m.enabled })}
-                      className={`p-2 rounded-lg bg-slate-800/60 ${m.enabled ? 'text-emerald-400' : 'text-slate-500'} hover:text-white`}>
-                      <Power className="w-4 h-4" />
-                    </button>
-                    <button onClick={async () => { await api(`/members/${m.id}`, { method: 'DELETE' }).catch(() => null); load() }}
-                      className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
-                      <Trash2 className="w-4 h-4" />
+                    <button onClick={async () => { if (!confirm(`کاربر «${m.name}» حذف شود؟`)) return; await api(`/members/${m.id}`, { method: 'DELETE' }).catch(() => null); load() }}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-400 hover:text-red-400 flex items-center gap-1">
+                      <Trash2 className="w-3.5 h-3.5" /> حذف
                     </button>
                   </div>
                 </div>
@@ -914,7 +921,13 @@ export default function Members() {
                     </div>
                   )}
                 </div>
-                <p className="text-xs text-slate-500 font-mono truncate mt-2" dir="ltr">{subUrl(m)}</p>
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <p className="text-xs text-slate-500 font-mono truncate flex-1 min-w-0" dir="ltr">{subUrl(m)}</p>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => copy(m, 'clash')} className="px-2 py-0.5 rounded text-[10px] bg-slate-800/50 text-slate-500 hover:text-brand-300 transition-colors">Clash</button>
+                    <button onClick={() => copy(m, 'singbox')} className="px-2 py-0.5 rounded text-[10px] bg-slate-800/50 text-slate-500 hover:text-brand-300 transition-colors">sing-box</button>
+                  </div>
+                </div>
                 {testResult?.id === m.id && (
                   <div className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3 space-y-1.5">
                     {testResult.data.output_count > 0 ? (

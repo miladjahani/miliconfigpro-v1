@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { Cloud, Mail, Lock, Loader2, Sparkles } from 'lucide-react'
+import { Cloud, Mail, Lock, Loader2, Sparkles, Eye, EyeOff } from 'lucide-react'
 
 export default function AuthPage() {
   const { signIn, signUp } = useAuth()
@@ -9,6 +9,7 @@ export default function AuthPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [showPass, setShowPass] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -76,17 +77,20 @@ export default function AuthPage() {
 
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">رمز عبور</label>
-              <div className="relative">
-                <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+              <div className="relative">                  <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
                 <input
-                  type="password"
+                  type={showPass ? 'text' : 'password'}
                   required
                   minLength={6}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="حداقل ۶ کاراکتر"
-                  className="input-field pr-11"
+                  className="input-field pr-11 pl-11"
                 />
+                <button type="button" onClick={() => setShowPass(!showPass)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
 
@@ -102,9 +106,15 @@ export default function AuthPage() {
             </button>
           </form>
 
-          <p className="text-center text-xs text-slate-500 mt-6">
-            با ورود، شما قوانین و مقررات را می‌پذیرید
-          </p>
+          <div className="mt-6 space-y-3">
+            <button type="button" onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null) }}
+              className="w-full text-center text-sm text-brand-400 hover:text-brand-300 transition-colors">
+              {mode === 'signin' ? 'حساب ندارید؟ ثبت‌نام کنید' : 'قبلاً ثبت‌نام کردید؟ وارد شوید'}
+            </button>
+            <p className="text-center text-xs text-slate-500">
+              با ورود، شما قوانین و مقررات را می‌پذیرید
+            </p>
+          </div>
         </div>
       </div>
     </div>

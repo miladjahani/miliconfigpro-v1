@@ -235,17 +235,32 @@ export default function Dashboard() {
           </div>
 
           {/* Quick action buttons */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6">
+            <Link to="/deploy" className="btn-primary flex items-center justify-center gap-2 text-sm">
+              <Zap className="w-4 h-4" /> ورکر جدید
+            </Link>
             <Link to="/tokens" className="btn-ghost flex items-center justify-center gap-2 text-sm">
-              <KeyRound className="w-4 h-4" /> مدیریت توکن
+              <KeyRound className="w-4 h-4" /> توکن‌ها
             </Link>
-            <Link to="/bot-config" className="btn-ghost flex items-center justify-center gap-2 text-sm">
-              <Bot className="w-4 h-4" /> تنظیمات ربات
+            <Link to="/members" className="btn-ghost flex items-center justify-center gap-2 text-sm">
+              <Users className="w-4 h-4" /> کاربران
             </Link>
-            <Link to="/logs" className="btn-ghost flex items-center justify-center gap-2 text-sm">
-              <Activity className="w-4 h-4" /> لاگ‌ها
+            <Link to="/optimizer" className="btn-ghost flex items-center justify-center gap-2 text-sm">
+              <Zap className="w-4 h-4" /> بهینه‌ساز
             </Link>
           </div>
+          {/* Empty state: no deployments yet */}
+          {(stats?.deployments ?? 0) === 0 && (
+            <div className="mt-6 p-6 rounded-xl border-2 border-dashed border-brand-500/30 bg-brand-500/5 text-center">
+              <Rocket className="w-10 h-10 text-brand-400 mx-auto mb-3" />
+              <h3 className="text-lg font-bold text-white mb-1">هنوز ورکری مستقر نکردید؟</h3>
+              <p className="text-sm text-slate-400 mb-4">اول یک توکن کلودفلر اضافه کنید، سپس اولین ورکر خود را بسازید.</p>
+              <div className="flex items-center justify-center gap-3">
+                <Link to="/tokens" className="btn-ghost text-sm">۱. افزودن توکن</Link>
+                <Link to="/deploy" className="btn-primary text-sm">۲. استقرار ورکر</Link>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Recent activity */}
