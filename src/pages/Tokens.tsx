@@ -56,6 +56,7 @@ export default function Tokens() {
   const [newName, setNewName] = useState('')
   const [newToken, setNewToken] = useState('')
   const [saving, setSaving] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set())
 
@@ -74,14 +75,18 @@ export default function Tokens() {
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
+    setAddError(null)
     try {
       await api('/tokens', { method: 'POST', body: { name: newName, token: newToken } })
       setNewName('')
       setNewToken('')
+      setAddError(null)
       setShowAdd(false)
+      load()
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'خطا در ذخیره توکن')
     } finally {
       setSaving(false)
-      load()
     }
   }
 
@@ -108,6 +113,8 @@ export default function Tokens() {
 
   const [autoBuildLoading, setAutoBuildLoading] = useState(false)
 
+  const openAdd = () => { setAddError(null); setShowAdd(true) }
+
   const handleAutoBuildToken = async () => {
     setAutoBuildLoading(true)
     window.open(buildPrefillUrl(), '_blank', 'noopener')
@@ -120,12 +127,12 @@ export default function Tokens() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white">توکن‌های کلودفلر</h1>
           <p className="text-slate-400 text-sm mt-1">مدیریت توکن‌های API کلودفلر برای استقرار ورکرها</p>
         </div>
-        <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-2">
+        <button onClick={openAdd} className="btn-primary flex items-center gap-2">
           <Plus className="w-4 h-4" /> افزودن توکن
         </button>
       </div>
@@ -221,7 +228,7 @@ export default function Tokens() {
           </div>
           <h3 className="text-lg font-bold text-white mb-2">هنوز توکنی اضافه نشده</h3>
           <p className="text-slate-400 text-sm mb-6">برای شروع استقرار ورکرها، ابتدا یک توکن API کلودفلر اضافه کنید</p>
-          <button onClick={() => setShowAdd(true)} className="btn-primary inline-flex items-center gap-2">
+          <button onClick={openAdd} className="btn-primary inline-flex items-center gap-2">
             <Plus className="w-4 h-4" /> افزودن اولین توکن
           </button>
         </div>
@@ -298,13 +305,18 @@ export default function Tokens() {
                 <textarea
                   required
                   value={newToken}
-                  onChange={(e) => setNewToken(e.target.value)}
+                  onChange={(e) => { setNewToken(e.target.value); setAddError(null) }}
                   placeholder="توکن را اینجا paste کنید..."
                   rows={3}
                   className="input-field font-mono text-sm"
                   dir="ltr"
                 />
               </div>
+              {addError && (
+                <div className="px-3 py-2 rounded-xl bg-error-500/10 border border-error-500/30 text-xs text-error-300">
+                  {addError}
+                </div>
+              )}
               <div className="flex gap-3">
                 <button type="submit" disabled={saving} className="btn-primary flex-1 flex items-center justify-center gap-2">
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
