@@ -41,29 +41,43 @@ export default function Optimizer() {
   const [proxyProtocol, setProxyProtocol] = useState<'socks5' | 'https'>('socks5')
   const [proxyLists, setProxyLists] = useState<Record<string, string[]>>({})
   const [proxyLoading, setProxyLoading] = useState(false)
+  const [proxyError, setProxyError] = useState<string | null>(null)
   const proxyFetched = useRef(false)
 
-  const EDT_PROXY_REPO = 'https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data'
+  // Multiple CDN sources — jsDelivr is more CORS-friendly on mobile than raw.githubusercontent.com
+  const EDT_SOURCES = [
+    `https://cdn.jsdelivr.net/gh/EDT-Pages/Proxy-List@main/data/${proxyProtocol}.json`,
+    `https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/${proxyProtocol}.json`,
+  ]
 
   const fetchEtdProxies = async () => {
     setProxyLoading(true)
-    try {
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 15000)
-      const resp = await fetch(`${EDT_PROXY_REPO}/${proxyProtocol}.json`, { signal: ctrl.signal })
-      clearTimeout(t)
-      if (!resp.ok) { setProxyLoading(false); return }
-      const data = await resp.json() as Array<{ proxy: string; country?: string }>
-      const grouped: Record<string, string[]> = {}
-      for (const p of data) {
-        if (p.country) {
-          const key = p.country.toLowerCase()
-          if (!grouped[key]) grouped[key] = []
-          grouped[key].push(p.proxy)
+    setProxyError(null)
+    for (const url of EDT_SOURCES) {
+      try {
+        const ctrl = new AbortController()
+        const t = setTimeout(() => ctrl.abort(), 30000)
+        const resp = await fetch(url, { signal: ctrl.signal })
+        clearTimeout(t)
+        if (!resp.ok) continue
+        const data = await resp.json() as Array<{ proxy: string; country?: string }>
+        const grouped: Record<string, string[]> = {}
+        for (const p of data) {
+          if (p.country) {
+            const key = p.country.toLowerCase()
+            if (!grouped[key]) grouped[key] = []
+            grouped[key].push(p.proxy)
+          }
         }
-      }
-      setProxyLists(grouped)
-    } catch { /* ignore */ }
+        if (Object.keys(grouped).length > 0) {
+          setProxyLists(grouped)
+          setProxyLoading(false)
+          setProxyError(null)
+          return
+        }
+      } catch { /* try next source */ }
+    }
+    setProxyError('دریافت پروکسی ناموفق بود — اینترنت خود را بررسی کنید')
     setProxyLoading(false)
   }
 
@@ -224,7 +238,7 @@ export default function Optimizer() {
             <p className="text-xs text-slate-500">آی‌پی‌های اسکن‌شده ورودی نودها را ثابت می‌کنند و پروکسی‌های HTTP/SOCKS5 از EDT-Pages خودکار دریافت می‌شوند</p>
 
             {/* IPs + Proxies side by side */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
               <div>
                 <label className="text-sm text-slate-400 mb-1 block">IPهای ترجیحی (هر خط یکی)</label>
                 <textarea value={injIps} onChange={(e) => setInjIps(e.target.value)} rows={3} dir="ltr"
@@ -249,11 +263,14 @@ export default function Optimizer() {
                 <textarea value={injProxies} onChange={(e) => setInjProxies(e.target.value)} rows={3} dir="ltr"
                   placeholder={'socks5://user:pass@1.2.3.4:1080\nhttp://5.6.7.8:8080'} className="input-field font-mono text-xs" />
                 {/* EDT quick-add chips */}
+                {proxyError && (
+                  <p className="mt-1 text-[10px] text-red-400">{proxyError}</p>
+                )}
                 {Object.keys(proxyLists).length > 0 && (
                   <div className="mt-2 space-y-1">
                     <p className="text-[10px] text-slate-500">پروکسی‌های زنده EDT — کلیک کنید تا اضافه شوند:</p>
                     <div className="flex flex-wrap gap-1">
-                      {Object.entries(proxyLists).slice(0, 10).map(([country, proxies]) => (
+                      {Object.entries(proxyLists).slice(0, 12).map(([country, proxies]) => (
                         <button key={country}
                           onClick={() => {
                             const first = proxies[0]
@@ -301,7 +318,7 @@ export default function Optimizer() {
                       </button>
                     ))}
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
                     <div>
                       <label className="text-xs text-slate-400 mb-1 block">fm= JSON</label>
                       <textarea value={fragFm} onChange={(e) => setFragFm(e.target.value)} rows={2}
@@ -326,10 +343,10 @@ export default function Optimizer() {
             </div>
 
             {/* Injection name + rotate + create button */}
-            <div className="flex gap-2 flex-wrap items-end">
-              <input value={injName} onChange={(e) => setInjName(e.target.value)} placeholder="نام ساب (اختیاری)" className="input-field text-sm flex-1 min-w-[140px]" />
-              <input value={injRotate} onChange={(e) => setInjRotate(e.target.value)} placeholder="چرخش IP (دقیقه)" className="input-field text-sm w-[130px]" />
-              <button onClick={runInjection} disabled={injBusy || !input.trim()} className="btn-primary text-sm flex items-center gap-2">
+            <div className="grid grid-cols-1 sm:flex sm:gap-2 sm:flex-wrap items-end gap-2">
+              <input value={injName} onChange={(e) => setInjName(e.target.value)} placeholder="نام ساب (اختیاری)" className="input-field text-sm sm:flex-1 sm:min-w-[140px]" />
+              <input value={injRotate} onChange={(e) => setInjRotate(e.target.value)} placeholder="چرخش IP (دقیقه)" className="input-field text-sm sm:w-[130px]" />
+              <button onClick={runInjection} disabled={injBusy || !input.trim()} className="btn-primary text-sm flex items-center justify-center gap-2">
                 <Syringe className="w-4 h-4" />{injBusy ? 'در حال ساخت...' : 'ساخت ساب تزریق‌شده'}
               </button>
             </div>
@@ -420,12 +437,12 @@ export default function Optimizer() {
                     {([['', 'ساب'], ['clash', 'Clash'], ['singbox', 'Sing-box'], ['plain', 'Plain']] as const).map(([t, label]) => (
                       <button key={label} onClick={() => copy(fmtUrl(subUrl(job.sub_token), t), job.id + (t || '-b'))}
                         data-guide="o-format"
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300"
+                        className="px-2 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300"
                         title={`کپی لینک ${label}`}>
                         {copied === job.id + (t || '-b') ? <Check className="w-3 h-3 text-emerald-400 inline" /> : null} {label}
                       </button>
                     ))}
-                    <button onClick={() => openDetail(job.id)} className="text-xs px-3 py-2 rounded-lg bg-brand-600/20 text-brand-300 hover:bg-brand-600/30">
+                    <button onClick={() => openDetail(job.id)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600/20 text-brand-300 hover:bg-brand-600/30">
                       نودها
                     </button>
                   </>
