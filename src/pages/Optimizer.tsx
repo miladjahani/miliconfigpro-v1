@@ -158,7 +158,8 @@ export default function Optimizer() {
     } catch { /* ignore */ }
   }
 
-  const remove = async (id: string) => {
+  const remove = async (id: string, name: string) => {
+    if (!confirm(`بهینه‌سازی «${name}» حذف شود؟`)) return
     await api(`/optimizer/${id}`, { method: 'DELETE' }).catch(() => null)
     if (detail?.id === id) setDetail(null)
     load()
@@ -204,16 +205,17 @@ export default function Optimizer() {
 
         {/* Source textarea (shared) */}
         <div>
-          <label className="text-sm text-slate-400 mb-1 block">لینک ساب یا کانفیگ‌ها (vless / vmess / trojan / ss)</label>
+          <label className="text-sm text-slate-400 mb-1 block">لینک ساب یا کانفیگ‌ها</label>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            rows={5}
+            rows={4}
             dir="ltr"
             data-guide="o-input"
-            placeholder={'https://example.com/sub\nvless://...\nvmess://...'}
+            placeholder={'یک یا چند لینک ساب، جدا شده با خط جدید:\nhttps://example.com/sub\nvless://uuid@host:443?...\nvmess://base64...\ntrojan://...\nss://...'}
             className="input-field font-mono text-xs"
           />
+          <p className="text-[11px] text-slate-600 mt-1">پشتیبانی از: لینک ساب · vless · vmess · trojan · shadowsocks · sing-box JSON · Clash YAML</p>
         </div>
 
         {error && <p className="text-sm text-error-400">{error}</p>}
@@ -235,7 +237,7 @@ export default function Optimizer() {
         {/* ═══════ Injection settings (collapsible) ═══════ */}
         {injMode && (
           <div className="border border-slate-800 rounded-xl p-4 bg-slate-900/40 space-y-4">
-            <p className="text-xs text-slate-500">آی‌پی‌های اسکن‌شده ورودی نودها را ثابت می‌کنند و پروکسی‌های HTTP/SOCKS5 از EDT-Pages خودکار دریافت می‌شوند</p>
+            <p className="text-xs text-slate-400">IPهای ترجیحی entry نودها را ثابت می‌کنند (دور زدن فیلتر) و پروکسی‌های EDT خودکار دریافت می‌شوند.</p>
 
             {/* IPs + Proxies side by side */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
@@ -383,7 +385,7 @@ export default function Optimizer() {
                     <button onClick={() => copy(singboxUrl, inj.id + '-sb')} className="px-3 py-1.5 rounded-lg bg-slate-800/60 text-xs text-slate-300 hover:text-brand-300 flex items-center gap-1">
                       {copied === inj.id + '-sb' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />} Sing-box
                     </button>
-                    <button onClick={async () => { await api(`/injector/${inj.id}`, { method: 'DELETE' }).catch(() => null); loadInjections() }}
+                    <button onClick={async () => { if (!confirm(`ساب «${inj.name}» حذف شود؟`)) return; await api(`/injector/${inj.id}`, { method: 'DELETE' }).catch(() => null); loadInjections() }}
                       className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -409,7 +411,11 @@ export default function Optimizer() {
         </div>
 
         {jobs.length === 0 && (
-          <p className="text-sm text-slate-500 text-center py-8">هنوز بهینه‌سازی‌ای انجام نشده</p>
+          <div className="text-center py-12">
+            <Zap className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+            <p className="text-slate-400 text-sm mb-1">هنوز بهینه‌سازی‌ای انجام نشده</p>
+            <p className="text-xs text-slate-600">لینک ساب خود را وارد کنید و روی «شروع بهینه‌سازی» بزنید</p>
+          </div>
         )}
 
         {jobs.map((job) => (
@@ -447,7 +453,7 @@ export default function Optimizer() {
                     </button>
                   </>
                 )}
-                <button onClick={() => remove(job.id)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
+                <button onClick={() => remove(job.id, job.name)} className="p-2 rounded-lg bg-slate-800/60 text-slate-400 hover:text-red-400">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
