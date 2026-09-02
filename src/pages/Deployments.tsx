@@ -1115,12 +1115,15 @@ function ScannerTab() {
   const runScan = async () => {
     setScanning(true); setError(null); setResults([]); setProxies([]); setSelectedIPs(new Set())
     try {
-      const data = await api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string; scanned?: number }>('/ip-scanner', {
+      // Add timeout so mobile browsers don't kill the request when backgrounded
+      const scanPromise = api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string; scanned?: number }>('/ip-scanner', {
         method: 'POST',
         body: scanMode === 'ranges'
           ? { mode: 'ranges', ranges, ports, count: 50, timeout: 2500 }
           : { type: scanType, count: 30, includeProxies },
       })
+      const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('اسکن بیش از حد طول کشید — دوباره تلاش کنید')), 45000))
+      const data = await Promise.race([scanPromise, timeoutPromise])
       if (data.success && data.results && data.results.length > 0) {
         setResults(data.results as ScanResult[])
         if (data.proxies) setProxies(data.proxies as ScanResult[])

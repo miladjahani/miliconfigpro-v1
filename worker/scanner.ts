@@ -41,7 +41,10 @@ async function probeIP(ip: string, type: 'cloudflare' | 'clean' | 'proxy', sourc
 
 async function fetchIPDB(type: 'bestcf' | 'bestProxy'): Promise<Array<{ ip: string; region?: string }>> {
   try {
-    const r = await fetch(`https://ipdb.api.030101.xyz/?type=${type}`)
+    const ctrl = new AbortController()
+    const tid = setTimeout(() => ctrl.abort(), 10000)
+    const r = await fetch(`https://ipdb.api.030101.xyz/?type=${type}`, { signal: ctrl.signal })
+    clearTimeout(tid)
     if (!r.ok) return []
     const data: unknown = await r.json().catch(() => null)
     const list = (Array.isArray(data) ? data : ((data as Record<string, unknown>)?.result ?? [])) as Array<Record<string, unknown>>
@@ -56,7 +59,10 @@ async function fetchIPDB(type: 'bestcf' | 'bestProxy'): Promise<Array<{ ip: stri
 
 async function fetchGithubList(url: string): Promise<Array<{ ip: string; region?: string }>> {
   try {
-    const r = await fetch(url)
+    const ctrl = new AbortController()
+    const tid = setTimeout(() => ctrl.abort(), 10000)
+    const r = await fetch(url, { signal: ctrl.signal })
+    clearTimeout(tid)
     if (!r.ok) return []
     const text = await r.text()
     return text
@@ -75,7 +81,10 @@ async function fetchGithubList(url: string): Promise<Array<{ ip: string; region?
 
 async function fetchProxyList(protocol: 'https' | 'socks5' | 'http'): Promise<ScanResult[]> {
   try {
-    const r = await fetch(`https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/${protocol}.json`)
+    const ctrl = new AbortController()
+    const tid = setTimeout(() => ctrl.abort(), 12000)
+    const r = await fetch(`https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/${protocol}.json`, { signal: ctrl.signal })
+    clearTimeout(tid)
     if (!r.ok) return []
     const data: unknown = await r.json().catch(() => null)
     if (!Array.isArray(data)) return []
@@ -186,14 +195,19 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
 
   const candidates: Array<{ ip: string; type: 'cloudflare' | 'clean'; source: string; region?: string }> = []
 
-  if (type === 'cloudflare') {
-    for (const c of await fetchIPDB('bestcf')) candidates.push({ ...c, type: 'cloudflare', source: 'ipdb.api.030101.xyz' })
-    for (const c of await fetchGithubList('https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt')) candidates.push({ ...c, type: 'cloudflare', source: 'ymyuuu/IPDB' })
-    for (const c of await fetchGithubList('https://raw.githubusercontent.com/ZhiXuanWang/cf-speedtest/main/ip.txt')) candidates.push({ ...c, type: 'cloudflare', source: 'ZhiXuanWang/cf-speedtest' })
-    for (const c of await fetchOfficialRanges()) candidates.push({ ...c, type: 'cloudflare', source: 'cloudflare.com/ips-v4' })
-  } else {
-    for (const c of await fetchIPDB('bestProxy')) candidates.push({ ...c, type: 'clean', source: 'ipdb.api.030101.xyz' })
-    for (const c of await fetchGithubList('https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt')) candidates.push({ ...c, type: 'clean', source: 'ymyuuu/IPDB' })
+  // Fetch all IP sources in parallel (much faster on mobile)
+  const srcPromises = type === 'cloudflare' ? [
+    fetchIPDB('bestcf').then((r) => r.map((c) => ({ ...c, type: 'cloudflare' as const, source: 'ipdb.api.030101.xyz' }))),
+    fetchGithubList('https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt').then((r) => r.map((c) => ({ ...c, type: 'cloudflare' as const, source: 'ymyuuu/IPDB' }))),
+    fetchGithubList('https://raw.githubusercontent.com/ZhiXuanWang/cf-speedtest/main/ip.txt').then((r) => r.map((c) => ({ ...c, type: 'cloudflare' as const, source: 'ZhiXuanWang/cf-speedtest' }))),
+    fetchOfficialRanges().then((r) => r.map((c) => ({ ...c, type: 'cloudflare' as const, source: 'cloudflare.com/ips-v4' }))),
+  ] : [
+    fetchIPDB('bestProxy').then((r) => r.map((c) => ({ ...c, type: 'clean' as const, source: 'ipdb.api.030101.xyz' }))),
+    fetchGithubList('https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt').then((r) => r.map((c) => ({ ...c, type: 'clean' as const, source: 'ymyuuu/IPDB' }))),
+  ]
+  const srcResults = await Promise.allSettled(srcPromises)
+  for (const r of srcResults) {
+    if (r.status === 'fulfilled') candidates.push(...r.value)
   }
   if (candidates.length === 0 && body.type !== 'clean') {
     for (const c of await fetchGithubList('https://raw.githubusercontent.com/ZhiXuanWang/cf-speedtest/main/ip.txt')) candidates.push({ ...c, type: 'cloudflare', source: 'cf-speedtest/fallback' })
