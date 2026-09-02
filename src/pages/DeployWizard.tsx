@@ -15,10 +15,11 @@ import {
   ExternalLink,
   Mail,
   KeyRound,
+  TrainFront,
 } from 'lucide-react'
 import JSZip from 'jszip'
 import { generateDockerCompose, generateNginxConf, generateEnvFile, generateDeployScript, generateRailwayDockerfile, generateRailwayToml, generateRailwayReadme } from '../lib/vps-deploy'
-import type { CFToken } from '../lib/types'
+import type { CFToken, RailwayToken } from '../lib/types'
 
 function genUuid() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
@@ -59,6 +60,17 @@ export default function DeployWizard() {
   const [deployLogs, setDeployLogs] = useState<string[]>([])
   const [deployResult, setDeployResult] = useState<{ success: boolean; message: string; url?: string; panelUrl?: string } | null>(null)
 
+  // ── Railway auto-deploy (StanNG via Railway Public API) ────────────────
+  const [railTokens, setRailTokens] = useState<RailwayToken[]>([])
+  const [railTokenId, setRailTokenId] = useState('')
+  const [railMode, setRailMode] = useState<'auto' | 'zip'>('auto')
+  const [cfBypass, setCfBypass] = useState(false)
+  const [railProjectUrl, setRailProjectUrl] = useState<string | null>(null)
+  const [newRailName, setNewRailName] = useState('railway-main')
+  const [newRailToken, setNewRailToken] = useState('')
+  const [railSaving, setRailSaving] = useState(false)
+  const [railSaveError, setRailSaveError] = useState<string | null>(null)
+
   useEffect(() => {
     let cancelled = false
     api<{ data: CFToken[] }>('/tokens')
@@ -70,6 +82,31 @@ export default function DeployWizard() {
       })
       .catch(() => setTokens([]))
       .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  // Railway tokens — independent of the CF-token requirement.
+  const refreshRailTokens = useCallback(async () => {
+    try {
+      const { data } = await api<{ data: RailwayToken[] }>('/railway/tokens')
+      setRailTokens(data ?? [])
+      if ((data ?? []).length > 0 && !(data as RailwayToken[]).some((t) => t.id === railTokenId)) {
+        setRailTokenId((data as RailwayToken[])[0].id)
+      }
+    } catch {
+      setRailTokens([])
+    }
+  }, [railTokenId])
+
+  useEffect(() => {
+    let cancelled = false
+    api<{ data: RailwayToken[] }>('/railway/tokens')
+      .then(({ data }) => {
+        if (cancelled) return
+        setRailTokens(data ?? [])
+        if ((data ?? []).length > 0) setRailTokenId((data as RailwayToken[])[0].id)
+      })
+      .catch(() => { if (!cancelled) setRailTokens([]) })
     return () => { cancelled = true }
   }, [])
 
@@ -126,21 +163,121 @@ export default function DeployWizard() {
     pollRef.current = setInterval(tick, 2000)
   }, [stopPolling])
 
+  const RAIL_STATUS_LABEL: Record<string, string> = {
+    QUEUED: 'در صف',
+    INITIALIZING: 'در حال شروع',
+    WAITING: 'در انتظار',
+    BUILDING: 'در حال بیلد (Docker)',
+    DEPLOYING: 'در حال استقرار',
+    SUCCESS: 'موفق',
+    FAILED: 'ناموفق',
+    CRASHED: 'کرش',
+    SLEEPING: 'خواب',
+    SKIPPED: 'رد شد',
+    REMOVING: 'در حال حذف',
+    REMOVED: 'حذف شد',
+  }
+
+  /** Poll a Railway deployment until it reaches a terminal state. */
+  const startRailPolling = useCallback((deploymentId: string, tokenId: string) => {
+    stopPolling()
+    const startedAt = Date.now()
+    const tick = async () => {
+      try {
+        const { data } = await api<{ data: { status: string; url: string | null } }>(
+          `/railway/status?deployment_id=${encodeURIComponent(deploymentId)}&token_id=${encodeURIComponent(tokenId)}`,
+        )
+        const st = (data?.status ?? 'UNKNOWN').toUpperCase()
+        const label = RAIL_STATUS_LABEL[st] ?? st
+        setDeployLogs((prev) => {
+          const base = prev.filter((l) => !l.startsWith('وضعیت:'))
+          return [...base, `وضعیت: ${label}`].slice(-14)
+        })
+
+        if (st === 'SUCCESS') {
+          stopPolling()
+          setDeploying(false)
+          const url = data?.url?.trim() || null
+          setDeployResult({
+            success: true,
+            message: url
+              ? 'StanNG با موفقیت روی Railway مستقر شد! 🎉'
+              : 'استقرار روی Railway موفق بود — دامنه را در بخش Networking پروژه فعال کنید.',
+            url: url ?? undefined,
+            panelUrl: url ? `${url.replace(/\/+$/, '')}/login` : undefined,
+          })
+        } else if (st === 'FAILED' || st === 'CRASHED') {
+          stopPolling()
+          setDeploying(false)
+          setDeployResult({
+            success: false,
+            message: `استقرار روی Railway ${st === 'CRASHED' ? 'کرش کرد' : 'ناموفق بود'}. لاگ بیلد را در داشبورد Railway پروژه بررسی کنید.`,
+          })
+        } else if (Date.now() - startedAt > 12 * 60 * 1000) {
+          stopPolling()
+          setDeploying(false)
+          setDeployResult({ success: false, message: 'استقرار بیش از حد طول کشید. وضعیت را در داشبورد Railway بررسی کنید.' })
+        }
+      } catch {
+        // transient network error — keep polling
+      }
+    }
+    void tick()
+    pollRef.current = setInterval(tick, 5000)
+  }, [stopPolling])
+
   const handleDeploy = async () => {
     if (deploying) return
     setError(null)
 
     // Client-side validation before hitting the API.
-    if (!validName(name)) { setError('نام ورکر نامعتبر است — حروف کوچک انگلیسی، عدد و خط‌تیره'); return }
-    if (!uuid.trim()) { setError('UUID خالی است'); return }
-    const token = tokens.find((t) => t.id === selectedToken)
-    if (!token) { setError('ابتدا یک توکن فعال انتخاب کنید'); return }
+    const isRailAuto = method === 'railway' && railMode === 'auto'
+    const isZip = method === 'vps' || (method === 'railway' && railMode === 'zip')
+    const isCf = method === 'workers' || method === 'pages'
+
+    if (!validName(name)) { setError('نام نامعتبر است — حروف کوچک انگلیسی، عدد و خط‌تیره'); return }
+    const cfToken = tokens.find((t) => t.id === selectedToken) ?? null
+    if (isCf) {
+      if (!uuid.trim()) { setError('UUID خالی است'); return }
+      if (!cfToken) { setError('ابتدا یک توکن فعال کلودفلر انتخاب کنید'); return }
+    }
 
     setDeploying(true)
     setDeployResult(null)
 
-    // VPS/Railway mode: generate Docker files and download as ZIP
-    if (method === 'vps' || method === 'railway') {
+    // ── Railway auto-deploy via the Public API (no ZIP, no manual steps) ──
+    if (isRailAuto) {
+      const rt = railTokens.find((t) => t.id === railTokenId)
+      if (!rt) { setError('توکن Railway انتخاب نشده است — یک توکن اضافه یا انتخاب کنید'); setDeploying(false); return }
+      setRailProjectUrl(null)
+      setDeployLogs(['اتصال به Railway…'])
+      try {
+        const { data } = await api<{ data: { deploymentId: string; projectId: string; projectUrl: string } }>('/railway/deploy', {
+          method: 'POST',
+          body: { token_id: rt.id, name },
+        })
+        setRailProjectUrl(data.projectUrl)
+        setDeployLogs([
+          '✓ پروژه ساخته شد',
+          '✓ محیط production آماده شد',
+          '✓ مخزن stanngv2 (GitHub) متصل شد',
+          '✓ PORT=8000 تنظیم شد',
+          `✓ استقرار شروع شد (${data.deploymentId.slice(0, 8)}…)`,
+          '',
+          'در حال بیلد و استقرار روی Railway — معمولاً ۲ تا ۵ دقیقه.',
+        ])
+        startRailPolling(data.deploymentId, rt.id)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
+        setDeployLogs((prev) => [...prev, `❌ ${msg}`])
+        setDeployResult({ success: false, message: msg })
+        setDeploying(false)
+      }
+      return
+    }
+
+    // VPS/Railway-ZIP mode: generate Docker files and download as ZIP
+    if (isZip) {
       const isRailway = method === 'railway'
       setDeployLogs([isRailway ? 'در حال تولید فایل‌های Railway...' : 'در حال تولید فایل‌های Docker...'])
       try {
@@ -215,7 +352,7 @@ export default function DeployWizard() {
           worker_source: workerSource,
           proxyip: proxyIP || undefined,
           admin_password: adminPassword || undefined,
-          cf_token_id: token.id,
+          cf_token_id: cfToken?.id ?? '',
         },
       })
 
@@ -240,7 +377,10 @@ export default function DeployWizard() {
     return <div className="flex items-center justify-center h-96"><Loader2 className="w-8 h-8 animate-spin text-brand-400" /></div>
   }
 
-  if (tokens.length === 0) {
+  // Users without a Cloudflare token may still deploy StanNG (Railway/VPS).
+  const needCfGate = tokens.length === 0 && !cfBypass
+
+  if (needCfGate) {
     return (
       <div className="space-y-6">
         <div>
@@ -253,6 +393,15 @@ export default function DeployWizard() {
           <h3 className="text-lg font-bold text-white mb-2">ابتدا یک توکن اضافه کنید</h3>
           <p className="text-slate-400 text-sm mb-6">برای استقرار ورکرها به توکن API کلودفلر نیاز دارید</p>
           <button onClick={() => navigate('/tokens')} className="btn-primary">رفتن به مدیریت توکن</button>
+          <div className="mt-5 pt-5 border-t border-slate-800/50">
+            <p className="text-xs text-slate-500 mb-3">توکن کلودفلر ندارید؟ StanNG (پنل VLESS با xray-core) را می‌توانید بدون توکن کلودفلر روی Railway یا VPS خودتان مستقر کنید:</p>
+            <button
+              onClick={() => { setMethod('railway'); setRailMode('auto'); setCfBypass(true) }}
+              className="btn-ghost inline-flex items-center gap-2"
+            >
+              <TrainFront className="w-4 h-4 text-purple-400" /> استقرار StanNG روی Railway — بدون توکن کلودفلر
+            </button>
+          </div>
         </div>
 
         {/* Quick start */}
@@ -304,20 +453,19 @@ export default function DeployWizard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">استقرار ورکر جدید</h1>
-        <p className="text-slate-400 text-sm mt-1">{method === 'railway' ? 'فایل‌های Railway (Dockerfile + railway.toml) برای استقرار StanNG تولید و دانلود می‌شوند' : method === 'vps' ? 'فایل‌های Docker برای استقرار StanNG روی VPS تولید و دانلود می‌شوند' : 'ورکر به‌صورت خودکار از مخزن دانلود و روی کلودفلر مستقر می‌شود — نیازی به کدنویسی نیست'}</p>
-      </div>
+        <h1 className="text-2xl font-bold text-white">استقرار ورکر جدید</h1>        <p className="text-slate-400 text-sm mt-1">{method === 'railway' && railMode === 'auto' ? 'استقرار خودکار StanNG v2 روی Railway — پروژه ساخته، مخزن متصل و دیپلوی اجرا می‌شود' : method === 'railway' ? 'فایل‌های Railway (Dockerfile + railway.toml) برای استقرار StanNG تولید و دانلود می‌شوند' : method === 'vps' ? 'فایل‌های Docker برای استقرار StanNG روی VPS تولید و دانلود می‌شوند' : 'ورکر به‌صورت خودکار از مخزن دانلود و روی کلودفلر مستقر می‌شود — نیازی به کدنویسی نیست'}</p>
+        </div>
 
-      {/* Info banner */}
-      <div className="glass-card p-4 flex items-center gap-3 border-brand-500/20">
-        <div className="p-2 rounded-lg bg-brand-500/10">
-          <Sparkles className="w-5 h-5 text-brand-400" />
+        {/* Info banner */}
+        <div className="glass-card p-4 flex items-center gap-3 border-brand-500/20">
+          <div className="p-2 rounded-lg bg-brand-500/10">
+            <Sparkles className="w-5 h-5 text-brand-400" />
+          </div>
+          <div>
+            <p className="text-sm text-white font-medium">{method === 'railway' && railMode === 'auto' ? 'استقرار خودکار روی Railway' : 'استقرار کاملاً خودکار'}</p>
+            <p className="text-xs text-slate-400">{method === 'railway' && railMode === 'auto' ? 'با توکن Account شما پروژه‌ای در Railway ساخته می‌شود، سرویس از مخزن عمومی stanngv2 ساخته شده و Docker بیلد و مستقر می‌گردد — وضعیت همین‌جا دنبال می‌شود.' : method === 'railway' ? 'فایل‌های Dockerfile و railway.toml تولید و به‌صورت ZIP دانلود می‌شوند. سپس در Railway از GitHub مستقر کنید.' : method === 'vps' ? 'فایل‌های docker-compose.yml، nginx.conf، .env و deploy.sh تولید و به‌صورت ZIP دانلود می‌شوند.' : 'کد ورکر از مخزن GitHub بارگذاری می‌شود، KV ساخته می‌شود، bindings تنظیم می‌شود و ورکر روی edge مستقر می‌گردد.'}</p>
+          </div>
         </div>
-        <div>
-          <p className="text-sm text-white font-medium">استقرار کاملاً خودکار</p>
-          <p className="text-xs text-slate-400">{method === 'railway' ? 'فایل‌های Dockerfile و railway.toml تولید و به‌صورت ZIP دانلود می‌شوند. سپس در Railway از GitHub مستقر کنید.' : method === 'vps' ? 'فایل‌های docker-compose.yml، nginx.conf، .env و deploy.sh تولید و به‌صورت ZIP دانلود می‌شوند.' : 'کد ورکر از مخزن GitHub بارگذاری می‌شود، KV ساخته می‌شود، bindings تنظیم می‌شود و ورکر روی edge مستقر می‌گردد.'}</p>
-        </div>
-      </div>
 
       {/* Steps indicator */}
       <div className="flex items-center justify-between max-w-2xl">
@@ -365,9 +513,11 @@ export default function DeployWizard() {
                   <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
-              <p className="text-xs text-slate-500 mt-2">حروف کوچک، عدد، خط‌تیره · می‌شود <code className="text-brand-300">{name}.workers.dev</code></p>
+              <p className="text-xs text-slate-500 mt-2">حروف کوچک، عدد، خط‌تیره · {method === 'railway' ? 'نام پروژه در Railway می‌شود' : method === 'vps' ? 'نام سرویس روی VPS می‌شود' : <>می‌شود <code className="text-brand-300">{name}.workers.dev</code></>}</p>
             </div>
 
+            {method === 'railway' && railMode === 'auto' ? null : (
+            <>
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">رمز دسترسی (UUID)</label>
               <div className="flex gap-2">
@@ -397,10 +547,11 @@ export default function DeployWizard() {
               />
               <p className="text-xs text-slate-500 mt-2">اگر تنظیم شود، پنل از <code className="text-brand-300">/{customPath || 'mypath'}</code> در دسترس است؛ در غیر این صورت پیش‌فرض <code className="text-brand-300">/admin</code> است</p>
             </div>
+            </>)}
 
             <div className="flex justify-end">
               <button
-                disabled={!name.trim() || !validName(name) || !uuid.trim()}
+                disabled={!name.trim() || !validName(name) || ((method !== 'railway' || railMode !== 'auto') && !uuid.trim())}
                 onClick={() => setStep(2)}
                 className="btn-primary flex items-center gap-2"
               >
@@ -412,14 +563,57 @@ export default function DeployWizard() {
 
         {step === 2 && (
           <div className="space-y-6 animate-fade-in">
+            {(method === 'workers' || method === 'pages') && (
+              <div>
+                <label className="block text-sm text-slate-300 mb-2 font-medium">توکن کلودفلر</label>
+                {tokens.length === 0 ? (
+                  <div className="flex items-center justify-between gap-2 flex-wrap rounded-xl bg-warning-500/10 border border-warning-500/30 px-4 py-3">
+                    <span className="text-sm text-warning-300">توکن کلودفلری ثبت نشده — برای این روش الزامی است</span>
+                    <button type="button" onClick={() => navigate('/tokens')} className="text-xs text-brand-300 hover:underline">مدیریت توکن‌ها ←</button>
+                  </div>
+                ) : (
+                  <select value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)} className="input-field">
+                    {tokens.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
+
+            {method === 'railway' && railMode === 'auto' && (
+              <RailwayTokenPanel
+                tokens={railTokens}
+                selectedId={railTokenId}
+                onSelect={setRailTokenId}
+                newName={newRailName}
+                newToken={newRailToken}
+                onNewName={setNewRailName}
+                onNewToken={(v) => { setNewRailToken(v); setRailSaveError(null) }}
+                saving={railSaving}
+                error={railSaveError}
+                onSave={async () => {
+                  if (!newRailToken.trim()) { setRailSaveError('توکن Account Railway را paste کنید'); return }
+                  setRailSaving(true)
+                  setRailSaveError(null)
+                  try {
+                    const { data } = await api<{ data: { id: string } }>('/railway/tokens', {
+                      method: 'POST',
+                      body: { name: newRailName.trim() || 'railway-main', token: newRailToken.trim() },
+                    })
+                    setRailTokenId(data.id)
+                    setNewRailToken('')
+                    await refreshRailTokens()
+                  } catch (err) {
+                    setRailSaveError(err instanceof Error ? err.message : 'خطا در ذخیره توکن Railway')
+                  } finally {
+                    setRailSaving(false)
+                  }
+                }}
+              />
+            )}
+
             <div>
-              <label className="block text-sm text-slate-300 mb-2 font-medium">توکن کلودفلر</label>
-              <select value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)} className="input-field">
-                {tokens.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-            </div>              <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">محیط اجرا</label>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <button
@@ -469,6 +663,34 @@ export default function DeployWizard() {
               </div>
             </div>
 
+            {method === 'railway' && (
+              <div>
+                <label className="block text-sm text-slate-300 mb-2 font-medium">روش استقرار Railway</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRailMode('auto')}
+                    className={`p-3 rounded-xl border text-right transition-all ${railMode === 'auto' ? 'border-purple-500 bg-purple-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'}`}
+                  >
+                    <p className="text-sm font-bold text-white flex items-center gap-2">
+                      <TrainFront className="w-4 h-4 text-purple-400" /> خودکار با توکن (پیشنهادی)
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">پروژه ساخته می‌شود، مخزن stanngv2 متصل و دیپلوی شروع می‌شود — همه از همین‌جا.</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRailMode('zip')}
+                    className={`p-3 rounded-xl border text-right transition-all ${railMode === 'zip' ? 'border-brand-500 bg-brand-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'}`}
+                  >
+                    <p className="text-sm font-bold text-white flex items-center gap-2">
+                      <Rocket className="w-4 h-4 text-brand-400" /> دانلود فایل ZIP (دستی)
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">فایل‌های Docker استاندارد را دانلود و خودتان در Railway از GitHub مستقر کنید.</p>
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">منبع ورکر</label>
               {method === 'vps' || method === 'railway' ? (
@@ -492,12 +714,15 @@ export default function DeployWizard() {
                   : workerSource === 'miliconfigzeus'
                   ? <>پنل کامل miliconfigzeus با دیتابیس اختصاصی D1 مستقر می‌شود (خودکار ساخته می‌شود). مدیریت کاربران، سهمیه‌ها و اسکنر داخل خود پنل مستقر است؛ آدرس پنل، ریشه همان ورکر خواهد بود. این سورس همیشه به‌صورت Workers مستقر می‌شود.</>
                   : method === 'railway'
-                  ? <>StanNG v2 روی Railway مستقر می‌شود — پنل VLESS با xray-core در یک کانتینر Docker. نیازی به VPS ندارد.</>
+                  ? railMode === 'auto'
+                    ? <>StanNG v2 با توکن Railway روی سرورهای Railway مستقر می‌شود — Docker بیلد شده و xray-core + پنل VLESS بالا می‌آید. بعد از موفقیت، از <code className="text-brand-300">/login</code> وارد پنل StanNG شوید و اولین کاربر ادمین را همان‌جا بسازید.</>
+                    : <>فایل‌های Docker استاندارد تولید و دانلود می‌شوند — برای استقرار دستی در Railway یا هر سرویس Docker.</>
                   : <>ورکر از مخزن رسمی <a href="https://github.com/cmliu/edgetunnel" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">cmliu/edgetunnel</a> بارگذاری می‌شود. پنل داخلی ورکر حذف شده و همه تنظیمات از این برنامه مدیریت می‌شود.</>
                 }
               </p>
             </div>
 
+            {(method === 'workers' || method === 'pages') && (
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">Proxy IP — اختیاری</label>
               <input
@@ -510,8 +735,9 @@ export default function DeployWizard() {
               />
               <p className="text-xs text-slate-500 mt-2">برای دور زدن محدودیت Worker→Origin. می‌توانید بعداً از اسکنر IP انتخاب کنید. <a href="https://github.com/EDT-Pages/Proxy-List" target="_blank" rel="noopener noreferrer" className="text-brand-400 hover:underline">EDT-Pages/Proxy-List</a></p>
             </div>
+            )}
 
-            {workerSource !== 'custom' && workerSource !== 'nexus' && (
+            {(method === 'workers' || method === 'pages') && workerSource !== 'custom' && workerSource !== 'nexus' && (
               <div>
                 <label className="block text-sm text-slate-300 mb-2 font-medium">رمز ادمین — اختیاری</label>
                 <input
@@ -564,12 +790,20 @@ export default function DeployWizard() {
                   </div>
                 )}
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-                  <p className="text-xs text-slate-500 mb-1">توکن</p>
-                  <p className="text-white font-medium">{tokens.find(t => t.id === selectedToken)?.name}</p>
+                  <p className="text-xs text-slate-500 mb-1">{method === 'railway' && railMode === 'auto' ? 'توکن Railway' : 'توکن کلودفلر'}</p>
+                  <p className="text-white font-medium">
+                    {method === 'railway' && railMode === 'auto'
+                      ? (railTokens.find(t => t.id === railTokenId)?.name ?? '—')
+                      : (tokens.find(t => t.id === selectedToken)?.name ?? '—')}
+                  </p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">مسیر پنل</p>
-                  <p className="text-white font-medium" dir="ltr">{workerSource === 'nexus' ? `/${uuid || '…'}` : `/${customPath || 'admin'}`}</p>
+                  <p className="text-white font-medium" dir="ltr">
+                    {method === 'railway' && railMode === 'auto'
+                      ? '/login (پنل StanNG)'
+                      : workerSource === 'nexus' ? `/${uuid || '…'}` : `/${customPath || 'admin'}`}
+                  </p>
                 </div>
               </div>
             </div>
@@ -589,7 +823,9 @@ export default function DeployWizard() {
                   className="btn-primary flex items-center gap-2 px-8 py-3 text-lg"
                 >
                   {deploying ? <Loader2 className="w-5 h-5 animate-spin" /> : <Rocket className="w-5 h-5" />}
-                  {deploying ? ((method === 'vps' || method === 'railway') ? 'در حال تولید فایل‌ها...' : 'در حال استقرار...') : ((method === 'vps' || method === 'railway') ? (method === 'railway' ? 'دانلود فایل‌های Railway' : 'دانلود فایل‌های Docker') : 'استقرار ورکر')}
+                  {deploying
+                    ? (method === 'railway' && railMode === 'auto' ? 'در حال استقرار روی Railway...' : (method === 'vps' || (method === 'railway' && railMode === 'zip')) ? 'در حال تولید فایل‌ها...' : 'در حال استقرار...')
+                    : ((method === 'vps' || (method === 'railway' && railMode === 'zip')) ? (method === 'railway' ? 'دانلود فایل‌های Railway' : 'دانلود فایل‌های Docker') : (method === 'railway' && railMode === 'auto' ? 'استقرار روی Railway' : 'استقرار ورکر'))}
                 </button>
 
                 {/* Live logs */}
@@ -609,7 +845,7 @@ export default function DeployWizard() {
                 )}
 
                 {deploying && (
-                  <p className="text-sm text-slate-400 animate-pulse">ورکر از مخزن دانلود، KV ساخته و روی edge مستقر می‌شود...</p>
+                  <p className="text-sm text-slate-400 animate-pulse">{method === 'railway' && railMode === 'auto' ? 'Railway در حال بیلد Docker و استقرار StanNG است — این صفحه خودکار به‌روزرسانی می‌شود.' : 'ورکر از مخزن دانلود، KV ساخته و روی edge مستقر می‌شود...'}</p>
                 )}
               </div>
             )}
@@ -642,9 +878,16 @@ export default function DeployWizard() {
                       </div>
                     )}
 
-                    <div className="flex gap-3 justify-center mt-6">
-                      <button onClick={() => navigate('/deployments')} className="btn-primary">مشاهده ورکرها</button>
-                      <button onClick={() => { setStep(1); setDeployResult(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); }} className="btn-ghost">استقرار جدید</button>
+                    <div className="flex gap-3 justify-center mt-6 flex-wrap">
+                      {method === 'railway' && railMode === 'auto' && railProjectUrl && (
+                        <a href={railProjectUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary inline-flex items-center gap-2">
+                          <ExternalLink className="w-4 h-4" /> داشبورد پروژه در Railway
+                        </a>
+                      )}
+                      {!(method === 'railway' && railMode === 'auto') && (
+                        <button onClick={() => navigate('/deployments')} className="btn-primary">مشاهده ورکرها</button>
+                      )}
+                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); }} className="btn-ghost">استقرار جدید</button>
                     </div>
                   </div>
                 ) : (
@@ -705,6 +948,64 @@ export default function DeployWizard() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Railway account-token picker + inline add (used in step 2 of the wizard). */
+function RailwayTokenPanel({ tokens, selectedId, onSelect, newName, newToken, onNewName, onNewToken, saving, error, onSave }: {
+  tokens: RailwayToken[]
+  selectedId: string
+  onSelect: (id: string) => void
+  newName: string
+  newToken: string
+  onNewName: (v: string) => void
+  onNewToken: (v: string) => void
+  saving: boolean
+  error: string | null
+  onSave: () => void
+}) {
+  return (
+    <div className="space-y-3 rounded-xl border border-purple-500/25 bg-purple-500/5 p-4">
+      <label className="block text-sm text-slate-300 mb-1 font-medium">توکن Railway (Account)</label>
+      {tokens.length === 0 ? (
+        <p className="text-sm text-warning-300 leading-relaxed">
+          هنوز توکن Railway ثبت نشده. از{' '}
+          <a href="https://railway.com/account/tokens" target="_blank" rel="noopener noreferrer" className="text-purple-300 underline">railway.com/account/tokens</a>{' '}
+          یک توکن Account بگیرید (فقط یک‌بار نمایش داده می‌شود) و همین‌جا ذخیره کنید:
+        </p>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={selectedId} onChange={(e) => onSelect(e.target.value)} className="input-field text-sm flex-1 min-w-[200px]">
+            {tokens.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}{t.account_name ? ` (${t.account_name})` : ''}</option>
+            ))}
+          </select>
+          <a href="/#/tokens" className="text-xs text-purple-300 hover:underline">مدیریت توکن‌ها ←</a>
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">
+        <input
+          type="text"
+          value={newName}
+          onChange={(e) => onNewName(e.target.value)}
+          placeholder="نام توکن (مثلاً railway-main)"
+          className="input-field text-sm"
+        />
+        <textarea
+          value={newToken}
+          onChange={(e) => onNewToken(e.target.value)}
+          rows={2}
+          placeholder="توکن Account Railway را اینجا paste کنید..."
+          className="input-field font-mono text-sm"
+          dir="ltr"
+        />
+      </div>
+      {error && <p className="text-xs text-error-300">{error}</p>}
+      <button type="button" onClick={onSave} disabled={saving} className="btn-secondary text-sm flex items-center gap-2">
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+        {saving ? 'در حال بررسی با Railway...' : 'تأیید و ذخیره توکن Railway'}
+      </button>
     </div>
   )
 }

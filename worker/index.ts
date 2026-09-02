@@ -2,6 +2,7 @@ import type { Env } from './env'
 import { apiError, json, getUserFromRequest, logActivity, genId, nowIso, safeJsonParse } from './util'
 import { handleSignup, handleLogin, handleLogout, handleMe } from './auth'
 import { runDeployment } from './deploy'
+import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiError } from './railway'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleTelegramWebhook } from './telegram'
@@ -53,6 +54,102 @@ async function deleteToken(env: Env, userId: string, id: string): Promise<Respon
   if (!row) return apiError('توکن پیدا نشد', 404)
   await logActivity(env, userId, 'token_deleted', 'token', row.name)
   return json({ success: true })
+}
+
+// ── Railway tokens & auto-deploy ────────────────────────────────────────────
+
+// Railway tokens are write-once secrets: after a successful save we never return
+// the raw token to the browser again — the UI only sees the last 4 characters.
+
+async function listRailwayTokens(env: Env, userId: string): Promise<Response> {
+  const r = await env.DB.prepare(
+    `SELECT id, name, status, account_name, last_used_at, created_at, substr(token, -4) AS token_tail
+     FROM railway_tokens WHERE user_id = ? ORDER BY created_at DESC`,
+  ).bind(userId).all()
+  return json({ data: r.results })
+}
+
+async function createRailwayToken(env: Env, userId: string, request: Request): Promise<Response> {
+  const body = safeJsonParse<{ name?: string; token?: string }>(await request.text().catch(() => ''), {})
+  if (!body.name?.trim() || !body.token?.trim()) return apiError('نام و توکن الزامی است')
+
+  // Validate the token against Railway before storing anything.
+  let account: { name: string; email: string }
+  try {
+    account = await verifyRailwayToken(body.token.trim())
+  } catch (err) {
+    return apiError(err instanceof Error ? err.message : 'توکن Railway نامعتبر است', 400)
+  }
+
+  const id = genId()
+  const accountName = account.email || account.name || null
+  await env.DB.prepare(
+    `INSERT INTO railway_tokens (id, user_id, name, token, status, account_name, created_at) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+  )
+    .bind(id, userId, body.name.trim(), body.token.trim(), accountName, nowIso())
+    .run()
+  await logActivity(env, userId, 'railway_token_created', 'token', body.name.trim())
+  return json(
+    {
+      data: {
+        id,
+        name: body.name.trim(),
+        status: 'active',
+        account_name: accountName,
+        token_tail: body.token.trim().slice(-4),
+        last_used_at: null,
+        created_at: nowIso(),
+      },
+    },
+    201,
+  )
+}
+
+async function deleteRailwayToken(env: Env, userId: string, id: string): Promise<Response> {
+  const row = await env.DB.prepare('DELETE FROM railway_tokens WHERE id = ? AND user_id = ? RETURNING name').bind(id, userId).first<{ name: string }>()
+  if (!row) return apiError('توکن پیدا نشد', 404)
+  await logActivity(env, userId, 'railway_token_deleted', 'token', row.name)
+  return json({ success: true })
+}
+
+async function loadRailwayToken(env: Env, userId: string, id: string): Promise<{ id: string; token: string; name: string } | null> {
+  return env.DB.prepare("SELECT id, token, name FROM railway_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
+    .bind(id, userId)
+    .first<{ id: string; token: string; name: string }>()
+}
+
+/** Auto-deploy StanNG v2 to Railway: create project + service, start deploy. */
+async function handleRailwayDeploy(env: Env, userId: string, request: Request): Promise<Response> {
+  const body = safeJsonParse<{ token_id?: string; name?: string }>(await request.text().catch(() => ''), {})
+  const name = (body.name ?? '').trim().toLowerCase()
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام پروژه نامعتبر است')
+  const row = await loadRailwayToken(env, userId, body.token_id ?? '')
+  if (!row) return apiError('توکن Railway فعال انتخاب‌شده پیدا نشد', 400)
+
+  try {
+    const result = await deployToRailway(row.token, name)
+    await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
+    await logActivity(env, userId, 'railway_deploy_started', 'deployment', name)
+    return json({ data: result })
+  } catch (err) {
+    const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
+    return apiError(msg, 400)
+  }
+}
+
+/** Poll the status of a Railway deployment that handleRailwayDeploy started. */
+async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<Response> {
+  const tokenId = url.searchParams.get('token_id') ?? ''
+  const deploymentId = url.searchParams.get('deployment_id') ?? ''
+  if (!deploymentId || !tokenId) return apiError('شناسه استقرار یا توکن ناقص است')
+  const row = await loadRailwayToken(env, userId, tokenId)
+  if (!row) return apiError('توکن Railway پیدا نشد', 400)
+  try {
+    return json({ data: await railwayDeployStatus(row.token, deploymentId) })
+  } catch (err) {
+    const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
+    return apiError(msg, 400)
+  }
 }
 
 // ── Deployments ────────────────────────────────────────────────────────────
@@ -425,6 +522,13 @@ async function handleRouted(
     if (path === '/api/tokens' && method === 'GET') return await listTokens(env, user.id)
     if (path === '/api/tokens' && method === 'POST') return await createToken(env, user.id, request)
     if (path.match(/^\/api\/tokens\/[^/]+$/) && method === 'DELETE') return await deleteToken(env, user.id, path.split('/')[3])
+
+    // ── Railway (StanNG auto-deploy) ─────────────────────────────────────
+    if (path === '/api/railway/tokens' && method === 'GET') return await listRailwayTokens(env, user.id)
+    if (path === '/api/railway/tokens' && method === 'POST') return await createRailwayToken(env, user.id, request)
+    if (path.match(/^\/api\/railway\/tokens\/[^/]+$/) && method === 'DELETE') return await deleteRailwayToken(env, user.id, path.split('/')[4])
+    if (path === '/api/railway/deploy' && method === 'POST') return await handleRailwayDeploy(env, user.id, request)
+    if (path === '/api/railway/status' && method === 'GET') return await handleRailwayStatus(env, user.id, url)
 
     if (path === '/api/deployments' && method === 'GET') return await listDeployments(env, user.id, url)
     if (path === '/api/deployments' && method === 'POST') return await createDeployment(env, user.id, request, ctx, origin)

@@ -7,6 +7,16 @@ export interface CFToken {
   created_at: string
 }
 
+export interface RailwayToken {
+  id: string
+  name: string
+  status: 'active' | 'inactive'
+  account_name: string | null
+  token_tail: string
+  last_used_at: string | null
+  created_at: string
+}
+
 export interface Deployment {
   id: string
   name: string
