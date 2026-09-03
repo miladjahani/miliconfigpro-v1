@@ -86,11 +86,24 @@ interface EnvEdge { node?: { id?: string; name?: string } }
  * Returns the resource ids + a dashboard link to the new project.
  */
 export async function deployToRailway(token: string, projectName: string): Promise<RailwayDeployResult> {
-  // 1. Create the project under the token's default workspace.
+  // 0. The live API requires a workspaceId on projectCreate — resolve the
+  //    token's workspace first. The response is a direct list per the schema,
+  //    but tolerate the Relay (edges/node) shape too.
+  const wsData = await gql(token, 'query { workspaces { id name } }')
+  const wsRaw = wsData.workspaces as unknown
+  const wsList: Array<{ id?: string; name?: string }> = Array.isArray(wsRaw)
+    ? (wsRaw as Array<{ id?: string; name?: string }>)
+    : Array.isArray((wsRaw as { edges?: Array<{ node?: unknown }> } | null | undefined)?.edges)
+      ? ((wsRaw as { edges: Array<{ node?: { id?: string; name?: string } }> }).edges.map((e) => e.node ?? {}))
+      : []
+  const workspaceId = wsList[0]?.id
+  if (!workspaceId) throw new RailwayApiError('حساب Railway شما هیچ workspace فعالی ندارد — از railway.com/account/tokens یک توکن Account بسازید')
+
+  // 1. Create the project inside that workspace.
   const created = await gql(
     token,
     'mutation ($input: ProjectCreateInput!) { projectCreate(input: $input) { id } }',
-    { input: { name: projectName } },
+    { input: { name: projectName, workspaceId } },
   )
   const projectId = (created.projectCreate as { id?: string } | undefined)?.id
   if (!projectId) throw new RailwayApiError('پروژه Railway ساخته نشد')
