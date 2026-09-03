@@ -87,10 +87,10 @@ interface EnvEdge { node?: { id?: string; name?: string } }
  */
 export async function deployToRailway(token: string, projectName: string): Promise<RailwayDeployResult> {
   // 0. The live API requires a workspaceId on projectCreate — resolve the
-  //    token's workspace first. The response is a direct list per the schema,
-  //    but tolerate the Relay (edges/node) shape too.
-  const wsData = await gql(token, 'query { workspaces { id name } }')
-  const wsRaw = wsData.workspaces as unknown
+  //    token's first workspace via `me { workspaces }`. Tolerate both the
+  //    direct-list and Relay (edges/node) response shapes.
+  const wsData = await gql(token, 'query { me { workspaces { id name } } }')
+  const wsRaw = (wsData.me as { workspaces?: unknown } | undefined)?.workspaces
   const wsList: Array<{ id?: string; name?: string }> = Array.isArray(wsRaw)
     ? (wsRaw as Array<{ id?: string; name?: string }>)
     : Array.isArray((wsRaw as { edges?: Array<{ node?: unknown }> } | null | undefined)?.edges)
