@@ -51,7 +51,7 @@ export default function Admin() {
             <div className="min-w-0">
               <p className="text-white font-medium truncate">{u.email}</p>
               <p className="text-xs text-slate-500 mt-0.5">
-                {u.deployments} ورکر · عضویت {new Date(u.created_at).toLocaleDateString('fa-IR')}
+                {u.deployments} استقرار · عضویت {new Date(u.created_at).toLocaleDateString('fa-IR')}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -74,7 +74,7 @@ export default function Admin() {
                 value={quotaDraft[u.id] ?? String(u.max_deployments)}
                 onChange={(e) => setQuotaDraft((d) => ({ ...d, [u.id]: e.target.value }))}
                 className="input-field w-24 text-center text-sm"
-                title="سقف تعداد ورکر"
+                title="سقف تعداد استقرار"
               />
               <button
                 onClick={() => patch(u.id, { max_deployments: Number(quotaDraft[u.id] ?? u.max_deployments) })}

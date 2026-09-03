@@ -25,6 +25,9 @@ import { useRef } from 'react'
 interface Stats {
   tokens: number
   deployments: number
+  hostedDeployments?: number
+  railwayDeployments?: number
+  renderDeployments?: number
   deployed: number
   failed: number
   botUsers: number
@@ -77,6 +80,9 @@ export default function Dashboard() {
         setStats({
           tokens: s.tokens,
           deployments: s.deployments,
+          hostedDeployments: s.hostedDeployments ?? 0,
+          railwayDeployments: s.railwayDeployments ?? 0,
+          renderDeployments: s.renderDeployments ?? 0,
           deployed: s.deployed,
           failed: s.failed,
           botUsers: s.botUsers,
@@ -105,7 +111,7 @@ export default function Dashboard() {
 
   const statCards = [
     { label: 'توکن‌های کلودفلر', value: stats?.tokens ?? 0, icon: KeyRound, color: 'from-blue-500 to-blue-600', link: '/tokens' },
-    { label: 'ورکرهای مستقر شده', value: stats?.deployed ?? 0, icon: Rocket, color: 'from-green-500 to-green-600', link: '/deployments' },
+    { label: 'همه استقرارها', value: stats?.deployments ?? 0, icon: Rocket, color: 'from-green-500 to-green-600', link: '/deployments' },
     { label: 'کاربران ربات', value: stats?.botUsers ?? 0, icon: Users, color: 'from-purple-500 to-purple-600', link: '/bot-users' },
     { label: 'کاربران فعال', value: stats?.activeBotUsers ?? 0, icon: Activity, color: 'from-orange-500 to-orange-600', link: '/bot-users' },
   ]
@@ -113,9 +119,15 @@ export default function Dashboard() {
   const actionLabels: Record<string, string> = {
     token_created: 'توکن ساخته شد',
     token_deleted: 'توکن حذف شد',
+    railway_token_created: 'توکن Railway ساخته شد',
+    railway_token_deleted: 'توکن Railway حذف شد',
+    render_token_created: 'کلید Render ساخته شد',
+    render_token_deleted: 'کلید Render حذف شد',
     deployment_created: 'استقرار شروع شد',
     deployment_deployed: 'ورکر مستقر شد',
     deployment_failed: 'استقرار ناموفق',
+    railway_deploy_started: 'استقرار Railway شروع شد',
+    render_deploy_started: 'استقرار Render شروع شد',
     bot_configured: 'ربات پیکربندی شد',
     bot_user_joined: 'کاربر جدید ربات',
   }
@@ -198,6 +210,30 @@ export default function Dashboard() {
         })}
       </div>
 
+      {((stats?.hostedDeployments ?? 0) > 0) && (
+        <div className="glass-card p-5">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <Rocket className="w-4 h-4 text-brand-400" /> استقرارهای میزبانی‌شده
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">پنل‌های Railway و Render در کنار ورکرهای کلودفلر</p>
+            </div>
+            <Link to="/deployments" className="text-xs text-brand-400 hover:text-brand-300">مشاهده همه</Link>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
+              <span className="text-sm text-slate-300">Railway</span>
+              <span className="font-mono text-lg font-bold text-white">{stats?.railwayDeployments ?? 0}</span>
+            </div>
+            <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
+              <span className="text-sm text-slate-300">Render</span>
+              <span className="font-mono text-lg font-bold text-white">{stats?.renderDeployments ?? 0}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Deployment status + quick actions */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Deployment status */}
@@ -216,7 +252,7 @@ export default function Dashboard() {
                 <Rocket className="w-5 h-5 text-blue-400" />
               </div>
               <p className="text-2xl font-bold text-white">{stats?.deployments ?? 0}</p>
-              <p className="text-xs text-slate-400 mt-1">کل ورکرها</p>
+              <p className="text-xs text-slate-400 mt-1">کل استقرارها</p>
             </div>
             <div className="text-center p-4 rounded-xl bg-slate-900/50 border border-slate-800">
               <div className="inline-flex p-2 rounded-lg bg-green-500/10 mb-2">

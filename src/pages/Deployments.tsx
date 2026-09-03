@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api, ApiError } from '../lib/api'
-import type { Deployment, CFToken, SubGroup, InjectedSub } from '../lib/types'
+import type { Deployment, HostedDeployment, CFToken, SubGroup, InjectedSub } from '../lib/types'
 import type { PreferredIP, ProxySpec } from '../lib/types'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
@@ -206,8 +206,120 @@ export default function Deployments() {
         ))}
       </div>
 
+      <HostedDeploymentsPanel />
       {tab === 'workers' ? <WorkersTab /> : <ScannerTab />}
     </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HOSTED DEPLOYMENTS — Railway / Render records, separate from Cloudflare
+// ═══════════════════════════════════════════════════════════════════════════
+function HostedDeploymentsPanel() {
+  const [items, setItems] = useState<HostedDeployment[]>([])
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const load = useCallback(async (background = false) => {
+    if (background) setRefreshing(true)
+    try {
+      const { data } = await api<{ data: HostedDeployment[] }>('/hosted-deployments')
+      setItems(data ?? [])
+    } catch {
+      if (!background) setItems([])
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const interval = setInterval(() => { void load(true) }, 10000)
+    return () => clearInterval(interval)
+  }, [load])
+
+  if (loading) return null
+  if (items.length === 0) return null
+
+  const status = {
+    success: { label: 'فعال', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', Icon: CheckCircle2 },
+    failed: { label: 'ناموفق', color: 'text-error-400', bg: 'bg-error-500/10', border: 'border-error-500/30', Icon: XCircle },
+    deploying: { label: 'در حال استقرار', color: 'text-warning-400', bg: 'bg-warning-500/10', border: 'border-warning-500/30', Icon: Loader2 },
+    unknown: { label: 'نامشخص', color: 'text-slate-400', bg: 'bg-slate-700/30', border: 'border-slate-600/30', Icon: Clock },
+  } as const
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <Globe className="w-5 h-5 text-brand-400" /> پنل‌های میزبانی‌شده
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">استقرارهای Railway و Render؛ تنظیمات KV و مدیریت کاربران فقط برای ورکرهای Cloudflare در دسترس است.</p>
+        </div>
+        <button type="button" onClick={() => void load(true)} disabled={refreshing}
+          className="btn-ghost flex items-center gap-2 text-xs disabled:opacity-50" title="به‌روزرسانی وضعیت">
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} /> به‌روزرسانی
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {items.map((item) => {
+          const st = status[item.status] ?? status.unknown
+          const StatusIcon = st.Icon
+          const providerName = item.provider === 'railway' ? 'Railway' : 'Render'
+          return (
+            <article key={item.id} className="glass-card p-5 border border-slate-800/80">
+              <div className="flex items-start gap-3">
+                <div className={`p-3 rounded-xl ${st.bg} ${st.border} border shrink-0`}>
+                  <StatusIcon className={`w-5 h-5 ${st.color} ${item.status === 'deploying' ? 'animate-spin' : ''}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-white truncate" dir="ltr">{item.name}</h3>
+                    <span className="badge bg-slate-700/30 text-slate-300">{providerName}</span>
+                    <span className={`badge ${st.bg} ${st.color} ${st.border} border`}>{st.label}</span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">{new Date(item.created_at).toLocaleString('fa-IR')}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mt-4">
+                <InfoCell icon={<Globe className="w-3.5 h-3.5 text-brand-400" />} label="منطقه">
+                  <span className="text-xs text-slate-300" dir="ltr">{item.region ?? 'پیش‌فرض سرویس'}</span>
+                </InfoCell>
+                <InfoCell icon={<Server className="w-3.5 h-3.5 text-slate-400" />} label="شناسه سرویس">
+                  <span className="text-xs text-slate-400 font-mono truncate block" dir="ltr">{item.provider_service_id ?? 'در انتظار'}</span>
+                </InfoCell>
+              </div>
+
+              {item.error_message && (
+                <p className="mt-3 px-3 py-2 rounded-lg bg-error-500/10 border border-error-500/20 text-xs text-error-300">{item.error_message}</p>
+              )}
+
+              <div className="flex gap-2 flex-wrap mt-4">
+                {item.panel_url && (
+                  <a href={item.panel_url} target="_blank" rel="noopener noreferrer" className="btn-primary flex items-center gap-1.5 text-sm py-2">
+                    <ExternalLink className="w-4 h-4" /> باز کردن پنل
+                  </a>
+                )}
+                {item.url && item.url !== item.panel_url && (
+                  <a href={item.url} target="_blank" rel="noopener noreferrer" className="btn-ghost flex items-center gap-1.5 text-sm py-2">
+                    <Globe className="w-4 h-4" /> آدرس سرویس
+                  </a>
+                )}
+                {item.dashboard_url && (
+                  <a href={item.dashboard_url} target="_blank" rel="noopener noreferrer" className="btn-ghost flex items-center gap-1.5 text-sm py-2">
+                    <Settings2 className="w-4 h-4" /> داشبورد {providerName}
+                  </a>
+                )}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 

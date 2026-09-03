@@ -192,17 +192,25 @@ export async function handleMemberCreate(env: Env, userId: string, request: Requ
   const body = safeJsonParse<MemberBody>(await request.text().catch(() => ''), {})
   if (!body.deployment_id) return apiError('deployment_id الزامی است')
   const dep = await env.DB.prepare(
-    `SELECT id, name FROM deployments WHERE id = ? AND user_id = ?`,
-  ).bind(body.deployment_id, userId).first<{ id: string; name: string }>()
+    `SELECT id, name, status, worker_source FROM deployments WHERE id = ? AND user_id = ?`,
+  ).bind(body.deployment_id, userId).first<{ id: string; name: string; status: string; worker_source: string | null }>()
   if (!dep) return apiError('ورکر پیدا نشد', 404)
+  if (dep.status !== 'deployed') return apiError('برای ساخت کاربر، استقرار ورکر باید با موفقیت کامل شده باشد.', 409)
+  if (String(dep.worker_source ?? '').toLowerCase() === 'miliconfigzeus') {
+    return apiError('مدیریت کاربران از این بخش برای Zeus پشتیبانی نمی‌شود؛ کاربران را از پنل داخلی خود Zeus مدیریت کنید.', 409)
+  }
 
   const settings = sanitizeSettings(body)
   const id = genId()
   const token = genId().replace(/-/g, '')
-  const quotaBytes = body.quota_gb == null || body.quota_gb <= 0 ? null : Math.round(body.quota_gb * 1024 ** 3)
-  const reqQuota = body.request_quota == null || body.request_quota <= 0 ? null : Math.round(body.request_quota)
-  const ipLimit = body.ip_limit == null || body.ip_limit <= 0 ? null : Math.round(body.ip_limit)
-  const resetDays = body.reset_period_days == null || body.reset_period_days <= 0 ? null : Math.round(body.reset_period_days)
+  const quotaGb = body.quota_gb == null ? null : Number(body.quota_gb)
+  const requestQuota = body.request_quota == null ? null : Number(body.request_quota)
+  const ipLimitValue = body.ip_limit == null ? null : Number(body.ip_limit)
+  const resetDaysValue = body.reset_period_days == null ? null : Number(body.reset_period_days)
+  const quotaBytes = quotaGb == null || !Number.isFinite(quotaGb) || quotaGb <= 0 ? null : Math.round(Math.min(quotaGb, 1024) * 1024 ** 3)
+  const reqQuota = requestQuota == null || !Number.isFinite(requestQuota) || requestQuota <= 0 ? null : Math.round(Math.min(requestQuota, 10_000_000_000))
+  const ipLimit = ipLimitValue == null || !Number.isFinite(ipLimitValue) || ipLimitValue <= 0 ? null : Math.round(Math.min(ipLimitValue, 1000))
+  const resetDays = resetDaysValue == null || !Number.isFinite(resetDaysValue) || resetDaysValue <= 0 ? null : Math.round(Math.min(resetDaysValue, 3650))
   await env.DB.prepare(
     `INSERT INTO worker_members (id, owner_user_id, deployment_id, name, token, enabled, expires_at, quota_bytes, request_quota, ip_limit, used_bytes, used_requests, recent_ips, start_on_connect, reset_period_days, settings, created_at)
      VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, 0, '[]', ?, ?, ?, ?)`,

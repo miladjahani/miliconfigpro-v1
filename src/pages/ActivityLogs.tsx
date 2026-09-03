@@ -15,7 +15,13 @@ import {
 const actionConfig: Record<string, { label: string; icon: typeof KeyRound; color: string; bg: string }> = {
   token_created: { label: 'توکن ساخته شد', icon: KeyRound, color: 'text-blue-400', bg: 'bg-blue-500/10' },
   token_deleted: { label: 'توکن حذف شد', icon: KeyRound, color: 'text-slate-400', bg: 'bg-slate-700/30' },
+  railway_token_created: { label: 'توکن Railway ساخته شد', icon: KeyRound, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+  railway_token_deleted: { label: 'توکن Railway حذف شد', icon: KeyRound, color: 'text-slate-400', bg: 'bg-slate-700/30' },
+  render_token_created: { label: 'کلید Render ساخته شد', icon: KeyRound, color: 'text-orange-400', bg: 'bg-orange-500/10' },
+  render_token_deleted: { label: 'کلید Render حذف شد', icon: KeyRound, color: 'text-slate-400', bg: 'bg-slate-700/30' },
   deployment_created: { label: 'استقرار شروع شد', icon: Rocket, color: 'text-warning-400', bg: 'bg-warning-500/10' },
+  railway_deploy_started: { label: 'استقرار Railway شروع شد', icon: Rocket, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+  render_deploy_started: { label: 'استقرار Render شروع شد', icon: Rocket, color: 'text-orange-400', bg: 'bg-orange-500/10' },
   deployment_deployed: { label: 'ورکر مستقر شد', icon: CheckCircle2, color: 'text-green-400', bg: 'bg-green-500/10' },
   deployment_failed: { label: 'استقرار ناموفق', icon: AlertCircle, color: 'text-error-400', bg: 'bg-error-500/10' },
   bot_configured: { label: 'ربات پیکربندی شد', icon: Bot, color: 'text-brand-400', bg: 'bg-brand-500/10' },
@@ -64,7 +70,7 @@ export default function ActivityLogs() {
               filter === f ? 'bg-brand-600 text-white' : 'bg-slate-800/50 text-slate-400 hover:text-white'
             }`}
           >
-            {f === 'all' ? 'همه' : f === 'token' ? 'توکن‌ها' : f === 'deployment' ? 'استقرارها' : 'ربات'}
+            {f === 'all' ? 'همه' : f === 'token' ? 'توکن‌ها' : f === 'deployment' ? 'استقرارها (کلودفلر، Railway، Render)' : 'ربات'}
           </button>
         ))}
       </div>

@@ -72,6 +72,25 @@ CREATE TABLE IF NOT EXISTS railway_deploys (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Railway/Render hosted deployment records
+CREATE TABLE IF NOT EXISTS hosted_deployments (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('railway','render')),
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'deploying' CHECK (status IN ('deploying','success','failed','unknown')),
+  region TEXT,
+  url TEXT,
+  panel_url TEXT,
+  dashboard_url TEXT,
+  provider_deployment_id TEXT NOT NULL,
+  provider_service_id TEXT,
+  token_id TEXT NOT NULL,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Worker deployment records
 CREATE TABLE IF NOT EXISTS deployments (
   id TEXT PRIMARY KEY,
@@ -148,6 +167,7 @@ CREATE TABLE IF NOT EXISTS optimizer_jobs (
   result_nodes TEXT NOT NULL DEFAULT '[]',
   result_sub TEXT NOT NULL DEFAULT '',
   sub_token TEXT NOT NULL UNIQUE,
+  opt_options TEXT,
   nodes_total INTEGER NOT NULL DEFAULT 0,
   nodes_alive INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
@@ -190,6 +210,8 @@ CREATE INDEX IF NOT EXISTS idx_cf_tokens_user ON cf_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_render_tokens_user ON render_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_railway_tokens_user ON railway_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_railway_deploys_user ON railway_deploys(user_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_deployments_user ON hosted_deployments(user_id);
+CREATE INDEX IF NOT EXISTS idx_hosted_deployments_status ON hosted_deployments(status);
 CREATE INDEX IF NOT EXISTS idx_deployments_user ON deployments(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
 CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id);

@@ -49,6 +49,10 @@ async function resolveConfig(env: Env, request: Request): Promise<BotConfigRow |
       'SELECT id, user_id, bot_token, is_active, welcome_message, chat_id FROM bot_config WHERE webhook_secret = ? AND is_active = 1 LIMIT 1',
     ).bind(secret).first<BotConfigRow>()
     if (bySecret) return bySecret
+    // A secret header is an explicit identity claim. Never fall back to an
+    // unrelated active bot when it does not match, otherwise one bot's update
+    // could be processed under another account.
+    return null
   }
   return getActiveConfig(env)
 }

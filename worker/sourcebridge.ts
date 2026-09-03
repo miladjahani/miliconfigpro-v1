@@ -17,7 +17,21 @@ import { apiError, json, safeJsonParse } from './util'
 import { kvGet, kvPut } from './cfapi'
 import { extractNodes } from './parser'
 
-export type SourceType = 'edgetunnel' | 'custom'
+export type SourceType = 'edgetunnel' | 'edgetunnel_kv' | 'custom' | 'nexus'
+
+/** Normalize the source value stored on a deployment without silently mapping
+ * a different worker family to edgetunnel. */
+export function normalizeSourceType(raw: unknown): SourceType | null {
+  const value = String(raw ?? '').trim().toLowerCase()
+  if (value === 'edgetunnel' || value === 'edgetunnel_kv') return value
+  if (value === 'custom') return 'custom'
+  if (value === 'nexus') return 'nexus'
+  return null
+}
+
+export function isZeusSource(raw: unknown): boolean {
+  return String(raw ?? '').trim().toLowerCase() === 'miliconfigzeus'
+}
 
 export interface SourceCtx {
   deploymentId: string
@@ -34,7 +48,12 @@ export interface SourceCtx {
   token: string
 }
 
-const CONFIG_KEY: Record<SourceType, string> = { edgetunnel: 'config.json', custom: 'c' }
+const CONFIG_KEY: Record<SourceType, string> = {
+  edgetunnel: 'config.json',
+  edgetunnel_kv: 'config.json',
+  custom: 'c',
+  nexus: 'c',
+}
 const ADDTXT_KEY = 'ADD.txt'
 
 /** Load a deployment + its CF credentials as a bridge context.
@@ -61,8 +80,9 @@ export async function resolveSource(env: Env, userId: string | null, deploymentI
   if (!dep.cf_account_id || !dep.kv_namespace_id || !tokenRow?.token) return null
 
   const cfg = safeJsonParse<{ worker_source?: string }>(dep.config as string ?? '', {})
-  const raw = String(dep.worker_source ?? cfg.worker_source ?? 'edgetunnel')
-  const source: SourceType = raw === 'custom' ? 'custom' : 'edgetunnel'
+  const raw = dep.worker_source ?? cfg.worker_source ?? 'edgetunnel'
+  const source = normalizeSourceType(raw)
+  if (!source) return null
 
   return {
     deploymentId: dep.id as string,
@@ -97,7 +117,7 @@ function subCandidates(ctx: SourceCtx): string[] {
     out.push(`${ctx.workerUrl}/${ctx.uuid}`)
     out.push(`${ctx.workerUrl}/${ctx.uuid}/sub`)
   }
-  if (ctx.workerUrl && ctx.customPath && ctx.source === 'edgetunnel') {
+  if (ctx.workerUrl && ctx.customPath && (ctx.source === 'edgetunnel' || ctx.source === 'edgetunnel_kv')) {
     out.push(`${ctx.workerUrl}/${ctx.customPath.replace(/^\//, '')}`)
   }
   return [...new Set(out)]
@@ -139,9 +159,14 @@ export async function fetchSourceNodes(ctx: SourceCtx): Promise<{ lines: string[
   }
   const addresses = [...new Set([...ips, ...(proxyip ? [proxyip] : []), ...(ips.length || proxyip ? [] : [host])])]
 
-  // Read the PATH from config (edgetunnel uses this as the WS path).
+  // Read the source-specific path from config (PATH for edgetunnel, d for
+  // custom/NEXUS). Keeping this source-aware prevents a custom worker from
+  // receiving an edgetunnel path by accident.
   const wsPath = cfgResp?.ok
-    ? String(safeJsonParse<Record<string, unknown>>(cfgResp.text, {}).PATH ?? '/')
+    ? (() => {
+        const cfg = safeJsonParse<Record<string, unknown>>(cfgResp.text, {})
+        return String(ctx.source === 'edgetunnel' || ctx.source === 'edgetunnel_kv' ? cfg.PATH ?? '/' : cfg.d ?? '/')
+      })()
     : '/'
 
   const lines = addresses.map((ip) => {

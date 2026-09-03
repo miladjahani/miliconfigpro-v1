@@ -15,7 +15,7 @@ import { handleInjectorCreate, handleInjectorList, handleInjectorPatch, handleIn
 import { handleMemberCreate, handleMemberList, handleMemberPatch, handleMemberDelete, handleMemberBulk, handleCfQuota, refreshMemberUsage, serveMemberSub, handleMemberTest } from './members'
 import { serveStatusPage } from './status'
 import { exportBackup, importBackup } from './backup'
-import { handleSourceSettings, handleSourceNodes } from './sourcebridge'
+import { handleSourceSettings, handleSourceNodes, isZeusSource, normalizeSourceType } from './sourcebridge'
 
 interface DeploymentBody {
   name?: string
@@ -26,6 +26,32 @@ interface DeploymentBody {
   proxyip?: string
   admin_password?: string
   cf_token_id?: string
+}
+
+/** Validate the shared deployment policy before any provider API call. The
+ * same name and quota are used by Cloudflare, Railway, and Render so users do
+ * not accidentally create duplicate panels or bypass their account limit by
+ * switching providers. */
+async function validateDeploymentSlot(env: Env, userId: string, name: string, source?: string): Promise<string | null> {
+  if (source !== undefined && !normalizeSourceType(source) && !isZeusSource(source)) {
+    return 'نوع سورس ناشناخته است؛ یکی از edgetunnel، custom، nexus یا Zeus را انتخاب کنید.'
+  }
+
+  const [quotaRow, cloudCount, hostedCount, duplicate] = await Promise.all([
+    env.DB.prepare('SELECT max_deployments FROM users WHERE id = ?').bind(userId).first<{ max_deployments: number | null }>(),
+    env.DB.prepare('SELECT COUNT(*) AS c FROM deployments WHERE user_id = ?').bind(userId).first<{ c: number }>(),
+    env.DB.prepare('SELECT COUNT(*) AS c FROM hosted_deployments WHERE user_id = ?').bind(userId).first<{ c: number }>(),
+    env.DB.prepare(
+      `SELECT 1 AS found FROM deployments WHERE user_id = ? AND lower(name) = lower(?)
+       UNION ALL
+       SELECT 1 AS found FROM hosted_deployments WHERE user_id = ? AND lower(name) = lower(?) LIMIT 1`,
+    ).bind(userId, name, userId, name).first<{ found: number }>(),
+  ])
+  const quota = Number(quotaRow?.max_deployments ?? 100)
+  const current = Number(cloudCount?.c ?? 0) + Number(hostedCount?.c ?? 0)
+  if (current >= quota) return `به سقف تعداد استقرارهای خود (${quota}) رسیده‌اید`
+  if (duplicate) return `نام «${name}» قبلاً برای یکی از استقرارهای شما استفاده شده است؛ نام دیگری انتخاب کنید.`
+  return null
 }
 
 async function requireUser(env: Env, request: Request) {
@@ -122,9 +148,11 @@ async function loadRailwayToken(env: Env, userId: string, id: string): Promise<{
 /** Auto-deploy StanNG v2 to Railway: create project + service (US region), start deploy. */
 async function handleRailwayDeploy(env: Env, userId: string, request: Request): Promise<Response> {
   const body = safeJsonParse<{ token_id?: string; name?: string; region?: string }>(await request.text().catch(() => ''), {})
-  const name = (body.name ?? '').trim().toLowerCase()
+  const name = String(body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام پروژه نامعتبر است')
-  const region = /^[a-z0-9-]+$/.test(body.region ?? '') ? (body.region as string) : 'us-west2'
+  const region = /^[a-z0-9-]+$/.test(String(body.region ?? '')) ? String(body.region) : 'us-west2'
+  const slotError = await validateDeploymentSlot(env, userId, name)
+  if (slotError) return apiError(slotError, 409)
   const row = await loadRailwayToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('توکن Railway فعال انتخاب‌شده پیدا نشد', 400)
 
@@ -140,8 +168,26 @@ async function handleRailwayDeploy(env: Env, userId: string, request: Request): 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, adminUsername, adminPassword, nowIso()).run()
 
+    await env.DB.prepare(
+      `INSERT INTO hosted_deployments
+       (id, user_id, provider, name, status, region, url, panel_url, dashboard_url, provider_deployment_id, provider_service_id, token_id, created_at, updated_at)
+       VALUES (?, ?, 'railway', ?, 'deploying', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      result.deploymentId,
+      userId,
+      name,
+      region,
+      normalizeHostedUrl(result.domain),
+      normalizeHostedUrl(result.domain) ? `${normalizeHostedUrl(result.domain)!.replace(/\/+$/, '')}/login` : null,
+      result.projectUrl,
+      result.deploymentId,
+      result.serviceId,
+      row.id,
+      nowIso(),
+      nowIso(),
+    ).run()
     await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
-    await logActivity(env, userId, 'railway_deploy_started', 'deployment', name)
+    await logActivity(env, userId, 'railway_deploy_started', 'deployment', name, { provider: 'railway', region })
     return json({ data: { ...result, admin_username: adminUsername, admin_password: adminPassword } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
@@ -210,15 +256,22 @@ async function loadRenderToken(env: Env, userId: string, id: string): Promise<{ 
 /** Auto-deploy StanNG v2 to Render.com: create Blueprint service, start deploy. */
 async function handleRenderDeploy(env: Env, userId: string, request: Request): Promise<Response> {
   const body = safeJsonParse<{ token_id?: string; name?: string }>(await request.text().catch(() => ''), {})
-  const name = (body.name ?? '').trim().toLowerCase()
+  const name = String(body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام سرویس نامعتبر است')
+  const slotError = await validateDeploymentSlot(env, userId, name)
+  if (slotError) return apiError(slotError, 409)
   const row = await loadRenderToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('کلید API رندر انتخاب‌شده پیدا نشد', 400)
 
   try {
     const result = await deployToRender(row.token, name)
+    await env.DB.prepare(
+      `INSERT INTO hosted_deployments
+       (id, user_id, provider, name, status, dashboard_url, provider_deployment_id, provider_service_id, token_id, created_at, updated_at)
+       VALUES (?, ?, 'render', ?, 'deploying', ?, ?, ?, ?, ?, ?)`,
+    ).bind(result.deployId, userId, name, result.dashboardUrl, result.deployId, result.serviceId, row.id, nowIso(), nowIso()).run()
     await env.DB.prepare('UPDATE render_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
-    await logActivity(env, userId, 'render_deploy_started', 'deployment', name)
+    await logActivity(env, userId, 'render_deploy_started', 'deployment', name, { provider: 'render' })
     return json({ data: result })
   } catch (err) {
     const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Render'
@@ -235,7 +288,15 @@ async function handleRenderStatus(env: Env, userId: string, url: URL): Promise<R
   const row = await loadRenderToken(env, userId, tokenId)
   if (!row) return apiError('کلید API رندر پیدا نشد', 400)
   try {
-    return json({ data: await renderDeployStatus(row.token, deployId, serviceId) })
+    const status = await renderDeployStatus(row.token, deployId, serviceId)
+    const normalized = status.status === 'LIVE' ? 'success' : ['FAILED', 'CANCELED', 'DEACTIVATED'].includes(status.status) ? 'failed' : 'deploying'
+    const publicUrl = normalizeHostedUrl(status.url)
+    const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}/login` : null
+    await env.DB.prepare(
+      `UPDATE hosted_deployments SET status = ?, url = COALESCE(?, url), panel_url = COALESCE(?, panel_url), error_message = ?, updated_at = ?
+       WHERE id = ? AND user_id = ?`,
+    ).bind(normalized, publicUrl, panelUrl, normalized === 'failed' ? `Render: ${status.status}` : null, nowIso(), deployId, userId).run()
+    return json({ data: status })
   } catch (err) {
     const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
     return apiError(msg, 400)
@@ -259,7 +320,7 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
       const rec = await env.DB.prepare(
         'SELECT domain, admin_username, admin_password, setup_done FROM railway_deploys WHERE id = ? AND user_id = ?',
       ).bind(deploymentId, userId).first<{ domain: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
-      if (rec?.domain) status = { ...status, url: rec.domain }
+      if (rec?.domain) status = { ...status, url: normalizeHostedUrl(rec.domain) }
       if (rec?.domain && rec.admin_username && rec.admin_password && !rec.setup_done) {
         // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
         for (let attempt = 0; attempt < 4; attempt++) {
@@ -281,6 +342,21 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
         setupDone = true
       }
     }
+    const normalized = status.status === 'SUCCESS' ? 'success' : ['FAILED', 'CRASHED', 'SKIPPED', 'REMOVED'].includes(status.status) ? 'failed' : 'deploying'
+    const publicUrl = normalizeHostedUrl(status.url)
+    const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}/login` : null
+    await env.DB.prepare(
+      `UPDATE hosted_deployments SET status = ?, url = COALESCE(?, url), panel_url = COALESCE(?, panel_url), error_message = ?, updated_at = ?
+       WHERE id = ? AND user_id = ?`,
+    ).bind(
+      normalized,
+      publicUrl,
+      panelUrl,
+      normalized === 'failed' ? `Railway: ${status.status}` : null,
+      nowIso(),
+      deploymentId,
+      userId,
+    ).run()
     return json({ data: { ...status, setup_done: setupDone } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
@@ -290,8 +366,57 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
 
 // ── Deployments ────────────────────────────────────────────────────────────
 
+function normalizeHostedUrl(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed) return null
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+}
+
 function parseDeploymentRow(row: Record<string, unknown>): Record<string, unknown> {
   return { ...row, config: safeJsonParse(row.config as string, {}) }
+}
+
+async function listHostedDeployments(env: Env, userId: string): Promise<Response> {
+  // Refresh a small bounded batch so the deployment page stays accurate even
+  // after the wizard is closed. The status handlers load provider secrets by
+  // token id and never expose them to the client.
+  const pending = await env.DB.prepare(
+    `SELECT id, provider, provider_deployment_id, provider_service_id, token_id
+     FROM hosted_deployments
+     WHERE user_id = ? AND status = 'deploying'
+     ORDER BY updated_at ASC LIMIT 8`,
+  ).bind(userId).all<{
+    id: string
+    provider: 'railway' | 'render'
+    provider_deployment_id: string
+    provider_service_id: string | null
+    token_id: string
+  }>()
+
+  await Promise.allSettled(pending.results.map(async (item) => {
+    if (item.provider === 'railway') {
+      await handleRailwayStatus(
+        env,
+        userId,
+        new URL(`https://internal/api/railway/status?token_id=${encodeURIComponent(item.token_id)}&deployment_id=${encodeURIComponent(item.provider_deployment_id)}`),
+      )
+      return
+    }
+    if (item.provider_service_id) {
+      await handleRenderStatus(
+        env,
+        userId,
+        new URL(`https://internal/api/render/status?token_id=${encodeURIComponent(item.token_id)}&deploy_id=${encodeURIComponent(item.provider_deployment_id)}&service_id=${encodeURIComponent(item.provider_service_id)}`),
+      )
+    }
+  }))
+
+  const r = await env.DB.prepare(
+    `SELECT id, provider, name, status, region, url, panel_url, dashboard_url,
+            provider_deployment_id, provider_service_id, error_message, created_at, updated_at
+     FROM hosted_deployments WHERE user_id = ? ORDER BY created_at DESC`,
+  ).bind(userId).all()
+  return json({ data: r.results })
 }
 
 async function listDeployments(env: Env, userId: string, url: URL): Promise<Response> {
@@ -323,17 +448,14 @@ async function createDeployment(env: Env, userId: string, request: Request, ctx:
   const uuid = (body.uuid ?? '').trim()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام ورکر نامعتبر است')
   if (!uuid) return apiError('UUID الزامی است')
+  const workerSource = String(body.worker_source ?? 'edgetunnel').trim().toLowerCase()
+  const slotError = await validateDeploymentSlot(env, userId, name, workerSource)
+  if (slotError) return apiError(slotError, 409)
 
   const tokenRow = await env.DB.prepare("SELECT id, token FROM cf_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
     .bind(body.cf_token_id ?? '', userId)
     .first<{ id: string; token: string }>()
   if (!tokenRow) return apiError('توکن فعال انتخاب‌شده پیدا نشد', 400)
-
-  // Enforce the user's quota to avoid runaway deployments.
-  const quotaRow = await env.DB.prepare('SELECT max_deployments FROM users WHERE id = ?').bind(userId).first<{ max_deployments: number | null }>()
-  const quota = quotaRow?.max_deployments ?? 100
-  const count = await env.DB.prepare('SELECT COUNT(*) AS c FROM deployments WHERE user_id = ?').bind(userId).first<{ c: number }>()
-  if ((count?.c ?? 0) >= quota) return apiError(`به سقف تعداد ورکرهای خود (${quota}) رسیده‌اید`, 400)
 
   const id = genId()
   await env.DB.prepare(
@@ -341,7 +463,7 @@ async function createDeployment(env: Env, userId: string, request: Request, ctx:
      VALUES (?, ?, ?, '[auto-loaded]', '{}', 'deploying', ?, ?, ?, ?, ?, ?)`,
   )
     .bind(id, userId, name, uuid, body.custom_path || null, body.method === 'pages' ? 'pages' : 'workers',
-      body.worker_source ?? 'edgetunnel', nowIso(), nowIso())
+      workerSource, nowIso(), nowIso())
     .run()
 
   await logActivity(env, userId, 'deployment_created', 'deployment', name)
@@ -353,7 +475,7 @@ async function createDeployment(env: Env, userId: string, request: Request, ctx:
     cf_token_row_id: tokenRow.id,
     uuid,
     method: body.method === 'pages' ? 'pages' : 'workers',
-    worker_source: body.worker_source ?? 'edgetunnel',
+    worker_source: workerSource,
     proxyip: body.proxyip || undefined,
     admin_password: body.admin_password || undefined,
     custom_path: body.custom_path || undefined,
@@ -554,22 +676,32 @@ async function deleteBotUser(env: Env, userId: string, id: string): Promise<Resp
 // ── Stats & logs ───────────────────────────────────────────────────────────
 
 async function getStats(env: Env, userId: string): Promise<Response> {
-  const [tokens, deps, botUsersAll, recentLogs] = await Promise.all([
+  const [tokens, deps, hosted, botUsersAll, recentLogs] = await Promise.all([
     env.DB.prepare('SELECT COUNT(*) AS c FROM cf_tokens WHERE user_id = ?').bind(userId).first<{ c: number }>(),
     env.DB.prepare("SELECT status, COUNT(*) AS c FROM deployments WHERE user_id = ? GROUP BY status").bind(userId).all<{ status: string; c: number }>(),
+    env.DB.prepare("SELECT provider, status, COUNT(*) AS c FROM hosted_deployments WHERE user_id = ? GROUP BY provider, status").bind(userId).all<{ provider: string; status: string; c: number }>(),
     env.DB.prepare('SELECT is_active, is_admin, COUNT(*) AS c FROM bot_users WHERE user_id = ? GROUP BY is_active, is_admin').bind(userId).all<{ is_active: number; is_admin: number; c: number }>(),
     env.DB.prepare('SELECT id, action, entity_name, created_at FROM activity_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 8').bind(userId).all(),
   ])
 
   const statusCounts = Object.fromEntries(deps.results.map((r) => [r.status, r.c]))
+  const hostedTotal = hosted.results.reduce((acc, r) => acc + r.c, 0)
+  const hostedSuccess = hosted.results.filter((r) => r.status === 'success').reduce((acc, r) => acc + r.c, 0)
+  const hostedFailed = hosted.results.filter((r) => r.status === 'failed').reduce((acc, r) => acc + r.c, 0)
+  const hostedByProvider = Object.fromEntries(
+    ['railway', 'render'].map((provider) => [provider, hosted.results.filter((r) => r.provider === provider).reduce((acc, r) => acc + r.c, 0)]),
+  )
   const botUsers = botUsersAll.results.reduce((acc, g) => acc + g.c, 0)
   const activeBotUsers = botUsersAll.results.filter((g) => g.is_active).reduce((acc, g) => acc + g.c, 0)
 
   return json({
     tokens: tokens?.c ?? 0,
-    deployments: deps.results.reduce((acc, g) => acc + g.c, 0),
-    deployed: statusCounts.deployed ?? 0,
-    failed: statusCounts.failed ?? 0,
+    deployments: deps.results.reduce((acc, g) => acc + g.c, 0) + hostedTotal,
+    deployed: (statusCounts.deployed ?? 0) + hostedSuccess,
+    failed: (statusCounts.failed ?? 0) + hostedFailed,
+    hostedDeployments: hostedTotal,
+    railwayDeployments: hostedByProvider.railway ?? 0,
+    renderDeployments: hostedByProvider.render ?? 0,
     botUsers,
     activeBotUsers,
     recentLogs: recentLogs.results,
@@ -674,6 +806,7 @@ async function handleRouted(
     if (path === '/api/render/status' && method === 'GET') return await handleRenderStatus(env, user.id, url)
 
     if (path === '/api/deployments' && method === 'GET') return await listDeployments(env, user.id, url)
+    if (path === '/api/hosted-deployments' && method === 'GET') return await listHostedDeployments(env, user.id)
     if (path === '/api/deployments' && method === 'POST') return await createDeployment(env, user.id, request, ctx, origin)
     if (path.match(/^\/api\/deployments\/[^/]+$/) && method === 'GET') return await getDeployment(env, user.id, path.split('/')[3])
     if (path.match(/^\/api\/deployments\/[^/]+$/) && method === 'DELETE') return await deleteDeployment(env, user.id, path.split('/')[3])
@@ -751,7 +884,8 @@ async function handleRouted(
       if (path === '/api/admin/users' && method === 'GET') {
         const r = await env.DB.prepare(
           `SELECT u.id, u.email, u.role, u.max_deployments, u.created_at,
-            (SELECT COUNT(*) FROM deployments d WHERE d.user_id = u.id) AS deployments
+            (SELECT COUNT(*) FROM deployments d WHERE d.user_id = u.id)
+              + (SELECT COUNT(*) FROM hosted_deployments hd WHERE hd.user_id = u.id) AS deployments
            FROM users u ORDER BY u.created_at`,
         ).all()
         return json({ data: r.results })

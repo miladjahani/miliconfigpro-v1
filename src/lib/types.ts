@@ -27,6 +27,22 @@ export interface RenderToken {
   created_at: string
 }
 
+export interface HostedDeployment {
+  id: string
+  provider: 'railway' | 'render'
+  name: string
+  status: 'deploying' | 'success' | 'failed' | 'unknown'
+  region: string | null
+  url: string | null
+  panel_url: string | null
+  dashboard_url: string | null
+  provider_deployment_id: string
+  provider_service_id: string | null
+  error_message: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface Deployment {
   id: string
   name: string

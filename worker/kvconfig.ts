@@ -1,6 +1,7 @@
 import type { Env } from './env'
 import { apiError, json } from './util'
 import { kvGet, kvPut } from './cfapi'
+import { isZeusSource, normalizeSourceType } from './sourcebridge'
 
 const KV_KEYS: Record<string, { config: string; addTxt: string }> = {
   edgetunnel: { config: 'config.json', addTxt: 'ADD.txt' },
@@ -42,15 +43,27 @@ export async function handleWorkerConfig(env: Env, userId: string, body: WorkerC
   if (!body.deployment_id) return apiError('deployment_id الزامی است', 400)
 
   const dep = await env.DB.prepare(
-    `SELECT id, cf_account_id, kv_namespace_id, config FROM deployments WHERE id = ? AND user_id = ?`,
+    `SELECT id, cf_account_id, kv_namespace_id, cf_token_row_id, worker_source, config FROM deployments WHERE id = ? AND user_id = ?`,
   )
     .bind(body.deployment_id, userId)
-    .first<{ id: string; cf_account_id: string | null; kv_namespace_id: string | null; config: string }>()
+    .first<{ id: string; cf_account_id: string | null; kv_namespace_id: string | null; cf_token_row_id: string | null; worker_source: string | null; config: string }>()
+
   if (!dep) return apiError('ورکر پیدا نشد', 404)
 
   const accountId = dep.cf_account_id ?? ''
   const kvNs = dep.kv_namespace_id ?? ''
-  const workerSource = (JSON.parse(dep.config || '{}') as Record<string, unknown>).worker_source as string ?? 'edgetunnel'
+  // worker_source is authoritative; config is only a legacy fallback for old
+  // rows created before the dedicated column existed.
+  const legacySource = (() => {
+    try { return (JSON.parse(dep.config || '{}') as Record<string, unknown>).worker_source } catch { return null }
+  })()
+  const workerSource = String(dep.worker_source ?? legacySource ?? 'edgetunnel')
+  if (isZeusSource(workerSource)) {
+    return apiError('مدیریت KV و ADD.txt برای سورس Zeus قابل اعمال نیست؛ تنظیمات این ورکر از پنل داخلی Zeus انجام می‌شود.', 409)
+  }
+  if (!normalizeSourceType(workerSource)) {
+    return apiError('نوع سورس این ورکر ناشناخته است؛ برای جلوگیری از خراب‌شدن نود، ابتدا سورس معتبر انتخاب کنید.', 409)
+  }
   const keys = getKvKeys(workerSource)
 
   if (!accountId || !kvNs) {
@@ -58,11 +71,15 @@ export async function handleWorkerConfig(env: Env, userId: string, body: WorkerC
   }
 
   // Use the most recent active token (same policy as deploy).
-  const tokenRow = await env.DB.prepare(
-    `SELECT token FROM cf_tokens WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1`,
-  )
-    .bind(userId)
-    .first<{ token: string }>()
+  const tokenRow = dep.cf_token_row_id
+    ? await env.DB.prepare('SELECT token FROM cf_tokens WHERE id = ? AND user_id = ? AND status = \'active\'')
+        .bind(dep.cf_token_row_id, userId)
+        .first<{ token: string }>()
+    : await env.DB.prepare(
+        `SELECT token FROM cf_tokens WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1`,
+      )
+        .bind(userId)
+        .first<{ token: string }>()
   if (!tokenRow?.token) {
     return apiError('هیچ توکن فعال Cloudflare وجود ندارد. ابتدا یک توکن با دسترسی Workers KV Storage:Edit اضافه کنید.', 400)
   }
@@ -118,8 +135,8 @@ export async function handleWorkerConfig(env: Env, userId: string, body: WorkerC
       return apiError(`KV write failed ${wr.status}${hint}`, 502)
     }
 
-    await env.DB.prepare('UPDATE deployments SET config = ?, updated_at = ? WHERE id = ?')
-      .bind(JSON.stringify(sanitizeConfig(safeConfig)), new Date().toISOString(), body.deployment_id)
+    await env.DB.prepare('UPDATE deployments SET config = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+      .bind(JSON.stringify(sanitizeConfig(safeConfig)), new Date().toISOString(), body.deployment_id, userId)
       .run()
     return json({ success: true, message: 'تنظیمات در KV ورکر ذخیره شد' })
   }
