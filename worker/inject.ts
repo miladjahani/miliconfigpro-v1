@@ -6,16 +6,82 @@ import { b64encodeUtf8 } from './net'
 import { extractNodes } from './parser'
 import { parseNodeLine, type ParsedNode } from './optimizer'
 
-export interface PreferredIP { ip: string; port?: number }
+export interface PreferredIP {
+  ip: string
+  port?: number
+  /** Human-readable country/location label shown in generated node names. */
+  label?: string
+  /** Optional per-location HTTP/SOCKS chain. */
+  proxy?: string
+}
 export interface ProxySpec {
-  type: 'http' | 'socks5'
+  type: 'http' | 'https' | 'socks5'
   server: string
   port: number
   username?: string
   password?: string
 }
 
+/** Parse a proxy URI without ever exposing its credentials in display names. */
+export function parseProxySpec(value: string): ProxySpec | null {
+  try {
+    const url = new URL(value.trim())
+    const protocol = url.protocol.replace(':', '').toLowerCase()
+    if (!['http', 'https', 'socks5'].includes(protocol)) return null
+    const port = Number(url.port)
+    if (!url.hostname || !Number.isInteger(port) || port < 1 || port > 65535) return null
+    return {
+      type: protocol as ProxySpec['type'],
+      server: url.hostname,
+      port,
+      ...(url.username ? { username: decodeURIComponent(url.username) } : {}),
+      ...(url.password ? { password: decodeURIComponent(url.password) } : {}),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Rewrite or insert a URI query parameter before the display-name fragment. */
+function setQueryParam(line: string, key: string, value: string): string {
+  const hashIdx = line.indexOf('#')
+  const main = hashIdx === -1 ? line : line.slice(0, hashIdx)
+  const suffix = hashIdx === -1 ? '' : line.slice(hashIdx)
+  const qIdx = main.indexOf('?')
+  if (qIdx === -1) return `${main}?${key}=${encodeURIComponent(value)}${suffix}`
+  const base = main.slice(0, qIdx)
+  const parts = main.slice(qIdx + 1).split('&').filter((part) => part && !part.startsWith(`${key}=`))
+  parts.push(`${key}=${encodeURIComponent(value)}`)
+  return `${base}?${parts.join('&')}${suffix}`
+}
+
+function addChainParams(line: string, proxy: string): string {
+  const protocol = proxy.match(/^(https?|socks5):\/\//i)?.[1]?.toLowerCase()
+  if (!protocol) return line
+  const credential = proxy.replace(/^[a-z0-9]+:\/\//i, '')
+  return setQueryParam(setQueryParam(line, protocol, credential), 'globalproxy', '1')
+}
+
+function proxyTag(proxy: ProxySpec): string {
+  return `${proxy.type}-${proxy.server}:${proxy.port}`
+}
+
+/** Clash Meta represents an HTTPS forward proxy as an HTTP proxy with TLS. */
+function proxyToClash(proxy: ProxySpec, name: string): Record<string, unknown> {
+  return {
+    name,
+    type: proxy.type === 'https' ? 'http' : proxy.type,
+    server: proxy.server,
+    port: proxy.port,
+    ...(proxy.username ? { username: proxy.username } : {}),
+    ...(proxy.password ? { password: proxy.password } : {}),
+    ...(proxy.type === 'https' ? { tls: true } : {}),
+    udp: true,
+  }
+}
+
 // ── Source collection ───────────────────────────────────────────────────
+
 
 export async function collectNodeLines(source: string): Promise<string[]> {
   const trimmed = source.trim()
@@ -68,6 +134,7 @@ export function applyInjection(
   lines: string[],
   ips: PreferredIP[],
   proxies: ProxySpec[],
+  mode: 'all' | 'balanced' = 'all',
 ): InjectResult {
   const nodes = lines.map(parseNodeLine).filter((n): n is ParsedNode => n !== null)
   const subLines: string[] = []
@@ -75,7 +142,7 @@ export function applyInjection(
   const clashProxiesNames: string[] = []
   let injectedCount = 0
 
-  for (const node of nodes) {
+  for (const [nodeIndex, node] of nodes.entries()) {
     // Keep the original node first.
     subLines.push(node.line)
     const originalClash = nodeToClash(node, node.name)
@@ -86,13 +153,20 @@ export function applyInjection(
 
     if (ips.length === 0) continue
     // Injected variants: entry = preferred IP, sni/host = original domain.
-    for (const pref of ips.slice(0, 20)) {
+    // Member subscriptions use balanced mode to avoid a source-node × IP
+    // Cartesian product. Other callers retain the historical all mode.
+    const assigned = mode === 'balanced'
+      ? ips.filter((_, index) => index % Math.max(1, nodes.length) === nodeIndex).slice(0, 200)
+      : ips.slice(0, 200)
+    for (const pref of assigned) {
       const port = pref.port ?? node.port
       const swapped = swapEntry(node.line, node.proto, pref.ip, port)
       if (!swapped) continue
       injectedCount++
-      const variantName = `${node.name} | miliconfig-${pref.ip}${port !== 443 ? ':' + port : ''}`
-      const withName = setNodeName(swapped, node.proto, variantName)
+      const locationTag = pref.label ? ` | ${pref.label}` : ''
+      const variantName = `${node.name}${locationTag} | miliconfig-${pref.ip}${port !== 443 ? ':' + port : ''}`
+      const chained = pref.proxy ? addChainParams(swapped, pref.proxy) : swapped
+      const withName = setNodeName(chained, node.proto, variantName)
       subLines.push(withName)
       const clashNode = nodeToClash(
         { ...node, host: pref.ip, port, line: withName },
@@ -100,6 +174,15 @@ export function applyInjection(
         node.host, // keep original domain as sni/host
       )
       if (clashNode) {
+        const chain = pref.proxy ? parseProxySpec(pref.proxy) : null
+        if (chain) {
+          const chainName = proxyTag(chain)
+          if (!clashProxiesNames.includes(chainName)) {
+            clashProxies.push(proxyToClash(chain, chainName))
+            clashProxiesNames.push(chainName)
+          }
+          clashNode['dialer-proxy'] = chainName
+        }
         clashProxies.push(clashNode)
         clashProxiesNames.push(variantName)
       }
@@ -107,19 +190,10 @@ export function applyInjection(
   }
 
   // Proxy servers themselves + dialer-proxy chains (fixed egress).
-  const chainPairs: Array<{ nodeName: string; proxy: ProxySpec }> = []
   const topNodes = nodes.slice(0, 10)
   for (const [pi, proxy] of proxies.entries()) {
     const pname = `${proxy.type}-${proxy.server}:${proxy.port}`
-    clashProxies.push({
-      name: pname,
-      type: proxy.type,
-      server: proxy.server,
-      port: proxy.port,
-      ...(proxy.username ? { username: proxy.username } : {}),
-      ...(proxy.password ? { password: proxy.password } : {}),
-      udp: true,
-    })
+    clashProxies.push(proxyToClash(proxy, pname))
     clashProxiesNames.push(pname)
     for (const node of topNodes) {
       const viaName = `${node.name} | via-${pi + 1}`
@@ -129,7 +203,6 @@ export function applyInjection(
         clashProxies.push(base)
         clashProxiesNames.push(viaName)
       }
-      chainPairs.push({ nodeName: node.name, proxy })
       injectedCount++
     }
   }
@@ -138,7 +211,15 @@ export function applyInjection(
 }
 
 function setNodeName(line: string, proto: string, name: string): string {
-  if (proto === 'vmess') return line // vmess name already inside JSON
+  if (proto === 'vmess') {
+    try {
+      const json = JSON.parse(atob(line.slice('vmess://'.length))) as Record<string, unknown>
+      json.ps = name
+      return 'vmess://' + btoa(JSON.stringify(json))
+    } catch {
+      return line
+    }
+  }
   const hashIndex = line.indexOf('#')
   const withoutName = hashIndex > -1 ? line.slice(0, hashIndex) : line
   return `${withoutName}#${encodeURIComponent(name)}`

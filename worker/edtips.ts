@@ -41,7 +41,7 @@ async function fetchOne(country: string, type: IpSource, timeoutMs = 5000): Prom
       signal: ctrl.signal,
     })
     if (!resp.ok) return []
-    const ips = parseList(await resp.text()).slice(0, 10)
+    const ips = parseList(await resp.text()).slice(0, 240)
     if (ips.length) cache.set(key, { ips, ts: Date.now() })
     return ips
   } catch {
@@ -51,31 +51,22 @@ async function fetchOne(country: string, type: IpSource, timeoutMs = 5000): Prom
   }
 }
 
+/** Fetch real preferred IPs grouped by country — best-CF first, proxy fallback.
+ *  The grouping is important: flattening this result would allow a US IP to be
+ *  labelled as Germany or attached to the wrong location. */
+export async function fetchCountryIpsByCountry(codes: string[], per = 20): Promise<Record<string, string[]>> {
+  const active = [...new Set(codes.filter((c) => /^[a-z]{2}$/i.test(c)).map((c) => c.toLowerCase()))].slice(0, 8)
+  const entries = await Promise.all(active.map(async (code) => {
+    const best = await fetchOne(code, 'bestcf')
+    const ips = best.length ? best : await fetchOne(code, 'bestproxy')
+    return [code, [...new Set(ips.map((ip) => ip.split('#')[0]))].slice(0, Math.max(1, Math.min(240, per)))] as const
+  }))
+  return Object.fromEntries(entries)
+}
+
 /** Fetch real IPs for several country codes — best-CF first, proxy fallback.
  *  Returns up to `per` entries per country, deduplicated. */
 export async function fetchCountryIps(codes: string[], per = 4): Promise<string[]> {
-  const active = codes.filter((c) => /^[a-z]{2}$/i.test(c)).slice(0, 8)
-  if (!active.length) return []
-
-  const results = await Promise.all(
-    active.map(async (code) => {
-      const best = await fetchOne(code, 'bestcf')
-      if (best.length) return best.slice(0, per)
-      const proxy = await fetchOne(code, 'bestproxy')
-      return proxy.slice(0, per)
-    }),
-  )
-
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const list of results) {
-    for (const ip of list) {
-      const bare = ip.split(':')[0]!
-      if (seen.has(bare)) continue
-      seen.add(bare)
-      out.push(ip)
-      if (out.length >= 20) return out
-    }
-  }
-  return out
+  const byCountry = await fetchCountryIpsByCountry(codes, per)
+  return Object.values(byCountry).flat().slice(0, 20)
 }

@@ -5,12 +5,11 @@
 import type { Env } from './env'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8 } from './net'
-import { applyInjection, buildClashYaml, type PreferredIP } from './inject'
+import { applyInjection, buildClashYaml, parseProxySpec, type PreferredIP } from './inject'
 import { renderSubscription } from './formats'
-import { resolvePool } from './countries'
-import { fetchCountryIps } from './edtips'
-import { findPreset, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from './presets'
+import { fetchCountryIpsByCountry } from './edtips'
 import { filterAlive, rotate } from './rotation'
+import { findPreset, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from './presets'
 import { fetchSourceNodes, resolveSource } from './sourcebridge'
 import { notifyQuotaLevel } from './telegram'
 
@@ -65,6 +64,8 @@ export interface MemberSettings {
   sanctions_mode: '' | 'sni' | 'warp'
   /** Rotate the preferred-IP entry order every N minutes (0 = off). */
   ip_rotation_minutes: number
+  /** Maximum healthy entry nodes allocated to each configured location. */
+  max_nodes_per_location: number
   // ── edgetunnel per-request URL params (applied to every node link) ──
   /** Per-member ProxyIP override — emitted as `proxyip=` query param. */
   proxyip: string
@@ -106,6 +107,7 @@ const DEFAULT_SETTINGS: MemberSettings = {
   fingerprint: '', custom_sni: '', custom_host: '', bypass_sanctions: false,
   sanctions_mode: '',
   ip_rotation_minutes: 0,
+  max_nodes_per_location: 3,
   proxyip: '', chain_proxy: '',
   ech: false, ech_sni: 'cloudflare-ech.com', ech_dns: 'https://dns.alidns.com/dns-query',
   ed_0rtt: false, random_path: false, fragment_client: '',
@@ -161,6 +163,7 @@ function sanitizeSettings(s?: Partial<MemberSettings>): MemberSettings {
       ? (s?.sanctions_mode ?? '') as MemberSettings['sanctions_mode']
       : (s?.bypass_sanctions ? 'sni' : ''),
     ip_rotation_minutes: Math.min(1440, Math.max(0, Math.round(Number(s?.ip_rotation_minutes) || 0))),
+    max_nodes_per_location: Math.min(200, Math.max(1, Math.round(Number(s?.max_nodes_per_location) || 3))),
     proxyip: cleanParam(s?.proxyip, 200),
     chain_proxy: /^(socks5|http|https|turn|sstp):\/\/[^\s]+$/.test(String(s?.chain_proxy ?? '').trim())
       ? String(s?.chain_proxy).trim().slice(0, 300) : '',
@@ -185,6 +188,7 @@ interface MemberBody extends Partial<MemberSettings> {
   ip_limit?: number | null
   start_on_connect?: boolean
   reset_period_days?: number | null
+  max_nodes_per_location?: number
   country_locations?: Record<string, CountryLocationConfig[]>
 }
 
@@ -277,6 +281,7 @@ export async function handleMemberPatch(env: Env, userId: string, id: string, re
     random_path: body.random_path ?? prevSettings.random_path,
     fragment_client: body.fragment_client !== undefined ? body.fragment_client : prevSettings.fragment_client,
     ip_rotation_minutes: body.ip_rotation_minutes !== undefined ? body.ip_rotation_minutes : prevSettings.ip_rotation_minutes,
+    max_nodes_per_location: body.max_nodes_per_location !== undefined ? body.max_nodes_per_location : prevSettings.max_nodes_per_location,
   })
   const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : (existing.enabled as number)
   const expiresAt = body.expires_at !== undefined ? body.expires_at : (existing.expires_at as string | null)
@@ -552,7 +557,9 @@ function randomPathPrefix(): string {
  *  Used identically by sub serving and the live test endpoint. */
 function resolveMemberSettings(rawJson: string | null | undefined): MemberSettings {
   const parsed = safeJsonParse<Partial<MemberSettings>>(rawJson ?? '', {})
-  const settings: MemberSettings = { ...DEFAULT_SETTINGS, ...parsed }
+  // Re-sanitize on every read so older rows or partially written JSON cannot
+  // override nested defaults with undefined values or invalid proxy settings.
+  const settings = sanitizeSettings(parsed)
   if (settings.fragment && Object.keys(settings.fragment_config).length === 0) {
     settings.fragment_config = { packets: 'tlshello', length: '100-200', interval: '10-20' }
   }
@@ -649,6 +656,91 @@ function transformMemberNodes(base: string[], s: MemberSettings): MemberTransfor
   return { lines: out, warnings, tls_total: tlsTotal, ws_total: wsTotal }
 }
 
+interface MemberPoolResult {
+  pool: PreferredIP[]
+  warnings: string[]
+  requested: number
+  healthy: number
+}
+
+/** Resolve and health-check the exact country/location allocation for a member.
+ *  Country pools stay separate until allocation, so an IP returned for DE can
+ *  never be labelled as US. Dead candidates and dead chain endpoints are not
+ *  emitted as preferred variants; the original worker nodes remain the safe
+ *  fallback when a public source is unavailable. */
+async function buildMemberPool(settings: MemberSettings): Promise<MemberPoolResult> {
+  const pool: PreferredIP[] = []
+  const warnings: string[] = []
+  let requested = 0
+  let healthy = 0
+  const configuredLocations = settings.country_locations ?? {}
+  const liveByCountry = settings.countries.length
+    ? await fetchCountryIpsByCountry(settings.countries, Math.min(240, Math.max(20, settings.max_nodes_per_location * 5)))
+    : {}
+
+  for (const code of settings.countries) {
+    const locations = configuredLocations[code]?.length
+      ? configuredLocations[code]!.slice(0, 5)
+      : [{ location: code.toUpperCase(), proxy: '' }]
+    const quota = locations.length * settings.max_nodes_per_location
+    requested += quota
+    const candidates = (liveByCountry[code] ?? []).map((entry) => {
+      const [ip, port] = entry.split(':')
+      return port ? { ip: ip!, port: Number(port) } : { ip: ip! }
+    })
+    const alive = await filterAlive(candidates, Math.min(240, candidates.length))
+    const eligible = alive.slice(0, quota)
+    healthy += eligible.length
+    if (eligible.length < quota) {
+      warnings.push(`${code.toUpperCase()}: ${eligible.length} نود سالم از ${quota} نود درخواستی پیدا شد.`)
+    }
+
+    const checkedChains = new Map<string, string | undefined>()
+    for (const location of locations) {
+      const rawProxy = location.proxy.trim()
+      if (!rawProxy) {
+        checkedChains.set(rawProxy, undefined)
+        continue
+      }
+      const spec = parseProxySpec(rawProxy)
+      if (!spec) {
+        warnings.push(`${code.toUpperCase()} / ${location.location || 'location'}: پروکسی زنجیره‌ای نامعتبر حذف شد.`)
+        checkedChains.set(rawProxy, undefined)
+        continue
+      }
+      const proxyAlive = await filterAlive([{ ip: spec.server, port: spec.port }], 1)
+      if (!proxyAlive.length) {
+        warnings.push(`${code.toUpperCase()} / ${location.location || 'location'}: پروکسی زنجیره‌ای پاسخ نداد و حذف شد.`)
+        checkedChains.set(rawProxy, undefined)
+      } else {
+        checkedChains.set(rawProxy, rawProxy)
+      }
+    }
+
+    for (let i = 0; i < eligible.length; i++) {
+      const location = locations[i % locations.length]!
+      const proxy = checkedChains.get(location.proxy.trim())
+      pool.push({
+        ip: eligible[i]!.ip,
+        ...(eligible[i]!.port ? { port: eligible[i]!.port } : {}),
+        label: `${code.toUpperCase()} · ${location.location || code.toUpperCase()}`,
+        ...(proxy ? { proxy } : {}),
+      })
+    }
+  }
+
+  if (settings.custom_ips.length) {
+    const custom = settings.custom_ips.map((ip) => ({ ip }))
+    const alive = await filterAlive(custom, custom.length)
+    healthy += alive.length
+    requested += custom.length
+    if (alive.length < custom.length) warnings.push(`CUSTOM: ${alive.length} از ${custom.length} آی‌پی پاسخ‌گو هستند.`)
+    for (const item of alive) pool.push({ ip: item.ip, label: 'CUSTOM' })
+  }
+
+  return { pool, warnings, requested, healthy }
+}
+
 /** Public endpoint — GET /api/sub/member/:token[?target=clash] */
 export async function serveMemberSub(env: Env, token: string, target: string | null, request?: Request): Promise<Response> {
   const member = await env.DB.prepare('SELECT * FROM worker_members WHERE token = ?').bind(token)
@@ -743,48 +835,24 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
     if (!seen.has(identity)) { seen.add(identity); base.push(line) }
   }
 
-  const namePrefix = String(member.name ?? '')
   const transformed = transformMemberNodes(base, settings)
-  let out = transformed.lines
+  const poolResult = await buildMemberPool(settings)
+  let pool = poolResult.pool
+  if (settings.ip_rotation_minutes > 0) pool = rotate(pool, settings.ip_rotation_minutes)
 
-  // Preferred-IP pool: LIVE real IPs per country from the EDT ecosystem
-  // (ipdb bestcf/bestproxy), with the static CIDR pools as offline fallback.
-  // Custom IPs always win. Optional rotation + live health-checked fallback.
-  let poolRaw: { ip: string }[] = []
-  if (settings.countries.length) {
-    try {
-      const live = await fetchCountryIps(settings.countries, 4)
-      if (live.length) poolRaw = live.map((entry) => {
-        const [ip, port] = entry.split(':')
-        return port ? { ip: ip!, port: Number(port) } : { ip: ip! }
-      })
-    } catch { /* live source down → static pools */ }
-  }
-  if (!poolRaw.length) poolRaw = resolvePool(settings.countries, []).map((p) => ({ ip: p.ip }))
-  for (const ip of settings.custom_ips) poolRaw.push({ ip })
-  if (settings.ip_rotation_minutes > 0) {
-    poolRaw = rotate(poolRaw, settings.ip_rotation_minutes)
-    const alive = await filterAlive(poolRaw, 12)
-    if (alive.length) poolRaw = alive.map((a) => ({ ip: a.ip, port: a.port }))
-  }
-  const pool: PreferredIP[] = poolRaw
-
-  let subLines = out
-  let clashExtra: { fragment?: MemberSettings['fragment_config'] } = {}
-  if (settings.fragment) clashExtra.fragment = settings.fragment_config
-
-  if (pool.length) {
-    const result = applyInjection(out, pool, [])
-    subLines = result.subLines
-  }
-
-  // Prefix names with the member name for easy client identification.
-  const named = subLines.map((l) => {
+  // Prefix names before injection, then reuse one result for every output
+  // format. This prevents Clash from receiving a second Cartesian injection.
+  const namePrefix = String(member.name ?? '')
+  const namedBase = transformed.lines.map((l) => {
     const m = l.match(/^([^#]+)#(.*)$/)
     if (!m) return l
-    const decoded = decodeURIComponent(m[2])
+    let decoded = m[2]!
+    try { decoded = decodeURIComponent(decoded) } catch { /* preserve malformed names */ }
     return `${m[1]}#${encodeURIComponent(`${namePrefix} | ${decoded}`)}`
   })
+  const generated = applyInjection(namedBase, pool, [], 'balanced')
+  const named = generated.subLines
+  const allocationWarnings = [...transformed.warnings, ...poolResult.warnings]
 
   // ── Response format: explicit ?target= wins, otherwise auto-detect from
   // the client's User-Agent (edgetunnel behaviour).
@@ -807,23 +875,26 @@ export async function serveMemberSub(env: Env, token: string, target: string | n
   if (!isBrowser && ua) subHeaders['Content-Disposition'] = `attachment; filename*=utf-8''${encodeURIComponent(String(member.name ?? 'miliconfig'))}`
 
   if (fmt === 'clash') {
-    const result = applyInjection(named, pool, [])
-    const proxies = result.clashProxies.map((p) => {
+    const proxies = generated.clashProxies.map((p) => {
       let q = p
       if (settings.fragment && (q.type === 'vless' || q.type === 'vmess')) q = { ...q, fragment: settings.fragment_config }
       if (settings.fingerprint && 'client-fingerprint' in q) q = { ...q, 'client-fingerprint': settings.fingerprint }
       return q
     })
-    const yaml = buildClashYaml({ ...result, clashProxies: proxies })
-    return new Response(yaml, { headers: { ...subHeaders, 'Content-Type': 'text/yaml; charset=utf-8' } })
+    const yaml = buildClashYaml({ ...generated, clashProxies: proxies })
+    const headers: Record<string, string> = { ...subHeaders, 'Content-Type': 'text/yaml; charset=utf-8' }
+    if (allocationWarnings.length) headers['x-miliconfig-warnings'] = encodeURIComponent(allocationWarnings.join(' | '))
+    return new Response(yaml, { headers })
   }
 
   if (fmt === 'singbox' || fmt === 'plain') {
     const resp = renderSubscription(named, fmt)
     for (const [k, v] of Object.entries(subHeaders)) if (k !== 'Content-Type') resp.headers.set(k, v)
+    if (allocationWarnings.length) resp.headers.set('x-miliconfig-warnings', encodeURIComponent(allocationWarnings.join(' | ')))
     return resp
   }
 
+  if (allocationWarnings.length) subHeaders['x-miliconfig-warnings'] = encodeURIComponent(allocationWarnings.join(' | '))
   return new Response(b64encodeUtf8(named.join('\n')), { headers: subHeaders })
 }
 
@@ -863,8 +934,10 @@ export async function handleMemberTest(env: Env, userId: string, id: string): Pr
   }
 
   const settings = resolveMemberSettings(member.settings as string)
-  const result = transformMemberNodes(base, settings)
-  const sample = result.lines.slice(0, 3).map((l) => {
+  const transformed = transformMemberNodes(base, settings)
+  const poolResult = await buildMemberPool(settings)
+  const generated = applyInjection(transformed.lines, poolResult.pool, [], 'balanced')
+  const sample = generated.subLines.slice(0, 3).map((l) => {
     const raw = l.split('#')[1] ?? ''
     try { return decodeURIComponent(raw) || '(بدون نام)' } catch { return raw }
   }).filter(Boolean)
@@ -872,10 +945,12 @@ export async function handleMemberTest(env: Env, userId: string, id: string): Pr
   return json({ data: {
     source_live: live,
     source_count: base.length,
-    output_count: result.lines.length,
-    tls_nodes: result.tls_total,
-    ws_nodes: result.ws_total,
-    warnings: result.warnings,
+    output_count: generated.subLines.length,
+    preferred_requested: poolResult.requested,
+    preferred_healthy: poolResult.healthy,
+    tls_nodes: transformed.tls_total,
+    ws_nodes: transformed.ws_total,
+    warnings: [...transformed.warnings, ...poolResult.warnings],
     sample,
   } })
 }

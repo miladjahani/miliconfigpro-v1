@@ -34,18 +34,25 @@ export async function filterAlive(
   cap = 12,
 ): Promise<AliveIp[]> {
   const targets = ips.slice(0, cap)
-  const results: (AliveIp | null)[] = await Promise.all(
-    targets.map(async ({ ip, port }) => {
+  const results: (AliveIp | null)[] = new Array(targets.length).fill(null)
+  let next = 0
+  const concurrency = Math.min(24, Math.max(1, targets.length))
+  async function probeWorker(): Promise<void> {
+    while (next < targets.length) {
+      const index = next++
+      const { ip, port } = targets[index]!
       const key = `${ip}:${port ?? 443}`
       const hit = probeCache.get(key)
       if (hit && Date.now() - hit.ts < PROBE_TTL) {
-        return hit.alive ? { ip, port, ms: hit.ms } : null
+        results[index] = hit.alive ? { ip, port, ms: hit.ms } : null
+        continue
       }
       const ms = await tcpProbe(ip, port ?? 443, 1500).catch(() => null)
       probeCache.set(key, { alive: ms !== null, ms: ms ?? -1, ts: Date.now() })
-      return ms !== null ? { ip, port, ms } : null
-    }),
-  )
+      results[index] = ms !== null ? { ip, port, ms } : null
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => probeWorker()))
   return results
     .filter((r): r is AliveIp => r !== null)
     .sort((a, b) => a.ms - b.ms)

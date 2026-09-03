@@ -37,10 +37,10 @@ function sanitizeIps(ips?: PreferredIP[]): PreferredIP[] {
 
 function sanitizeProxies(proxies?: ProxySpec[]): ProxySpec[] {
   return (proxies ?? [])
-    .filter((p) => p && ['http', 'socks5'].includes(String(p.type)) && p.server && Number(p.port) > 0)
+    .filter((p) => p && ['http', 'https', 'socks5'].includes(String(p.type)) && p.server && Number(p.port) > 0)
     .slice(0, 5)
     .map((p) => ({
-      type: p.type === 'http' ? 'http' as const : 'socks5' as const,
+      type: p.type === 'https' ? 'https' as const : p.type === 'http' ? 'http' as const : 'socks5' as const,
       server: String(p.server),
       port: Number(p.port),
       ...(p.username ? { username: String(p.username) } : {}),

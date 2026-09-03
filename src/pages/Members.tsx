@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Users, Plus, Copy, Check, Trash2, Loader2, RefreshCw, Power, Activity, Zap, Pencil, X, FlaskConical, Download } from 'lucide-react'
 import { api } from '../lib/api'
 import { FRAGMENT_PRESETS, FM_PRESETS, CS_PRESETS, KNOWN_SNIS, CLIENT_FRAGMENT_PRESETS, CHAIN_PROTOCOLS } from '../../worker/presets'
@@ -299,7 +299,7 @@ function memberToForm(m: WorkerMember): FormState {
     chainCred: (s.chain_proxy ?? '').replace(/^[a-z0-9]+:\/\//i, ''),
     ech: !!s.ech, ed0rtt: !!s.ed_0rtt, randomPath: !!s.random_path,
     fragmentClient: s.fragment_client ?? '',
-    maxNodesPerLocation: '3',
+    maxNodesPerLocation: String(s.max_nodes_per_location ?? MAX_NODES_PER_LOCATION),
   }
 }
 
@@ -350,6 +350,8 @@ interface MemberTestResult {
   source_live: boolean
   source_count: number
   output_count: number
+  preferred_requested?: number
+  preferred_healthy?: number
   tls_nodes: number
   ws_nodes: number
   warnings: string[]
@@ -376,7 +378,6 @@ export default function Members() {
   const [proxyProtocol, setProxyProtocol] = useState<'socks5' | 'https'>('socks5')
   const [proxyLists, setProxyLists] = useState<Record<string, EtdProxy[]>>({})
   const [proxyLoading, setProxyLoading] = useState(false)
-  const proxyLoadStarted = useRef(false)
 
   const load = useCallback(async () => {
     if (!depId) { setMembers([]); return }
@@ -394,10 +395,17 @@ export default function Members() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    if (proxyLoadStarted.current) return
-    proxyLoadStarted.current = true
+    // Reload whenever the protocol changes so the picker never keeps stale
+    // SOCKS entries while HTTPS data is being requested (or vice versa).
+    let cancelled = false
     setProxyLoading(true)
-    fetchEtdProxies(proxyProtocol).then((data) => { setProxyLists(data); setProxyLoading(false) })
+    fetchEtdProxies(proxyProtocol).then((data) => {
+      if (!cancelled) {
+        setProxyLists(data)
+        setProxyLoading(false)
+      }
+    })
+    return () => { cancelled = true }
   }, [proxyProtocol])
 
   const refreshProxies = async () => {
@@ -531,7 +539,7 @@ export default function Members() {
           <h2 className="text-lg font-bold text-white">کاربران ورکر</h2>
         </div>
         <p className="text-sm text-slate-400">
-          حداکثر {MAX_NODES_PER_LOCATION} نود بهینه در هر لوکیشن · پروکسی از EDT-Pages · فرگمنت در sing-box JSON
+          سهمیهٔ نود برای هر لوکیشن قابل انتخاب است (۱ تا ۲۰۰؛ پیش‌فرض ۳) · فقط IPهای پاسخ‌گو وارد ساب می‌شوند · زنجیرهٔ SOCKS/HTTP به همان لوکیشن متصل می‌ماند
         </p>
       </div>
 
@@ -577,7 +585,7 @@ export default function Members() {
               <Select label="ترنسپورت" value={form.transport} onChange={(v) => set('transport', v)} options={TRANSPORTS} />
               <Select label="دور زدن تحریم" value={form.sanctionsMode} onChange={(v) => set('sanctionsMode', v)} options={SANCTIONS_MODES} />
               <Select label="حداکثر نود/لوکیشن" value={form.maxNodesPerLocation} onChange={(v) => set('maxNodesPerLocation', v)}
-                options={[{ v: '1', label: '۱ نود' }, { v: '2', label: '۲ نود' }, { v: '3', label: '۳ نود (پیش‌فرض)' }, { v: '5', label: '۵ نود' }]} />
+                options={[{ v: '1', label: '۱ نود' }, { v: '2', label: '۲ نود' }, { v: '3', label: '۳ نود' }, { v: '5', label: '۵ نود' }, { v: '10', label: '۱۰ نود' }, { v: '25', label: '۲۵ نود' }, { v: '50', label: '۵۰ نود' }, { v: '100', label: '۱۰۰ نود' }, { v: '200', label: '۲۰۰ نود' }]} />
             </div>
 
             {/* ── Countries + Locations ──────────────────────────── */}
@@ -644,7 +652,7 @@ export default function Members() {
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-white">{country?.flag} {country?.labelEn || cc}</span>
                           <div className="flex items-center gap-2">
-                            <span className="text-[10px] text-slate-500">{locs.length} لوکیشن · حداکثر {form.maxNodesPerLocation || '3'} نود</span>
+                            <span className="text-[10px] text-slate-500">{locs.length} لوکیشن · {locs.length * Number(form.maxNodesPerLocation || 3)} نود درخواستی</span>
                             {locs.length < 5 && (
                               <button onClick={() => addLocationForCountry(cc)}
                                 className="text-[10px] text-brand-400 hover:text-brand-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">
@@ -773,20 +781,28 @@ export default function Members() {
                 <pre className="text-[10px] text-emerald-400/70 font-mono overflow-x-auto max-h-[200px] overflow-y-auto">
 {(() => {
   const sni = form.sniChoice === 'none' ? '' : form.sniChoice || form.sniCustom
-  const totalNodes = form.countries.length * Number(form.maxNodesPerLocation || 3)
+  const locationCount = form.countries.reduce((sum, cc) => sum + Math.max(1, (form.countryLocations[cc] || []).length), 0)
+  const totalNodes = locationCount * Number(form.maxNodesPerLocation || 3)
     + form.customIps.split(/[\n,]/).filter(s => s.trim()).length
+  let fragmentConfig: Record<string, unknown> = { packets: 'tlshello', length: '10-50', interval: '10-20' }
+  if (form.fm.trim()) {
+    try {
+      const parsed = JSON.parse(form.fm.trim()) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) fragmentConfig = parsed as Record<string, unknown>
+    } catch { /* keep a valid preview instead of crashing the form */ }
+  }
   return JSON.stringify({
     outbounds: [
       ...form.countries.slice(0, 5).flatMap(cc => {
         const country = COUNTRIES.find(c => c.code === cc)
         const locs = form.countryLocations[cc] || []
-        const maxPerLoc = Number(form.maxNodesPerLocation || 3)
-        // If user defined locations, generate per-location; else generate 1 for the country
-        const entries = locs.length > 0 ? locs.slice(0, maxPerLoc) : [{ name: country?.labelEn || cc, proxy: '' }]
+        // The preview represents one sample per configured location. The
+        // actual worker allocates maxNodesPerLocation healthy IPs per row.
+        const entries = locs.length > 0 ? locs : [{ name: country?.labelEn || cc, proxy: '' }]
         return entries.map((loc, i) => ({
           tag: `${cc}-${(loc.name || country?.labelEn || cc).toLowerCase().replace(/\s+/g, '-').slice(0, 20)}-${i + 1}`,
           type: 'vless',
-          ...(form.fragment ? { fragment: { enabled: true, ...(form.fm.trim() ? JSON.parse(form.fm.trim() || '{}') : { packets: 'tlshello', length: '10-50', interval: '10-20' }) } } : {}),
+          ...(form.fragment ? { fragment: { enabled: true, ...fragmentConfig } } : {}),
           ...(form.ech ? { tls: { enabled: true, server_name: sni || undefined, ech: { enabled: true } } } : {}),
           ...(form.fingerprint ? { utls: { enabled: true, fingerprint: form.fingerprint } } : {}),
           ...(sni ? { server: { server: sni } } : {}),
@@ -799,7 +815,7 @@ export default function Members() {
         type: 'vless',
         server: ip,
         server_port: 443,
-        ...(form.fragment ? { fragment: { enabled: true, ...(form.fm.trim() ? JSON.parse(form.fm.trim() || '{}') : { packets: 'tlshello', length: '10-50', interval: '10-20' }) } } : {}),
+        ...(form.fragment ? { fragment: { enabled: true, ...fragmentConfig } } : {}),
         ...(form.ech ? { tls: { enabled: true, server_name: sni || undefined, ech: { enabled: true } } } : {}),
         ...(form.fingerprint ? { utls: { enabled: true, fingerprint: form.fingerprint } } : {}),
       })),
@@ -936,7 +952,7 @@ export default function Members() {
                           ✅ {testResult.data.output_count} نود — {testResult.data.source_live ? 'زنده' : 'محلی'}
                         </p>
                         <p className="text-[11px] text-slate-400">
-                          منبع: {testResult.data.source_count} · TLS: {testResult.data.tls_nodes} · WS: {testResult.data.ws_nodes}
+                          منبع: {testResult.data.source_count} · سالم: {testResult.data.preferred_healthy ?? 0}/{testResult.data.preferred_requested ?? 0} · TLS: {testResult.data.tls_nodes} · WS: {testResult.data.ws_nodes}
                         </p>
                       </>
                     ) : <p className="text-xs text-error-400">❌ نودی دریافت نشد</p>}
