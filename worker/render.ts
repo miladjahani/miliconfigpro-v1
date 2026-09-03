@@ -7,7 +7,8 @@
  * render.yaml-style spec (Docker service), which provisions a new web service
  * from the public StanNG repo, then trigger a deploy and poll its status:
  *
- *   POST /v1/blueprints  → resources[] (web service id)
+ *   GET  /v1/owners                 → owner id for the key (verify)
+ *   POST /v1/blueprints (multipart) → resources[] (web service id)
  *   POST /v1/services/{serviceId}/deploys → deploy id
  *   GET  /v1/deploys/{id} → status (created → build_in_progress → live)
  */
@@ -29,11 +30,14 @@ interface RenderErrorBody {
 async function renderFetch<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
   let resp: Response
   try {
+    // FormData bodies must not get an explicit JSON content-type: fetch
+    // generates the correct multipart boundary itself.
+    const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData
     resp = await fetch(`${RENDER_API}${path}`, {
       ...init,
       headers: {
         Authorization: `Bearer ${token}`,
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(init.body && !isForm ? { 'Content-Type': 'application/json' } : {}),
         ...(init.headers ?? {}),
       },
     })
@@ -60,11 +64,20 @@ async function renderFetch<T>(token: string, path: string, init: RequestInit = {
   return data as T
 }
 
+interface RenderOwner {
+  id?: string
+  name?: string
+  email?: string
+  type?: string
+}
+
 /** Confirm a key belongs to a real Render account and read its owner. */
-export async function verifyRenderToken(token: string): Promise<{ name: string; email: string }> {
-  const owner = await renderFetch<{ id?: string; name?: string; email?: string }>(token, '/owner')
+export async function verifyRenderToken(token: string): Promise<{ id: string; name: string; email: string }> {
+  // GET /v1/owners returns the account that owns the API key.
+  const owners = await renderFetch<Array<{ cursor?: string; owner?: RenderOwner }>>(token, '/owners')
+  const owner = owners?.[0]?.owner
   if (!owner?.id) throw new RenderApiError('کلید API رندر قابل تأیید نیست')
-  return { name: owner.name ?? '', email: owner.email ?? '' }
+  return { id: owner.id, name: owner.name ?? '', email: owner.email ?? '' }
 }
 
 export interface RenderDeployResult {
@@ -80,36 +93,32 @@ interface RenderResource {
   type?: string
 }
 
-interface BlueprintCreateBody {
-  serviceId: string | null
-  branch: string
-  rootDir: string
-  bluePrintSpec: Record<string, unknown>
+interface BlueprintResponse {
+  resources?: RenderResource[]
+  blueprint?: { resources?: RenderResource[] }
+  errors?: Array<{ error?: string }>
 }
 
-/** render.yaml as JSON — Docker env so xray + nginx (entrypoint.sh) run exactly like Railway. */
-function buildBlueprintSpec(name: string): BlueprintCreateBody {
-  return {
-    serviceId: null,
-    branch: 'main',
-    rootDir: '',
-    bluePrintSpec: {
-      services: [
-        {
-          type: 'web',
-          name,
-          env: 'docker',
-          plan: 'free',
-          repo: `https://github.com/${STANNG_REPO}`,
-          dockerfilePath: 'Dockerfile',
-          envVars: [
-            { key: 'PORT', value: '8000' },
-          ],
-          autoDeploy: true,
-        },
-      ],
-    },
-  }
+/**
+ * render.yaml as YAML text — Docker env so xray + nginx (entrypoint.sh) run
+ * exactly like Railway. The Blueprint API wants this as a `file` part in a
+ * multipart form, next to an `ownerId` field.
+ */
+function buildRenderYaml(name: string): string {
+  return [
+    'services:',
+    '  - type: web',
+    `    name: ${name}`,
+    '    env: docker',
+    '    plan: free',
+    `    repo: https://github.com/${STANNG_REPO}`,
+    '    dockerfilePath: Dockerfile',
+    '    envVars:',
+    '      - key: PORT',
+    '        value: "8000"',
+    '    autoDeploy: true',
+    '',
+  ].join('\n')
 }
 
 /**
@@ -117,25 +126,32 @@ function buildBlueprintSpec(name: string): BlueprintCreateBody {
  * Returns the new web-service id, the deploy id and a dashboard link.
  */
 export async function deployToRender(token: string, projectName: string): Promise<RenderDeployResult> {
-  // 1. Provision the web service via a Blueprint.
-  let resources: RenderResource[] = []
-  try {
-    const blueprint = await renderFetch<{ resources?: RenderResource[]; blueprint?: { resources?: RenderResource[] } }>(
-      token,
-      '/blueprints',
-      { method: 'POST', body: JSON.stringify(buildBlueprintSpec(projectName)) },
-    )
-    // Response shape: resources may sit at the top level or under `blueprint`.
-    resources = blueprint?.resources ?? blueprint?.blueprint?.resources ?? []
-  } catch (err) {
-    // Surface Render's own message — usually "repo not found" or GitHub connection hints.
-    throw err
-  }
+  // 0. Resolve the owner id that this API key belongs to.
+  const owner = await verifyRenderToken(token)
+
+  // 1. Provision the web service via a Blueprint (multipart form).
+  const form = new FormData()
+  form.append('ownerId', owner.id)
+  form.append('file', new Blob([buildRenderYaml(projectName)], { type: 'text/yaml' }), 'render.yaml')
+
+  const blueprint = await renderFetch<BlueprintResponse>(token, '/blueprints', {
+    method: 'POST',
+    body: form,
+  })
+
+  // Response shape: resources may sit at the top level or under `blueprint`.
+  const resources = blueprint?.resources ?? blueprint?.blueprint?.resources ?? []
 
   // Prefer the web service; fall back to the first provisioned resource.
   const web = resources.find((r) => r.type === 'WEB_SERVICE')
   const serviceId = web?.id ?? resources[0]?.id
   if (!serviceId) {
+    const errs = blueprint?.errors ?? []
+    if (errs.some((e) => e.error === 'need_payment_info')) {
+      throw new RenderApiError(
+        'حساب Render شما نیاز به ثبت روش پرداخت دارد — در dashboard.render.com/billing یک کارت اضافه کنید، سپس دوباره تلاش کنید.',
+      )
+    }
     throw new RenderApiError(
       'Blueprint ساخته نشد. مطمئن شوید حساب GitHub شما در Render متصل است (dashboard.render.com → Account Settings → GitHub) و دوباره تلاش کنید.',
     )
@@ -164,8 +180,13 @@ export async function renderDeployStatus(
 
   let url: string | null = null
   if ((dep.status ?? '').toUpperCase() === 'LIVE') {
-    const svc = await renderFetch<{ serviceDetails?: { url?: string | null } }>(token, `/services/${encodeURIComponent(serviceId)}`)
-    url = svc?.serviceDetails?.url ?? null
+    // The service object may wrap serviceDetails at the top level or under a
+    // `service` key — check both so the live URL is never missed.
+    const svc = await renderFetch<{
+      serviceDetails?: { url?: string | null }
+      service?: { serviceDetails?: { url?: string | null }; url?: string | null }
+    }>(token, `/services/${encodeURIComponent(serviceId)}`)
+    url = svc?.serviceDetails?.url ?? svc?.service?.serviceDetails?.url ?? svc?.service?.url ?? null
   }
   return { status: (dep.status ?? 'UNKNOWN').toUpperCase(), url }
 }
