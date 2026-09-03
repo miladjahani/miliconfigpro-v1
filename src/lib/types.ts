@@ -17,6 +17,16 @@ export interface RailwayToken {
   created_at: string
 }
 
+export interface RenderToken {
+  id: string
+  name: string
+  status: 'active' | 'inactive'
+  account_name: string | null
+  token_tail: string
+  last_used_at: string | null
+  created_at: string
+}
+
 export interface Deployment {
   id: string
   name: string

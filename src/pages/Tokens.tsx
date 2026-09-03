@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api } from '../lib/api'
-import type { CFToken, RailwayToken } from '../lib/types'
+import type { CFToken, RailwayToken, RenderToken } from '../lib/types'
 import {
   KeyRound,
   Plus,
@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 
 const RAILWAY_TOKENS_PAGE = 'https://railway.com/account/tokens'
+const RENDER_TOKENS_PAGE = 'https://dashboard.render.com/account/api-keys'
 
 const CF_TOKENS_PAGE = 'https://dash.cloudflare.com/profile/api-tokens'
 
@@ -73,6 +74,16 @@ export default function Tokens() {
   const [railError, setRailError] = useState<string | null>(null)
   const [railSaved, setRailSaved] = useState(false)
 
+  // ── Render.com tokens (StanNG auto-deploy) ───────────────────────────
+  const [renderTokens, setRenderTokens] = useState<RenderToken[]>([])
+  const [renderLoading, setRenderLoading] = useState(true)
+  const [renderShowAdd, setRenderShowAdd] = useState(false)
+  const [renderName, setRenderName] = useState('')
+  const [renderToken, setRenderToken] = useState('')
+  const [renderSaving, setRenderSaving] = useState(false)
+  const [renderError, setRenderError] = useState<string | null>(null)
+  const [renderSaved, setRenderSaved] = useState(false)
+
   const load = useCallback(async () => {
     try {
       const { data } = await api<{ data: CFToken[] }>('/tokens')
@@ -120,6 +131,43 @@ export default function Tokens() {
     if (!confirm(`توکن Railway «${name}» حذف شود؟`)) return
     try { await api(`/railway/tokens/${id}`, { method: 'DELETE' }) } catch { /* ignore */ }
     loadRail()
+  }
+
+  const loadRender = useCallback(async () => {
+    try {
+      const { data } = await api<{ data: RenderToken[] }>('/render/tokens')
+      setRenderTokens(data ?? [])
+    } catch {
+      setRenderTokens([])
+    }
+    setRenderLoading(false)
+  }, [])
+
+  useEffect(() => { loadRender() }, [loadRender])
+
+  const handleRenderAdd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setRenderSaving(true)
+    setRenderError(null)
+    setRenderSaved(false)
+    try {
+      await api('/render/tokens', { method: 'POST', body: { name: renderName, token: renderToken } })
+      setRenderSaved(true)
+      setRenderName('')
+      setRenderToken('')
+      await loadRender()
+      setTimeout(() => { setRenderShowAdd(false); setRenderSaved(false) }, 900)
+    } catch (err) {
+      setRenderError(err instanceof Error ? err.message : 'خطا در ذخیره کلید API رندر')
+    } finally {
+      setRenderSaving(false)
+    }
+  }
+
+  const handleRenderDelete = async (id: string, name: string) => {
+    if (!confirm(`کلید API رندر «${name}» حذف شود؟`)) return
+    try { await api(`/render/tokens/${id}`, { method: 'DELETE' }) } catch { /* ignore */ }
+    loadRender()
   }
 
   const handleAdd = async (e: React.FormEvent) => {
@@ -409,6 +457,89 @@ export default function Tokens() {
         )}
       </div>
 
+      {/* ═══ Render.com tokens — StanNG auto-deploy ═══ */}
+      <div className="pt-4 border-t border-slate-800/60">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              <Cloud className="w-5 h-5 text-teal-400" /> کلیدهای API رندر (Render.com)
+            </h2>
+            <p className="text-slate-400 text-sm mt-1">استقرار خودکار StanNG v2 روی Render — Blueprint ساخته شده و سرویس Docker مستقر می‌شود</p>
+          </div>
+          <button onClick={() => { setRenderError(null); setRenderSaved(false); setRenderShowAdd(true) }} className="btn-primary flex items-center gap-2 bg-teal-600/80 hover:bg-teal-600">
+            <Plus className="w-4 h-4" /> افزودن کلید رندر
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+          <a href={RENDER_TOKENS_PAGE} target="_blank" rel="noopener noreferrer"
+            className="group p-4 rounded-xl bg-slate-900/40 border border-teal-500/30 bg-teal-500/5 hover:border-teal-500/50 transition-all">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="p-2 rounded-lg bg-teal-500/10"><KeyRound className="w-4 h-4 text-teal-400" /></div>
+              <span className="text-xs font-mono text-slate-500">۱</span>
+            </div>
+            <h3 className="text-sm font-bold text-white mb-1">ساخت کلید API رندر</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">حساب رندر بسازید و از <span className="text-teal-300" dir="ltr">dashboard.render.com/account/api-keys</span> یک کلید بسازید — کلید فقط یک‌بار نمایش داده می‌شود.</p>
+            <span className="inline-flex items-center gap-1 text-xs text-teal-300 mt-3 group-hover:gap-2 transition-all">ساخت کلید <ExternalLink className="w-3 h-3" /></span>
+          </a>
+          <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800/50">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="p-2 rounded-lg bg-brand-500/10"><Sparkles className="w-4 h-4 text-brand-400" /></div>
+              <span className="text-xs font-mono text-slate-500">۲</span>
+            </div>
+            <h3 className="text-sm font-bold text-white mb-1">استقرار در ویزارد</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">در صفحه استقرار روش <b>Render.com</b> را انتخاب کنید — سرویس Docker از مخزن stanngv2 ساخته و مستقر می‌شود.</p>
+          </div>
+        </div>
+
+        {renderLoading ? (
+          <div className="flex items-center justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-teal-400" /></div>
+        ) : renderTokens.length === 0 ? (
+          <div className="glass-card p-8 text-center">
+            <div className="inline-flex w-14 h-14 rounded-2xl bg-teal-500/10 items-center justify-center mb-3">
+              <Cloud className="w-7 h-7 text-teal-400" />
+            </div>
+            <h3 className="text-base font-bold text-white mb-1">هنوز کلید API رندر اضافه نشده</h3>
+            <p className="text-slate-400 text-sm">برای استقرار خودکار StanNG روی Render یک کلید API بسازید و اضافه کنید</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {renderTokens.map((t, i) => (
+              <div key={t.id} className="glass-card glass-card-hover p-5 animate-slide-up" style={{ animationDelay: `${i * 50}ms` }}>
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-teal-500/10">
+                      <Cloud className="w-5 h-5 text-teal-400" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white">{t.name}</h3>
+                      <span className="badge bg-green-500/10 text-green-400">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                        {t.status === 'active' ? 'فعال' : 'غیرفعال'}
+                      </span>
+                    </div>
+                  </div>
+                  <button onClick={() => handleRenderDelete(t.id, t.name)} className="p-2 rounded-lg text-slate-500 hover:bg-error-500/10 hover:text-error-400 transition-colors">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+                {t.account_name && (
+                  <p className="text-xs text-slate-500 mb-2" dir="ltr">{t.account_name}</p>
+                )}
+                <div className="flex items-center gap-2 bg-slate-900/50 rounded-xl px-3 py-2 border border-slate-800/50">
+                  <code className="flex-1 text-sm text-slate-400 font-mono" dir="ltr">••••••••••••{t.token_tail}</code>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  {t.last_used_at ? `آخرین استفاده: ${new Date(t.last_used_at).toLocaleString('fa-IR')}` : 'هنوز استفاده نشده'}
+                  {' • '}
+                  ساخته شده در {new Date(t.created_at).toLocaleDateString('fa-IR')}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Add modal */}
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setShowAdd(false)}>
@@ -512,6 +643,62 @@ export default function Tokens() {
                   {railSaving ? 'در حال بررسی با Railway...' : railSaved ? 'تأیید و ذخیره شد ✓' : 'تأیید و ذخیره'}
                 </button>
                 <button type="button" onClick={() => setRailShowAdd(false)} disabled={railSaving} className="btn-ghost">انصراف</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Render add modal */}
+      {renderShowAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { if (!renderSaving) setRenderShowAdd(false) }}>
+          <div className="glass-card p-6 w-full max-w-md animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Cloud className="w-5 h-5 text-teal-400" /> کلید جدید API رندر
+              </h2>
+              <button onClick={() => setRenderShowAdd(false)} disabled={renderSaving} className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/50">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleRenderAdd} className="space-y-4">
+              <div className="px-3 py-2.5 rounded-xl bg-teal-500/10 border border-teal-500/20 text-xs text-teal-200 leading-relaxed">
+                کلید را از <a href={RENDER_TOKENS_PAGE} target="_blank" rel="noopener noreferrer" className="underline">dashboard.render.com/account/api-keys</a> بگیرید — کلید فقط همان لحظه نمایش داده می‌شود و قبل از ذخیره در اینجا با رندر بررسی می‌شود.
+              </div>
+              <div>
+                <label className="block text-sm text-slate-300 mb-2 font-medium">نام کلید</label>
+                <input
+                  type="text"
+                  required
+                  value={renderName}
+                  onChange={(e) => setRenderName(e.target.value)}
+                  placeholder="مثلاً: رندر اصلی"
+                  className="input-field"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-300 mb-2 font-medium">کلید API رندر (rnd_...)</label>
+                <textarea
+                  required
+                  value={renderToken}
+                  onChange={(e) => { setRenderToken(e.target.value); setRenderError(null) }}
+                  placeholder="کلید را اینجا paste کنید..."
+                  rows={3}
+                  className="input-field font-mono text-sm"
+                  dir="ltr"
+                />
+              </div>
+              {renderError && (
+                <div className="px-3 py-2 rounded-xl bg-error-500/10 border border-error-500/30 text-xs text-error-300">
+                  {renderError}
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button type="submit" disabled={renderSaving} className="btn-primary flex-1 flex items-center justify-center gap-2 bg-teal-600/80 hover:bg-teal-600">
+                  {renderSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : renderSaved ? <Check className="w-4 h-4 text-white" /> : <Plus className="w-4 h-4" />}
+                  {renderSaving ? 'در حال بررسی با رندر...' : renderSaved ? 'تأیید و ذخیره شد ✓' : 'تأیید و ذخیره'}
+                </button>
+                <button type="button" onClick={() => setRenderShowAdd(false)} disabled={renderSaving} className="btn-ghost">انصراف</button>
               </div>
             </form>
           </div>

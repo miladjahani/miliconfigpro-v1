@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import JSZip from 'jszip'
 import { generateDockerCompose, generateNginxConf, generateEnvFile, generateDeployScript, generateRailwayDockerfile, generateRailwayToml, generateRailwayReadme } from '../lib/vps-deploy'
-import type { CFToken, RailwayToken } from '../lib/types'
+import type { CFToken, RailwayToken, RenderToken } from '../lib/types'
 
 function genUuid() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
@@ -52,7 +52,7 @@ export default function DeployWizard() {
   const [uuid, setUuid] = useState(genUuid())
   const [customPath, setCustomPath] = useState('')
   const [selectedToken, setSelectedToken] = useState('')
-  const [method, setMethod] = useState<'workers' | 'pages' | 'vps' | 'railway'>('workers')
+  const [method, setMethod] = useState<'workers' | 'pages' | 'vps' | 'railway' | 'render'>('workers')
   const [workerSource, setWorkerSource] = useState('edgetunnel')
   const [proxyIP, setProxyIP] = useState('')
   const [adminPassword, setAdminPassword] = useState('')
@@ -70,6 +70,15 @@ export default function DeployWizard() {
   const [newRailToken, setNewRailToken] = useState('')
   const [railSaving, setRailSaving] = useState(false)
   const [railSaveError, setRailSaveError] = useState<string | null>(null)
+
+  // ── Render.com auto-deploy ───────────────────────────────────────────
+  const [renderTokens, setRenderTokens] = useState<RenderToken[]>([])
+  const [renderTokenId, setRenderTokenId] = useState('')
+  const [renderProjectUrl, setRenderProjectUrl] = useState<string | null>(null)
+  const [newRenderName, setNewRenderName] = useState('stanng-main')
+  const [newRenderToken, setNewRenderToken] = useState('')
+  const [renderSaving, setRenderSaving] = useState(false)
+  const [renderSaveError, setRenderSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -107,6 +116,30 @@ export default function DeployWizard() {
         if ((data ?? []).length > 0) setRailTokenId((data as RailwayToken[])[0].id)
       })
       .catch(() => { if (!cancelled) setRailTokens([]) })
+    return () => { cancelled = true }
+  }, [])
+
+  const refreshRenderTokens = useCallback(async () => {
+    try {
+      const { data } = await api<{ data: RenderToken[] }>('/render/tokens')
+      setRenderTokens(data ?? [])
+      if ((data ?? []).length > 0 && !(data as RenderToken[]).some((t) => t.id === renderTokenId)) {
+        setRenderTokenId((data as RenderToken[])[0].id)
+      }
+    } catch {
+      setRenderTokens([])
+    }
+  }, [renderTokenId])
+
+  useEffect(() => {
+    let cancelled = false
+    api<{ data: RenderToken[] }>('/render/tokens')
+      .then(({ data }) => {
+        if (cancelled) return
+        setRenderTokens(data ?? [])
+        if ((data ?? []).length > 0) setRenderTokenId((data as RenderToken[])[0].id)
+      })
+      .catch(() => { if (!cancelled) setRenderTokens([]) })
     return () => { cancelled = true }
   }, [])
 
@@ -178,6 +211,64 @@ export default function DeployWizard() {
     REMOVED: 'حذف شد',
   }
 
+  const RENDER_STATUS_LABEL: Record<string, string> = {
+    CREATED: 'ایجاد شد',
+    BUILD_IN_PROGRESS: 'در حال بیلد (Docker)',
+    UPDATE_IN_PROGRESS: 'در حال استقرار',
+    LIVE: 'موفق (Live)',
+    FAILED: 'ناموفق',
+    CANCELED: 'لغو شد',
+    DEACTIVATED: 'غیرفعال',
+  }
+
+  /** Poll a Render deployment until it reaches a terminal state. */
+  const startRenderPolling = useCallback((deployId: string, serviceId: string, tokenId: string) => {
+    stopPolling()
+    const startedAt = Date.now()
+    const tick = async () => {
+      try {
+        const { data } = await api<{ data: { status: string; url: string | null } }>(
+          `/render/status?deploy_id=${encodeURIComponent(deployId)}&service_id=${encodeURIComponent(serviceId)}&token_id=${encodeURIComponent(tokenId)}`,
+        )
+        const st = (data?.status ?? 'UNKNOWN').toUpperCase()
+        const label = RENDER_STATUS_LABEL[st] ?? st
+        setDeployLogs((prev) => {
+          const base = prev.filter((l) => !l.startsWith('وضعیت:'))
+          return [...base, `وضعیت: ${label}`].slice(-14)
+        })
+
+        if (st === 'LIVE') {
+          stopPolling()
+          setDeploying(false)
+          const url = data?.url?.trim() || null
+          setDeployResult({
+            success: true,
+            message: url
+              ? 'StanNG با موفقیت روی Render مستقر شد! 🎉'
+              : 'استقرار روی Render موفق بود — دامنه را در داشبورد سرویس فعال کنید.',
+            url: url ?? undefined,
+            panelUrl: url ? `${url.replace(/\/+$/, '')}/login` : undefined,
+          })
+        } else if (st === 'FAILED' || st === 'CANCELED' || st === 'DEACTIVATED') {
+          stopPolling()
+          setDeploying(false)
+          setDeployResult({
+            success: false,
+            message: `استقرار روی Render ${st === 'FAILED' ? 'ناموفق بود' : st === 'CANCELED' ? 'لغو شد' : 'غیرفعال شد'}. لاگ بیلد را در داشبورد Render بررسی کنید.`,
+          })
+        } else if (Date.now() - startedAt > 12 * 60 * 1000) {
+          stopPolling()
+          setDeploying(false)
+          setDeployResult({ success: false, message: 'استقرار بیش از حد طول کشید. وضعیت را در داشبورد Render بررسی کنید.' })
+        }
+      } catch {
+        // transient network error — keep polling
+      }
+    }
+    void tick()
+    pollRef.current = setInterval(tick, 5000)
+  }, [stopPolling])
+
   /** Poll a Railway deployment until it reaches a terminal state. */
   const startRailPolling = useCallback((deploymentId: string, tokenId: string) => {
     stopPolling()
@@ -232,6 +323,7 @@ export default function DeployWizard() {
 
     // Client-side validation before hitting the API.
     const isRailAuto = method === 'railway' && railMode === 'auto'
+    const isRenderAuto = method === 'render'
     const isZip = method === 'vps' || (method === 'railway' && railMode === 'zip')
     const isCf = method === 'workers' || method === 'pages'
 
@@ -244,6 +336,37 @@ export default function DeployWizard() {
 
     setDeploying(true)
     setDeployResult(null)
+
+    // ── Render.com auto-deploy via the REST API ────────────────────────
+    if (isRenderAuto) {
+      const rt = renderTokens.find((t) => t.id === renderTokenId)
+      if (!rt) { setError('کلید API رندر انتخاب نشده است — یک کلید اضافه یا انتخاب کنید'); setDeploying(false); return }
+      setRenderProjectUrl(null)
+      setDeployLogs(['اتصال به Render…'])
+      try {
+        const { data } = await api<{ data: { serviceId: string; deployId: string; dashboardUrl: string } }>('/render/deploy', {
+          method: 'POST',
+          body: { token_id: rt.id, name },
+        })
+        setRenderProjectUrl(data.dashboardUrl)
+        setDeployLogs([
+          '✓ کلید API رندر تأیید شد',
+          '✓ Blueprint ساخته شد',
+          '✓ سرویس Docker از مخزن stanngv2 متصل شد',
+          '✓ PORT=8000 تنظیم شد',
+          `✓ استقرار شروع شد (${data.deployId.slice(0, 8)}…)`,
+          '',
+          'در حال بیلد و استقرار روی Render — معمولاً ۳ تا ۶ دقیقه.',
+        ])
+        startRenderPolling(data.deployId, data.serviceId, rt.id)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'خطا در استقرار روی Render'
+        setDeployLogs((prev) => [...prev, `❌ ${msg}`])
+        setDeployResult({ success: false, message: msg })
+        setDeploying(false)
+      }
+      return
+    }
 
     // ── Railway auto-deploy via the Public API (no ZIP, no manual steps) ──
     if (isRailAuto) {
@@ -395,12 +518,20 @@ export default function DeployWizard() {
           <button onClick={() => navigate('/tokens')} className="btn-primary">رفتن به مدیریت توکن</button>
           <div className="mt-5 pt-5 border-t border-slate-800/50">
             <p className="text-xs text-slate-500 mb-3">توکن کلودفلر ندارید؟ StanNG (پنل VLESS با xray-core) را می‌توانید بدون توکن کلودفلر روی Railway یا VPS خودتان مستقر کنید:</p>
+            <div className="flex flex-col sm:flex-row gap-2">
             <button
               onClick={() => { setMethod('railway'); setRailMode('auto'); setCfBypass(true) }}
               className="btn-ghost inline-flex items-center gap-2"
             >
-              <TrainFront className="w-4 h-4 text-purple-400" /> استقرار StanNG روی Railway — بدون توکن کلودفلر
+              <TrainFront className="w-4 h-4 text-purple-400" /> استقرار StanNG روی Railway
             </button>
+            <button
+              onClick={() => { setMethod('render'); setCfBypass(true) }}
+              className="btn-ghost inline-flex items-center gap-2"
+            >
+              <Cloud className="w-4 h-4 text-teal-400" /> استقرار StanNG روی Render.com
+            </button>
+          </div>
           </div>
         </div>
 
@@ -453,7 +584,7 @@ export default function DeployWizard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">استقرار ورکر جدید</h1>        <p className="text-slate-400 text-sm mt-1">{method === 'railway' && railMode === 'auto' ? 'استقرار خودکار StanNG v2 روی Railway — پروژه ساخته، مخزن متصل و دیپلوی اجرا می‌شود' : method === 'railway' ? 'فایل‌های Railway (Dockerfile + railway.toml) برای استقرار StanNG تولید و دانلود می‌شوند' : method === 'vps' ? 'فایل‌های Docker برای استقرار StanNG روی VPS تولید و دانلود می‌شوند' : 'ورکر به‌صورت خودکار از مخزن دانلود و روی کلودفلر مستقر می‌شود — نیازی به کدنویسی نیست'}</p>
+        <h1 className="text-2xl font-bold text-white">استقرار ورکر جدید</h1>        <p className="text-slate-400 text-sm mt-1">{method === 'render' ? 'استقرار خودکار StanNG v2 روی Render.com — سرویس Docker از مخزن ساخته و مستقر می‌شود' : method === 'railway' && railMode === 'auto' ? 'استقرار خودکار StanNG v2 روی Railway — پروژه ساخته، مخزن متصل و دیپلوی اجرا می‌شود' : method === 'railway' ? 'فایل‌های Railway (Dockerfile + railway.toml) برای استقرار StanNG تولید و دانلود می‌شوند' : method === 'vps' ? 'فایل‌های Docker برای استقرار StanNG روی VPS تولید و دانلود می‌شوند' : 'ورکر به‌صورت خودکار از مخزن دانلود و روی کلودفلر مستقر می‌شود — نیازی به کدنویسی نیست'}</p>
         </div>
 
         {/* Info banner */}
@@ -462,8 +593,8 @@ export default function DeployWizard() {
             <Sparkles className="w-5 h-5 text-brand-400" />
           </div>
           <div>
-            <p className="text-sm text-white font-medium">{method === 'railway' && railMode === 'auto' ? 'استقرار خودکار روی Railway' : 'استقرار کاملاً خودکار'}</p>
-            <p className="text-xs text-slate-400">{method === 'railway' && railMode === 'auto' ? 'با توکن Account شما پروژه‌ای در Railway ساخته می‌شود، سرویس از مخزن عمومی stanngv2 ساخته شده و Docker بیلد و مستقر می‌گردد — وضعیت همین‌جا دنبال می‌شود.' : method === 'railway' ? 'فایل‌های Dockerfile و railway.toml تولید و به‌صورت ZIP دانلود می‌شوند. سپس در Railway از GitHub مستقر کنید.' : method === 'vps' ? 'فایل‌های docker-compose.yml، nginx.conf، .env و deploy.sh تولید و به‌صورت ZIP دانلود می‌شوند.' : 'کد ورکر از مخزن GitHub بارگذاری می‌شود، KV ساخته می‌شود، bindings تنظیم می‌شود و ورکر روی edge مستقر می‌گردد.'}</p>
+            <p className="text-sm text-white font-medium">{method === 'railway' && railMode === 'auto' ? 'استقرار خودکار روی Railway' : method === 'render' ? 'استقرار خودکار روی Render.com' : 'استقرار کاملاً خودکار'}</p>
+            <p className="text-xs text-slate-400">{method === 'render' ? 'با کلید API شما یک Blueprint ساخته می‌شود، سرویس Docker از مخزن عمومی stanngv2 (با Dockerfile رسمی شامل xray-core و nginx) بیلد و مستقر می‌گردد — وضعیت همین‌جا دنبال می‌شود.' : method === 'railway' && railMode === 'auto' ? 'با توکن Account شما پروژه‌ای در Railway ساخته می‌شود، سرویس از مخزن عمومی stanngv2 ساخته شده و Docker بیلد و مستقر می‌گردد — وضعیت همین‌جا دنبال می‌شود.' : method === 'railway' ? 'فایل‌های Dockerfile و railway.toml تولید و به‌صورت ZIP دانلود می‌شوند. سپس در Railway از GitHub مستقر کنید.' : method === 'vps' ? 'فایل‌های docker-compose.yml، nginx.conf، .env و deploy.sh تولید و به‌صورت ZIP دانلود می‌شوند.' : 'کد ورکر از مخزن GitHub بارگذاری می‌شود، KV ساخته می‌شود، bindings تنظیم می‌شود و ورکر روی edge مستقر می‌گردد.'}</p>
           </div>
         </div>
 
@@ -513,10 +644,10 @@ export default function DeployWizard() {
                   <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
-              <p className="text-xs text-slate-500 mt-2">حروف کوچک، عدد، خط‌تیره · {method === 'railway' ? 'نام پروژه در Railway می‌شود' : method === 'vps' ? 'نام سرویس روی VPS می‌شود' : <>می‌شود <code className="text-brand-300">{name}.workers.dev</code></>}</p>
+              <p className="text-xs text-slate-500 mt-2">حروف کوچک، عدد، خط‌تیره · {method === 'railway' ? 'نام پروژه در Railway می‌شود' : method === 'render' ? 'نام سرویس در Render می‌شود' : method === 'vps' ? 'نام سرویس روی VPS می‌شود' : <>می‌شود <code className="text-brand-300">{name}.workers.dev</code></>}</p>
             </div>
 
-            {method === 'railway' && railMode === 'auto' ? null : (
+            {(method === 'railway' && railMode === 'auto') || method === 'render' ? null : (
             <>
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">رمز دسترسی (UUID)</label>
@@ -551,7 +682,7 @@ export default function DeployWizard() {
 
             <div className="flex justify-end">
               <button
-                disabled={!name.trim() || !validName(name) || ((method !== 'railway' || railMode !== 'auto') && !uuid.trim())}
+                disabled={!name.trim() || !validName(name) || ((method !== 'railway' || railMode !== 'auto') && method !== 'render' && !uuid.trim())}
                 onClick={() => setStep(2)}
                 className="btn-primary flex items-center gap-2"
               >
@@ -579,6 +710,38 @@ export default function DeployWizard() {
                   </select>
                 )}
               </div>
+            )}
+
+            {method === 'render' && (
+              <RenderTokenPanel
+                tokens={renderTokens}
+                selectedId={renderTokenId}
+                onSelect={setRenderTokenId}
+                newName={newRenderName}
+                newToken={newRenderToken}
+                onNewName={setNewRenderName}
+                onNewToken={(v) => { setNewRenderToken(v); setRenderSaveError(null) }}
+                saving={renderSaving}
+                error={renderSaveError}
+                onSave={async () => {
+                  if (!newRenderToken.trim()) { setRenderSaveError('کلید API رندر را paste کنید'); return }
+                  setRenderSaving(true)
+                  setRenderSaveError(null)
+                  try {
+                    const { data } = await api<{ data: { id: string } }>('/render/tokens', {
+                      method: 'POST',
+                      body: { name: newRenderName.trim() || 'render-main', token: newRenderToken.trim() },
+                    })
+                    setRenderTokenId(data.id)
+                    setNewRenderToken('')
+                    await refreshRenderTokens()
+                  } catch (err) {
+                    setRenderSaveError(err instanceof Error ? err.message : 'خطا در ذخیره کلید API رندر')
+                  } finally {
+                    setRenderSaving(false)
+                  }
+                }}
+              />
             )}
 
             {method === 'railway' && railMode === 'auto' && (
@@ -615,7 +778,7 @@ export default function DeployWizard() {
 
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">محیط اجرا</label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                 <button
                   type="button"
                   onClick={() => setMethod('workers')}
@@ -653,12 +816,23 @@ export default function DeployWizard() {
                   type="button"
                   onClick={() => setMethod('railway')}
                   className={`p-4 rounded-xl border text-right transition-all ${
-                    method === 'railway' ? 'border-brand-500 bg-brand-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'
+                    method === 'railway' ? 'border-purple-500 bg-purple-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'
                   }`}
                 >
-                  <Cloud className={`w-5 h-5 mb-2 ${method === 'railway' ? 'text-brand-400' : 'text-slate-500'}`} />
+                  <TrainFront className={`w-5 h-5 mb-2 ${method === 'railway' ? 'text-purple-400' : 'text-slate-500'}`} />
                   <p className="text-sm font-bold text-white">Railway</p>
-                  <p className="text-xs text-slate-400 mt-1">استقرار آنی. StanNG.</p>
+                  <p className="text-xs text-slate-400 mt-1">استقرار خودکار. StanNG.</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMethod('render')}
+                  className={`p-4 rounded-xl border text-right transition-all ${
+                    method === 'render' ? 'border-teal-500 bg-teal-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'
+                  }`}
+                >
+                  <Cloud className={`w-5 h-5 mb-2 ${method === 'render' ? 'text-teal-400' : 'text-slate-500'}`} />
+                  <p className="text-sm font-bold text-white">Render.com</p>
+                  <p className="text-xs text-slate-400 mt-1">استقرار خودکار. StanNG.</p>
                 </button>
               </div>
             </div>
@@ -693,9 +867,9 @@ export default function DeployWizard() {
 
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">منبع ورکر</label>
-              {method === 'vps' || method === 'railway' ? (
+              {method === 'vps' || method === 'railway' || method === 'render' ? (
                 <select value={workerSource} onChange={(e) => setWorkerSource(e.target.value)} className="input-field">
-                  <option value="stanngv2">StanNG v2 — پنل VLESS با xray-core ({method === 'railway' ? 'Railway' : 'Docker + VPS'})</option>
+                  <option value="stanngv2">StanNG v2 — پنل VLESS با xray-core ({method === 'render' ? 'Render.com' : method === 'railway' ? 'Railway' : 'Docker + VPS'})</option>
                 </select>
               ) : (
                 <select value={workerSource} onChange={(e) => setWorkerSource(e.target.value)} className="input-field">
@@ -713,6 +887,8 @@ export default function DeployWizard() {
                   ? <>NEXUS — نسل جدید ورکر با پنل داخلی تنظیمات هوشمند، نقشهٔ زندهٔ سراسری، مبهم‌سازی پیشرفته و ساب‌نویس خودکار. پنل با همان UUID در مسیر <code className="text-brand-300">/{uuid}</code> باز می‌شود و تنظیمات در KV (<code className="text-brand-300">C</code> / <code className="text-brand-300">c</code>) ذخیره می‌شود.</>
                   : workerSource === 'miliconfigzeus'
                   ? <>پنل کامل miliconfigzeus با دیتابیس اختصاصی D1 مستقر می‌شود (خودکار ساخته می‌شود). مدیریت کاربران، سهمیه‌ها و اسکنر داخل خود پنل مستقر است؛ آدرس پنل، ریشه همان ورکر خواهد بود. این سورس همیشه به‌صورت Workers مستقر می‌شود.</>
+                  : method === 'render'
+                  ? <>StanNG v2 با کلید API رندر روی Render.com مستقر می‌شود — سرویس Docker (xray-core + پنل VLESS) از همان Dockerfile رسمی بیلد می‌شود. بعد از موفقیت، از <code className="text-brand-300">/login</code> وارد پنل StanNG شوید و اولین کاربر ادمین را همان‌جا بسازید.</>
                   : method === 'railway'
                   ? railMode === 'auto'
                     ? <>StanNG v2 با توکن Railway روی سرورهای Railway مستقر می‌شود — Docker بیلد شده و xray-core + پنل VLESS بالا می‌آید. بعد از موفقیت، از <code className="text-brand-300">/login</code> وارد پنل StanNG شوید و اولین کاربر ادمین را همان‌جا بسازید.</>
@@ -773,7 +949,7 @@ export default function DeployWizard() {
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">محیط اجرا</p>
-                  <p className="text-white font-medium">{method === 'workers' ? 'CF Workers' : method === 'pages' ? 'CF Pages' : method === 'railway' ? 'Railway' : 'VPS (Docker)'}</p>
+                  <p className="text-white font-medium">{method === 'workers' ? 'CF Workers' : method === 'pages' ? 'CF Pages' : method === 'railway' ? 'Railway' : method === 'render' ? 'Render.com' : 'VPS (Docker)'}</p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">منبع ورکر</p>
@@ -790,17 +966,19 @@ export default function DeployWizard() {
                   </div>
                 )}
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
-                  <p className="text-xs text-slate-500 mb-1">{method === 'railway' && railMode === 'auto' ? 'توکن Railway' : 'توکن کلودفلر'}</p>
+                  <p className="text-xs text-slate-500 mb-1">{method === 'railway' && railMode === 'auto' ? 'توکن Railway' : method === 'render' ? 'کلید API رندر' : 'توکن کلودفلر'}</p>
                   <p className="text-white font-medium">
                     {method === 'railway' && railMode === 'auto'
                       ? (railTokens.find(t => t.id === railTokenId)?.name ?? '—')
+                      : method === 'render'
+                      ? (renderTokens.find(t => t.id === renderTokenId)?.name ?? '—')
                       : (tokens.find(t => t.id === selectedToken)?.name ?? '—')}
                   </p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">مسیر پنل</p>
                   <p className="text-white font-medium" dir="ltr">
-                    {method === 'railway' && railMode === 'auto'
+                    {method === 'railway' && railMode === 'auto' || method === 'render'
                       ? '/login (پنل StanNG)'
                       : workerSource === 'nexus' ? `/${uuid || '…'}` : `/${customPath || 'admin'}`}
                   </p>
@@ -824,8 +1002,8 @@ export default function DeployWizard() {
                 >
                   {deploying ? <Loader2 className="w-5 h-5 animate-spin" /> : <Rocket className="w-5 h-5" />}
                   {deploying
-                    ? (method === 'railway' && railMode === 'auto' ? 'در حال استقرار روی Railway...' : (method === 'vps' || (method === 'railway' && railMode === 'zip')) ? 'در حال تولید فایل‌ها...' : 'در حال استقرار...')
-                    : ((method === 'vps' || (method === 'railway' && railMode === 'zip')) ? (method === 'railway' ? 'دانلود فایل‌های Railway' : 'دانلود فایل‌های Docker') : (method === 'railway' && railMode === 'auto' ? 'استقرار روی Railway' : 'استقرار ورکر'))}
+                    ? (method === 'railway' && railMode === 'auto' ? 'در حال استقرار روی Railway...' : method === 'render' ? 'در حال استقرار روی Render...' : (method === 'vps' || (method === 'railway' && railMode === 'zip')) ? 'در حال تولید فایل‌ها...' : 'در حال استقرار...')
+                    : ((method === 'vps' || (method === 'railway' && railMode === 'zip')) ? (method === 'railway' ? 'دانلود فایل‌های Railway' : 'دانلود فایل‌های Docker') : (method === 'railway' && railMode === 'auto' ? 'استقرار روی Railway' : method === 'render' ? 'استقرار روی Render' : 'استقرار ورکر'))}
                 </button>
 
                 {/* Live logs */}
@@ -845,7 +1023,7 @@ export default function DeployWizard() {
                 )}
 
                 {deploying && (
-                  <p className="text-sm text-slate-400 animate-pulse">{method === 'railway' && railMode === 'auto' ? 'Railway در حال بیلد Docker و استقرار StanNG است — این صفحه خودکار به‌روزرسانی می‌شود.' : 'ورکر از مخزن دانلود، KV ساخته و روی edge مستقر می‌شود...'}</p>
+                  <p className="text-sm text-slate-400 animate-pulse">{method === 'railway' && railMode === 'auto' ? 'Railway در حال بیلد Docker و استقرار StanNG است — این صفحه خودکار به‌روزرسانی می‌شود.' : method === 'render' ? 'Render در حال بیلد Docker و استقرار StanNG است — این صفحه خودکار به‌روزرسانی می‌شود.' : 'ورکر از مخزن دانلود، KV ساخته و روی edge مستقر می‌شود...'}</p>
                 )}
               </div>
             )}
@@ -884,10 +1062,15 @@ export default function DeployWizard() {
                           <ExternalLink className="w-4 h-4" /> داشبورد پروژه در Railway
                         </a>
                       )}
-                      {!(method === 'railway' && railMode === 'auto') && (
+                      {method === 'render' && renderProjectUrl && (
+                        <a href={renderProjectUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary inline-flex items-center gap-2">
+                          <ExternalLink className="w-4 h-4" /> داشبورد سرویس در Render
+                        </a>
+                      )}
+                      {!(method === 'railway' && railMode === 'auto') && method !== 'render' && (
                         <button onClick={() => navigate('/deployments')} className="btn-primary">مشاهده ورکرها</button>
                       )}
-                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); }} className="btn-ghost">استقرار جدید</button>
+                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setRenderProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); }} className="btn-ghost">استقرار جدید</button>
                     </div>
                   </div>
                 ) : (
@@ -1005,6 +1188,64 @@ function RailwayTokenPanel({ tokens, selectedId, onSelect, newName, newToken, on
       <button type="button" onClick={onSave} disabled={saving} className="btn-secondary text-sm flex items-center gap-2">
         {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
         {saving ? 'در حال بررسی با Railway...' : 'تأیید و ذخیره توکن Railway'}
+      </button>
+    </div>
+  )
+}
+
+/** Render.com API-key picker + inline add (used in step 2 of the wizard). */
+function RenderTokenPanel({ tokens, selectedId, onSelect, newName, newToken, onNewName, onNewToken, saving, error, onSave }: {
+  tokens: RenderToken[]
+  selectedId: string
+  onSelect: (id: string) => void
+  newName: string
+  newToken: string
+  onNewName: (v: string) => void
+  onNewToken: (v: string) => void
+  saving: boolean
+  error: string | null
+  onSave: () => void
+}) {
+  return (
+    <div className="space-y-3 rounded-xl border border-teal-500/25 bg-teal-500/5 p-4">
+      <label className="block text-sm text-slate-300 mb-1 font-medium">کلید API رندر (Render.com)</label>
+      {tokens.length === 0 ? (
+        <p className="text-sm text-warning-300 leading-relaxed">
+          هنوز کلید API رندر ثبت نشده. از{' '}
+          <a href="https://dashboard.render.com/account/api-keys" target="_blank" rel="noopener noreferrer" className="text-teal-300 underline">dashboard.render.com/account/api-keys</a>{' '}
+          یک کلید بسازید و همین‌جا ذخیره کنید:
+        </p>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={selectedId} onChange={(e) => onSelect(e.target.value)} className="input-field text-sm flex-1 min-w-[200px]">
+            {tokens.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}{t.account_name ? ` (${t.account_name})` : ''}</option>
+            ))}
+          </select>
+          <a href="/#/tokens" className="text-xs text-teal-300 hover:underline">مدیریت توکن‌ها ←</a>
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">
+        <input
+          type="text"
+          value={newName}
+          onChange={(e) => onNewName(e.target.value)}
+          placeholder="نام کلید (مثلاً stanng-main)"
+          className="input-field text-sm"
+        />
+        <textarea
+          value={newToken}
+          onChange={(e) => onNewToken(e.target.value)}
+          rows={2}
+          placeholder="کلید API رندر (rnd_...) را اینجا paste کنید..."
+          className="input-field font-mono text-sm"
+          dir="ltr"
+        />
+      </div>
+      {error && <p className="text-xs text-error-300">{error}</p>}
+      <button type="button" onClick={onSave} disabled={saving} className="btn-secondary text-sm flex items-center gap-2">
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+        {saving ? 'در حال بررسی با Render...' : 'تأیید و ذخیره کلید رندر'}
       </button>
     </div>
   )

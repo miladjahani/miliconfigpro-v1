@@ -32,6 +32,30 @@ CREATE TABLE IF NOT EXISTS cf_tokens (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Render.com API keys (StanNG auto-deploy)
+CREATE TABLE IF NOT EXISTS render_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+  account_name TEXT,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Railway account tokens (StanNG auto-deploy)
+CREATE TABLE IF NOT EXISTS railway_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+  account_name TEXT,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Worker deployment records
 CREATE TABLE IF NOT EXISTS deployments (
   id TEXT PRIMARY KEY,
@@ -147,6 +171,8 @@ CREATE TABLE IF NOT EXISTS injector_jobs (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_cf_tokens_user ON cf_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_render_tokens_user ON render_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_railway_tokens_user ON railway_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_user ON deployments(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
 CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id);
