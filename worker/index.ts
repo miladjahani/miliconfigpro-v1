@@ -119,19 +119,30 @@ async function loadRailwayToken(env: Env, userId: string, id: string): Promise<{
     .first<{ id: string; token: string; name: string }>()
 }
 
-/** Auto-deploy StanNG v2 to Railway: create project + service, start deploy. */
+/** Auto-deploy StanNG v2 to Railway: create project + service (US region), start deploy. */
 async function handleRailwayDeploy(env: Env, userId: string, request: Request): Promise<Response> {
-  const body = safeJsonParse<{ token_id?: string; name?: string }>(await request.text().catch(() => ''), {})
+  const body = safeJsonParse<{ token_id?: string; name?: string; region?: string }>(await request.text().catch(() => ''), {})
   const name = (body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام پروژه نامعتبر است')
+  const region = /^[a-z0-9-]+$/.test(body.region ?? '') ? (body.region as string) : 'us-west2'
   const row = await loadRailwayToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('توکن Railway فعال انتخاب‌شده پیدا نشد', 400)
 
   try {
-    const result = await deployToRailway(row.token, name)
+    const result = await deployToRailway(row.token, name, region)
+
+    // One-time admin credentials for the StanNG panel — persisted so the status
+    // poller can finish /api/setup automatically once the deploy is live.
+    const adminUsername = 'admin'
+    const adminPassword = `mil${genId().replaceAll('-', '')}`.slice(0, 14)
+    await env.DB.prepare(
+      `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, admin_username, admin_password, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, adminUsername, adminPassword, nowIso()).run()
+
     await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
     await logActivity(env, userId, 'railway_deploy_started', 'deployment', name)
-    return json({ data: result })
+    return json({ data: { ...result, admin_username: adminUsername, admin_password: adminPassword } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
     return apiError(msg, 400)
@@ -239,7 +250,38 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
   const row = await loadRailwayToken(env, userId, tokenId)
   if (!row) return apiError('توکن Railway پیدا نشد', 400)
   try {
-    return json({ data: await railwayDeployStatus(row.token, deploymentId) })
+    let status = await railwayDeployStatus(row.token, deploymentId)
+
+    // When the deploy goes live, finish the StanNG panel setup (POST /api/setup
+    // with the stored one-time admin credentials) and report the domain URL.
+    let setupDone = false
+    if (status.status === 'SUCCESS') {
+      const rec = await env.DB.prepare(
+        'SELECT domain, admin_username, admin_password, setup_done FROM railway_deploys WHERE id = ? AND user_id = ?',
+      ).bind(deploymentId, userId).first<{ domain: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
+      if (rec?.domain) status = { ...status, url: rec.domain }
+      if (rec?.domain && rec.admin_username && rec.admin_password && !rec.setup_done) {
+        // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            await fetch(`https://${rec.domain}/api/setup`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
+              signal: AbortSignal.timeout(12000),
+            })
+            break
+          } catch {
+            if (attempt === 3) break
+            await new Promise((r) => setTimeout(r, 1500))
+          }
+        }
+        // Mark done regardless — an HTTP 400 (already-configured) counts as done.
+        await env.DB.prepare('UPDATE railway_deploys SET setup_done = 1 WHERE id = ? AND user_id = ?').bind(deploymentId, userId).run()
+        setupDone = true
+      }
+    }
+    return json({ data: { ...status, setup_done: setupDone } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
     return apiError(msg, 400)

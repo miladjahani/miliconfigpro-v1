@@ -45,6 +45,20 @@ const SCHEMA_STATEMENTS = [
     last_used_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
+  `CREATE TABLE IF NOT EXISTS railway_deploys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    region TEXT NOT NULL DEFAULT 'us-west2',
+    domain TEXT,
+    admin_username TEXT,
+    admin_password TEXT,
+    setup_done INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
   `CREATE TABLE IF NOT EXISTS deployments (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -163,6 +177,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_cf_tokens_user ON cf_tokens(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_railway_tokens_user ON railway_tokens(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_railway_deploys_user ON railway_deploys(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_render_tokens_user ON render_tokens(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_deployments_user ON deployments(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status)`,

@@ -74,6 +74,7 @@ export interface RailwayDeployResult {
   environmentId: string
   deploymentId: string
   projectUrl: string
+  domain?: string | null
 }
 
 const STANNG_REPO = 'youdidking/stanngv2'
@@ -85,7 +86,7 @@ interface EnvEdge { node?: { id?: string; name?: string } }
  * Create a Railway project from the public StanNG repo and trigger a deploy.
  * Returns the resource ids + a dashboard link to the new project.
  */
-export async function deployToRailway(token: string, projectName: string): Promise<RailwayDeployResult> {
+export async function deployToRailway(token: string, projectName: string, region = 'us-west2'): Promise<RailwayDeployResult> {
   // 0. The live API requires a workspaceId on projectCreate — resolve the
   //    token's first workspace via `me { workspaces }`. Tolerate both the
   //    direct-list and Relay (edges/node) response shapes.
@@ -148,6 +149,28 @@ export async function deployToRailway(token: string, projectName: string): Promi
     )
   }
 
+  // 3b. Pin the deployment region — applied before the first deploy so the
+  //     instance runs in the requested country (default: US West).
+  await gql(
+    token,
+    'mutation ($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }',
+    { serviceId, environmentId, input: { region } },
+  ).catch(() => null)
+
+  // 3c. Generate a *.up.railway.app domain so the panel is reachable as soon
+  //     as the first deploy goes live.
+  let domain: string | null = null
+  try {
+    const dom = await gql(
+      token,
+      'mutation ($input: ServiceDomainCreateInput!) { serviceDomainCreate(input: $input) { domain } }',
+      { input: { serviceId, environmentId } },
+    )
+    domain = (dom.serviceDomainCreate as { domain?: string } | undefined)?.domain ?? null
+  } catch {
+    /* the domain can still be generated later from the dashboard */
+  }
+
   // 4. Pin PORT so the container listens where Railway expects it
   //    (entrypoint.sh defaults to 8000 already — this makes it explicit).
   await gql(
@@ -165,7 +188,7 @@ export async function deployToRailway(token: string, projectName: string): Promi
   const deploymentId = dep.serviceInstanceDeployV2 as string | undefined
   if (!deploymentId) throw new RailwayApiError('دستور استقرار روی Railway اجرا نشد')
 
-  return { projectId, serviceId, environmentId, deploymentId, projectUrl: `https://railway.com/project/${projectId}` }
+  return { projectId, serviceId, environmentId, deploymentId, projectUrl: `https://railway.com/project/${projectId}`, domain }
 }
 
 /** Poll the status of a deployment started with deployToRailway. */

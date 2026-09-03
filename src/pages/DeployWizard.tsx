@@ -145,6 +145,10 @@ export default function DeployWizard() {
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // One-time StanNG admin credentials returned by the Railway deploy call —
+  // kept in a ref so the status poller can label the result when it succeeds.
+  const railAdminRef = useRef<{ user: string; pass: string } | null>(null)
+
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
       clearInterval(pollRef.current)
@@ -289,10 +293,13 @@ export default function DeployWizard() {
           stopPolling()
           setDeploying(false)
           const url = data?.url?.trim() || null
+          const admin = railAdminRef.current
           setDeployResult({
             success: true,
             message: url
-              ? 'StanNG با موفقیت روی Railway مستقر شد! 🎉'
+              ? (admin
+                  ? 'StanNG در آمریکا مستقر شد و ادمین پنل ساخته شد! 🎉'
+                  : 'StanNG با موفقیت روی Railway مستقر شد! 🎉')
               : 'استقرار روی Railway موفق بود — دامنه را در بخش Networking پروژه فعال کنید.',
             url: url ?? undefined,
             panelUrl: url ? `${url.replace(/\/+$/, '')}/login` : undefined,
@@ -375,15 +382,20 @@ export default function DeployWizard() {
       setRailProjectUrl(null)
       setDeployLogs(['اتصال به Railway…'])
       try {
-        const { data } = await api<{ data: { deploymentId: string; projectId: string; projectUrl: string } }>('/railway/deploy', {
+        const { data } = await api<{ data: { deploymentId: string; projectId: string; projectUrl: string; domain?: string; admin_username?: string; admin_password?: string } }>('/railway/deploy', {
           method: 'POST',
-          body: { token_id: rt.id, name },
+          body: { token_id: rt.id, name, region: 'us-west2' },
         })
         setRailProjectUrl(data.projectUrl)
+        if (data.admin_username && data.admin_password) {
+          railAdminRef.current = { user: data.admin_username, pass: data.admin_password }
+        }
         setDeployLogs([
           '✓ پروژه ساخته شد',
           '✓ محیط production آماده شد',
           '✓ مخزن stanngv2 (GitHub) متصل شد',
+          '✓ منطقه: آمریکا (us-west2)',
+          ...(data.domain ? [`✓ دامنه: ${data.domain}`] : []),
           '✓ PORT=8000 تنظیم شد',
           `✓ استقرار شروع شد (${data.deploymentId.slice(0, 8)}…)`,
           '',
@@ -1052,6 +1064,13 @@ export default function DeployWizard() {
                             <p className="text-slate-300 text-sm break-all" dir="ltr">{deployResult.url}</p>
                           </div>
                         )}
+                        {method === 'railway' && railAdminRef.current && (
+                          <div className="p-4 rounded-xl bg-slate-900/50 border border-brand-500/40">
+                            <p className="text-xs text-slate-500 mb-2">حساب ادمین پنل StanNG — فقط همین‌جا نمایش داده می‌شود</p>
+                            <p className="text-slate-300 text-sm font-mono" dir="ltr">username: {railAdminRef.current.user}</p>
+                            <p className="text-slate-300 text-sm font-mono break-all" dir="ltr">password: {railAdminRef.current.pass}</p>
+                          </div>
+                        )}
                         <p className="text-xs text-warning-400/80 px-4">لینک پنل را خصوصی نگه دارید — هر کس آن را داشته باشد می‌تواند ورکر را مدیریت کند.</p>
                       </div>
                     )}
@@ -1070,7 +1089,7 @@ export default function DeployWizard() {
                       {!(method === 'railway' && railMode === 'auto') && method !== 'render' && (
                         <button onClick={() => navigate('/deployments')} className="btn-primary">مشاهده ورکرها</button>
                       )}
-                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setRenderProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); }} className="btn-ghost">استقرار جدید</button>
+                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setRenderProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); railAdminRef.current = null; }} className="btn-ghost">استقرار جدید</button>
                     </div>
                   </div>
                 ) : (
