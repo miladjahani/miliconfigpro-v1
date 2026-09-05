@@ -655,7 +655,7 @@ async function runMemberCreate(env: Env, bt: string, chatId: string | number, us
 
 async function showWorkers(env: Env, bt: string, chatId: string | number, userId: string): Promise<void> {
   const cf = await env.DB.prepare('SELECT id, name, status, worker_url FROM deployments WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').bind(userId).all<{ id: string; name: string; status: string; worker_url: string | null }>()
-  const hosted = await env.DB.prepare('SELECT id, provider, name, status FROM hosted_deployments WHERE user_id = ? ORDER BY created_at DESC LIMIT 6').bind(userId).all<{ id: string; provider: string; name: string; status: string }>()
+  const hosted = await env.DB.prepare('SELECT id, provider, template, name, status FROM hosted_deployments WHERE user_id = ? ORDER BY created_at DESC LIMIT 6').bind(userId).all<{ id: string; provider: string; template: string | null; name: string; status: string }>()
   const total = cf.results.length + hosted.results.length
   if (!total) {
     await sendMsg(bt, chatId, '🚀 هنوز ورکری مستقر نشده — همین حالا یکی بسازید:', KB([[btn('🚀 استقرار ورکر', 'dp'), btn('🏠 منو', 'm')]]))
@@ -669,10 +669,12 @@ async function showWorkers(env: Env, bt: string, chatId: string | number, userId
     rows.push([{ text: `${e} ${w.name}`, c: `wd:${w.id}` }])
   }
   for (const h of hosted.results) {
+    const tpl = h.template ? HOSTED_PANELS.find((x) => x.slug === h.template) : undefined
     const icon = h.provider === 'railway' ? '🚂' : '🧊'
     const e = h.status === 'success' ? '✅' : h.status === 'failed' ? '❌' : '⏳'
-    m += `${e} ${icon} <code>${escHtml(h.name)}</code> — ${h.provider === 'railway' ? 'Railway' : 'Render'}\n`
-    rows.push([{ text: `${e} ${icon} ${h.name}`, c: `wh:${h.id}` }])
+    const tplTxt = tpl ? `${tpl.emoji} ${tpl.short} · ` : ''
+    m += `${e} ${tplTxt}${icon} <code>${escHtml(h.name)}</code> — ${h.provider === 'railway' ? 'Railway' : 'Render'}\n`
+    rows.push([{ text: `${e} ${tplTxt}${icon} ${h.name}`, c: `wh:${h.id}` }])
   }
   rows.push([btn('➕ استقرار جدید', 'dp'), btn('🔄 بروزرسانی', 'wk')])
   rows.push([btn('🏠 منو', 'm')])
@@ -706,14 +708,18 @@ async function showWorkerDetail(env: Env, bt: string, chatId: string | number, u
 }
 
 async function showHostedDetail(env: Env, bt: string, chatId: string | number, userId: string, id: string): Promise<void> {
-  const h = await env.DB.prepare('SELECT id, provider, name, status, url, panel_url, dashboard_url FROM hosted_deployments WHERE id = ? AND user_id = ?')
+  const h = await env.DB.prepare('SELECT id, provider, template, name, status, url, panel_url, dashboard_url, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?')
     .bind(id, userId)
-    .first<{ id: string; provider: string; name: string; status: string; url: string | null; panel_url: string | null; dashboard_url: string | null }>()
+    .first<{ id: string; provider: string; template: string | null; name: string; status: string; url: string | null; panel_url: string | null; dashboard_url: string | null; admin_username: string | null; admin_password: string | null }>()
   if (!h) { await sendMsg(bt, chatId, '❌ پنل پیدا نشد.', KB([[btn('🔙 ورکرها', 'wk'), btn('🏠 منو', 'm')]])); return }
+  const tpl = h.template ? HOSTED_PANELS.find((x) => x.slug === h.template) : undefined
   const icon = h.provider === 'railway' ? '🚂' : '🧊'
   const state = h.status === 'success' ? '✅ فعال' : h.status === 'failed' ? '❌ ناموفق' : '⏳ در حال ساخت'
-  let m = `${icon} <b>${escHtml(h.name)}</b>\n📌 ${state}\n`
+  let m = `${tpl ? `${tpl.emoji} ` : ''}<b>${escHtml(h.name)}</b>${tpl ? ` — ${escHtml(tpl.label)}` : ''}\n${icon} ${h.provider === 'railway' ? 'Railway' : 'Render'}\n📌 ${state}\n`
   if (h.panel_url || h.url) m += `\n🔐 پنل (لاگین):\n<code>${escHtml(h.panel_url ?? h.url ?? '')}</code>\n`
+  if (h.status === 'success' && h.admin_username && h.admin_password) {
+    m += `\n👤 ${escHtml(h.admin_username)}\n🔑 <code>${escHtml(h.admin_password)}</code>`
+  }
   const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
   if (h.panel_url || h.url) rows.push([{ text: '🔐 باز کردن پنل', u: h.panel_url ?? h.url ?? '' }])
   if (h.dashboard_url) rows.push([{ text: '📊 داشبورد سرویس‌دهنده', u: h.dashboard_url }])

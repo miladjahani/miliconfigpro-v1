@@ -649,6 +649,37 @@ export default function DeployWizard() {
       <div className="glass-card p-6 lg:p-8 min-h-[300px]">
         {step === 1 && (
           <div className="space-y-6 animate-fade-in">
+            <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-4">
+              <label className="block text-sm text-slate-200 mb-1 font-bold">استقرار پنل آماده — هر پنل یک گزینه مستقل است</label>
+              <p className="text-xs text-slate-500 mb-3">روی دکمه‌ی Railway یا Render زیر هر پنل بزنید تا همان پنل، جدا و با هویت خودش (Marzban، 3x-ui، X4G و…) مستقر شود. StanNG هم مثل بقیه یکی از این گزینه‌هاست.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {HOSTED_PANELS.map((p) => {
+                  const railOn = hostedTemplate === p.slug && method === 'railway' && railMode === 'auto'
+                  const rdOn = hostedTemplate === p.slug && method === 'render'
+                  return (
+                    <div key={p.slug} className={`p-3 rounded-xl border text-right transition-all ${railOn || rdOn ? 'border-brand-500 bg-brand-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'}`}>
+                      <p className="text-sm font-bold text-white">{p.emoji} {p.label}</p>
+                      <p className="text-[11px] text-slate-500 font-mono mt-0.5" dir="ltr">{p.repo} · PORT {p.port}</p>
+                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{p.desc}</p>
+                      <div className="flex gap-2 mt-3">
+                        <button
+                          type="button"
+                          onClick={() => { setHostedTemplate(p.slug); setMethod('railway'); setRailMode('auto'); setError(null) }}
+                          className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${railOn ? 'border-purple-500 bg-purple-500/25 text-white' : 'border-slate-600 text-slate-300 hover:border-purple-400'}`}
+                        >🚂 استقرار روی Railway</button>
+                        <button
+                          type="button"
+                          onClick={() => { setHostedTemplate(p.slug); setMethod('render'); setRailMode('auto'); setError(null) }}
+                          className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${rdOn ? 'border-teal-500 bg-teal-500/25 text-white' : 'border-slate-600 text-slate-300 hover:border-teal-400'}`}
+                        >🧊 استقرار روی Render</button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-warning-400/80 mt-3">برای ورکرهای Cloudflare/Pages و خروجی VPS هنوز از کارت‌های مرحله‌ی «تنظیمات» استفاده کنید؛ این شش پنل فقط Docker هستند و روی Railway یا Render اجرا می‌شوند.</p>
+            </div>
+
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">نام ورکر</label>
               <div className="flex gap-2">
@@ -667,29 +698,6 @@ export default function DeployWizard() {
               </div>
               <p className="text-xs text-slate-500 mt-2">حروف کوچک، عدد، خط‌تیره · {method === 'railway' ? 'نام پروژه در Railway می‌شود' : method === 'render' ? 'نام سرویس در Render می‌شود' : method === 'vps' ? 'نام سرویس روی VPS می‌شود' : <>می‌شود <code className="text-brand-300">{name}.workers.dev</code></>}</p>
             </div>
-
-            {((method === 'railway' && railMode === 'auto') || method === 'render') && (
-              <div>
-                <label className="block text-sm text-slate-300 mb-2 font-medium">قالب پنل</label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {HOSTED_PANELS.map((p) => {
-                    const active = hostedTemplate === p.slug
-                    return (
-                      <button
-                        key={p.slug}
-                        type="button"
-                        onClick={() => setHostedTemplate(p.slug)}
-                        className={`p-3 rounded-xl border text-right transition-all ${active ? (method === 'render' ? 'border-teal-500 bg-teal-500/10' : 'border-purple-500 bg-purple-500/10') : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'}`}
-                      >
-                        <p className="text-sm font-bold text-white">{p.emoji} {p.label}</p>
-                        <p className="text-xs text-slate-400 mt-1 leading-relaxed">{p.desc}</p>
-                        <p className={`text-[11px] mt-2 font-mono ${active ? 'text-brand-300' : 'text-slate-600'}`} dir="ltr">github.com/{p.repo} · PORT {p.port}</p>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
 
             {(method === 'railway' && railMode === 'auto') || method === 'render' ? null : (
             <>

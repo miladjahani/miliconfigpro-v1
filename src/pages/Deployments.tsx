@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { api, ApiError } from '../lib/api'
 import type { Deployment, HostedDeployment, CFToken, SubGroup, InjectedSub } from '../lib/types'
 import type { PreferredIP, ProxySpec } from '../lib/types'
+import { HOSTED_PANELS } from '../../worker/panels'
 import {
   Cloud, Loader2, CheckCircle2, XCircle, Clock, Trash2, ExternalLink,
   KeyRound, Rocket, Database, Copy, Check, Smartphone, Settings2,
@@ -207,120 +208,8 @@ export default function Deployments() {
         ))}
       </div>
 
-      <HostedDeploymentsPanel />
       {tab === 'workers' ? <WorkersTab /> : <ScannerTab />}
     </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// HOSTED DEPLOYMENTS — Railway / Render records, separate from Cloudflare
-// ═══════════════════════════════════════════════════════════════════════════
-function HostedDeploymentsPanel() {
-  const [items, setItems] = useState<HostedDeployment[]>([])
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-
-  const load = useCallback(async (background = false) => {
-    if (background) setRefreshing(true)
-    try {
-      const { data } = await api<{ data: HostedDeployment[] }>('/hosted-deployments')
-      setItems(data ?? [])
-    } catch {
-      if (!background) setItems([])
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-    }
-  }, [])
-
-  useEffect(() => { void load() }, [load])
-  useEffect(() => {
-    const interval = setInterval(() => { void load(true) }, 10000)
-    return () => clearInterval(interval)
-  }, [load])
-
-  if (loading) return null
-  if (items.length === 0) return null
-
-  const status = {
-    success: { label: 'فعال', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', Icon: CheckCircle2 },
-    failed: { label: 'ناموفق', color: 'text-error-400', bg: 'bg-error-500/10', border: 'border-error-500/30', Icon: XCircle },
-    deploying: { label: 'در حال استقرار', color: 'text-warning-400', bg: 'bg-warning-500/10', border: 'border-warning-500/30', Icon: Loader2 },
-    unknown: { label: 'نامشخص', color: 'text-slate-400', bg: 'bg-slate-700/30', border: 'border-slate-600/30', Icon: Clock },
-  } as const
-
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h2 className="text-lg font-bold text-white flex items-center gap-2">
-            <Globe className="w-5 h-5 text-brand-400" /> پنل‌های میزبانی‌شده
-          </h2>
-          <p className="text-xs text-slate-500 mt-1">استقرارهای Railway و Render؛ تنظیمات KV و مدیریت کاربران فقط برای ورکرهای Cloudflare در دسترس است.</p>
-        </div>
-        <button type="button" onClick={() => void load(true)} disabled={refreshing}
-          className="btn-ghost flex items-center gap-2 text-xs disabled:opacity-50" title="به‌روزرسانی وضعیت">
-          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} /> به‌روزرسانی
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {items.map((item) => {
-          const st = status[item.status] ?? status.unknown
-          const StatusIcon = st.Icon
-          const providerName = item.provider === 'railway' ? 'Railway' : 'Render'
-          return (
-            <article key={item.id} className="glass-card p-5 border border-slate-800/80">
-              <div className="flex items-start gap-3">
-                <div className={`p-3 rounded-xl ${st.bg} ${st.border} border shrink-0`}>
-                  <StatusIcon className={`w-5 h-5 ${st.color} ${item.status === 'deploying' ? 'animate-spin' : ''}`} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-bold text-white truncate" dir="ltr">{item.name}</h3>
-                    <span className="badge bg-slate-700/30 text-slate-300">{providerName}</span>
-                    <span className={`badge ${st.bg} ${st.color} ${st.border} border`}>{st.label}</span>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">{new Date(item.created_at).toLocaleString('fa-IR')}</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 mt-4">
-                <InfoCell icon={<Globe className="w-3.5 h-3.5 text-brand-400" />} label="منطقه">
-                  <span className="text-xs text-slate-300" dir="ltr">{item.region ?? 'پیش‌فرض سرویس'}</span>
-                </InfoCell>
-                <InfoCell icon={<Server className="w-3.5 h-3.5 text-slate-400" />} label="شناسه سرویس">
-                  <span className="text-xs text-slate-400 font-mono truncate block" dir="ltr">{item.provider_service_id ?? 'در انتظار'}</span>
-                </InfoCell>
-              </div>
-
-              {item.error_message && (
-                <p className="mt-3 px-3 py-2 rounded-lg bg-error-500/10 border border-error-500/20 text-xs text-error-300">{item.error_message}</p>
-              )}
-
-              <div className="flex gap-2 flex-wrap mt-4">
-                {item.panel_url && (
-                  <a href={item.panel_url} target="_blank" rel="noopener noreferrer" className="btn-primary flex items-center gap-1.5 text-sm py-2">
-                    <ExternalLink className="w-4 h-4" /> باز کردن پنل
-                  </a>
-                )}
-                {item.url && item.url !== item.panel_url && (
-                  <a href={item.url} target="_blank" rel="noopener noreferrer" className="btn-ghost flex items-center gap-1.5 text-sm py-2">
-                    <Globe className="w-4 h-4" /> آدرس سرویس
-                  </a>
-                )}
-                {item.dashboard_url && (
-                  <a href={item.dashboard_url} target="_blank" rel="noopener noreferrer" className="btn-ghost flex items-center gap-1.5 text-sm py-2">
-                    <Settings2 className="w-4 h-4" /> داشبورد {providerName}
-                  </a>
-                )}
-              </div>
-            </article>
-          )
-        })}
-      </div>
-    </section>
   )
 }
 
@@ -329,6 +218,7 @@ function HostedDeploymentsPanel() {
 // ═══════════════════════════════════════════════════════════════════════════
 function WorkersTab() {
   const [deployments, setDeployments] = useState<Deployment[]>([])
+  const [hosted, setHosted] = useState<HostedDeployment[]>([])
   const [tokens, setTokens] = useState<CFToken[]>([])
   const [loading, setLoading] = useState(true)
   const [configModal, setConfigModal] = useState<Deployment | null>(null)
@@ -337,11 +227,13 @@ function WorkersTab() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const [deps, toks] = await Promise.all([
+    const [deps, hos, toks] = await Promise.all([
       api<{ data: Deployment[] }>('/deployments').catch(() => ({ data: [] as Deployment[] })),
+      api<{ data: HostedDeployment[] }>('/hosted-deployments').catch(() => ({ data: [] as HostedDeployment[] })),
       api<{ data: CFToken[] }>('/tokens').catch(() => ({ data: [] as CFToken[] })),
     ])
     setDeployments(deps.data ?? [])
+    setHosted(hos.data ?? [])
     setTokens((toks.data ?? []).filter((t) => t.status === 'active'))
     setLoading(false)
   }, [])
@@ -398,6 +290,16 @@ function WorkersTab() {
     setTogglingId(null)
   }
 
+  // Hosted (Railway/Render) deployments flip status on the provider's side; poll
+  // them in the background so the unified list never shows a stale state.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const { data } = await api<{ data: HostedDeployment[] }>('/hosted-deployments').catch(() => ({ data: [] as HostedDeployment[] }))
+      if (data) setHosted(data)
+    }, 10000)
+    return () => clearInterval(interval)
+  }, [])
+
   const copySub = async (url: string, key: string) => {
     try { await navigator.clipboard.writeText(url); setCopiedSub(key); setTimeout(() => setCopiedSub(null), 2000) } catch {}
   }
@@ -408,17 +310,35 @@ function WorkersTab() {
     deploying: { label: 'در حال استقرار', color: 'text-warning-400', bg: 'bg-warning-500/10', border: 'border-warning-500/30', Icon: Loader2 },
     pending: { label: 'در انتظار', color: 'text-slate-400', bg: 'bg-slate-700/30', border: 'border-slate-600/30', Icon: Clock },
   }
+  const hostedStatusMap = {
+    success: { label: 'فعال', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', Icon: CheckCircle2 },
+    failed: { label: 'ناموفق', color: 'text-error-400', bg: 'bg-error-500/10', border: 'border-error-500/30', Icon: XCircle },
+    deploying: { label: 'در حال استقرار', color: 'text-warning-400', bg: 'bg-warning-500/10', border: 'border-warning-500/30', Icon: Loader2 },
+    unknown: { label: 'نامشخص', color: 'text-slate-400', bg: 'bg-slate-700/30', border: 'border-slate-600/30', Icon: Clock },
+  }
+
+  const rows: Array<
+    | { kind: 'cf'; dep: Deployment }
+    | { kind: 'hosted'; item: HostedDeployment }
+  > = [
+    ...deployments.map((dep) => ({ kind: 'cf' as const, dep })),
+    ...hosted.map((item) => ({ kind: 'hosted' as const, item })),
+  ].sort((a, b) => {
+    const at = a.kind === 'cf' ? a.dep.created_at : a.item.created_at
+    const bt = b.kind === 'cf' ? b.dep.created_at : b.item.created_at
+    return String(bt).localeCompare(String(at))
+  })
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-brand-400" /></div>
 
-  if (deployments.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="glass-card p-12 text-center">
         <div className="inline-flex w-16 h-16 rounded-2xl bg-slate-800/50 items-center justify-center mb-4">
           <Cloud className="w-8 h-8 text-slate-500" />
         </div>
-        <h3 className="text-lg font-bold text-white mb-2">هنوز ورکری مستقر نشده</h3>
-        <p className="text-slate-400 text-sm mb-6">اولین ورکر خود را روی کلودفلر مستقر کنید</p>
+        <h3 className="text-lg font-bold text-white mb-2">هنوز استقراری ندارید</h3>
+        <p className="text-slate-400 text-sm mb-6">اولین ورکر خود را روی کلودفلر یا یک پنل Railway/Render مستقر کنید</p>
         <Link to="/deploy" className="btn-primary inline-flex items-center gap-2"><Rocket className="w-4 h-4" /> شروع استقرار</Link>
       </div>
     )
@@ -428,7 +348,7 @@ function WorkersTab() {
     <div className="space-y-4">
       <GroupSubPanel deployments={deployments.filter((d) => d.status === 'deployed')} onChanged={load} />
 
-      {tokens.length === 0 && (
+      {deployments.length > 0 && tokens.length === 0 && (
         <div className="glass-card p-4 border-warning-500/30 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-warning-400 shrink-0 mt-0.5" />
           <div>
@@ -439,7 +359,52 @@ function WorkersTab() {
         </div>
       )}
 
-      {deployments.map((dep, i) => {
+      {rows.map((row, i) => {
+        if (row.kind === 'hosted') {
+          const item = row.item
+          const tpl = HOSTED_PANELS.find((x) => x.slug === item.template)
+          const hst = hostedStatusMap[item.status] ?? hostedStatusMap.unknown
+          const HIcon = hst.Icon
+          const providerName = item.provider === 'railway' ? 'Railway' : 'Render'
+          return (
+            <div key={item.id} className="glass-card animate-slide-up" style={{ animationDelay: `${i * 40}ms` }}>
+              <div className="p-5 flex items-center gap-4 flex-wrap">
+                <div className={`p-3 rounded-xl ${hst.bg} ${hst.border} border shrink-0`}>
+                  <HIcon className={`w-5 h-5 ${hst.color} ${item.status === 'deploying' ? 'animate-spin' : ''}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-white" dir="ltr">{item.name}</h3>
+                    {tpl && <span className="badge bg-brand-500/10 text-brand-300 border border-brand-500/25">{tpl.emoji} {tpl.short}</span>}
+                    <span className="badge bg-slate-700/30 text-slate-300">{providerName}</span>
+                    <span className={`badge ${hst.bg} ${hst.color} ${hst.border} border`}>{hst.label}</span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">{new Date(item.created_at).toLocaleString('fa-IR')}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                  {item.panel_url && (
+                    <a href={item.panel_url} target="_blank" rel="noopener noreferrer"
+                      className="btn-primary flex items-center gap-1.5 text-sm py-2">
+                      <ExternalLink className="w-4 h-4" /> باز کردن پنل
+                    </a>
+                  )}
+                  {item.dashboard_url && (
+                    <a href={item.dashboard_url} target="_blank" rel="noopener noreferrer"
+                      className="btn-ghost flex items-center gap-1.5 text-sm py-2">
+                      <Settings2 className="w-4 h-4" /> داشبورد {providerName}
+                    </a>
+                  )}
+                </div>
+              </div>
+              {item.error_message && (
+                <div className="mx-5 mb-5 px-4 py-2.5 rounded-xl bg-error-500/10 border border-error-500/20 text-error-400 text-sm">
+                  {item.error_message}
+                </div>
+              )}
+            </div>
+          )
+        }
+        const dep = row.dep
         const st = statusMap[dep.status] ?? statusMap.pending
         const StatusIcon = st.Icon
         const cfg = (dep.config as Record<string, unknown> | null) ?? {}

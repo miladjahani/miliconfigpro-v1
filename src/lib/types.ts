@@ -31,6 +31,7 @@ export interface HostedDeployment {
   id: string
   provider: 'railway' | 'render'
   name: string
+  template?: string | null
   status: 'deploying' | 'success' | 'failed' | 'unknown'
   region: string | null
   url: string | null
