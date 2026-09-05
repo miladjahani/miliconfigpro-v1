@@ -6,6 +6,7 @@ import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiErr
 import { verifyRenderToken, deployToRender, renderDeployStatus, RenderApiError } from './render'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
+import { handleProxyList } from './proxylist'
 import { handleTelegramWebhook } from './telegram'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
@@ -840,6 +841,12 @@ async function handleRouted(
       const body = safeJsonParse<{ mode?: string; ranges?: string; ports?: string; count?: number; timeout?: number; speedtest?: boolean }>(await request.text().catch(() => ''), {})
       if (body.mode === 'ranges') return await handleRangeScan(body)
       return await handleIpScanner(body)
+    }
+
+    // Per-country proxy lists are fetched server-side (worker network, cached)
+    // so filtered regions never lose the picker because a CDN is unreachable.
+    if (path === '/api/proxy-list' && method === 'GET') {
+      return await handleProxyList(url.searchParams.get('protocol'))
     }
 
     // ── Config optimizer ────────────────────────────────────────────────

@@ -128,8 +128,7 @@ function WorldMap({ selected, onToggle }: { selected: string[]; onToggle: (code:
   )
 }
 
-// ── EDT-Pages Proxy List ──────────────────────────────────────────────
-const EDT_PROXY_REPO = 'https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data'
+// ── EDT-Pages Proxy List (fetched through the panel worker's real network) ──
 
 interface EtdProxy {
   proxy: string
@@ -158,12 +157,11 @@ async function fetchEtdProxies(protocol: 'socks5' | 'https'): Promise<Record<str
   }
 
   try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 15000)
-    const resp = await fetch(`${EDT_PROXY_REPO}/${protocol}.json`, { signal: ctrl.signal })
-    clearTimeout(t)
-    if (!resp.ok) return {}
-    const data = await resp.json() as EtdProxy[]
+    // Server-side fetch: the Worker downloads the list from its own (real,
+    // unfiltered) network, so this never depends on the user's connection,
+    // VPN or which CDN mirrors are reachable in the user's region.
+    const { data } = await api<{ data: EtdProxy[] }>(`/proxy-list?protocol=${protocol}`)
+    if (!Array.isArray(data) || data.length === 0) return {}
     proxyCache.set(cacheKey, data)
 
     const grouped: Record<string, EtdProxy[]> = {}

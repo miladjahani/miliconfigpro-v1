@@ -44,41 +44,33 @@ export default function Optimizer() {
   const [proxyError, setProxyError] = useState<string | null>(null)
   const proxyFetched = useRef(false)
 
-  // Multiple CDN sources — jsDelivr is more CORS-friendly on mobile than raw.githubusercontent.com
-  const EDT_SOURCES = [
-    `https://cdn.jsdelivr.net/gh/EDT-Pages/Proxy-List@main/data/${proxyProtocol}.json`,
-    `https://raw.githubusercontent.com/EDT-Pages/Proxy-List/main/data/${proxyProtocol}.json`,
-  ]
-
   const fetchEtdProxies = async () => {
     setProxyLoading(true)
     setProxyError(null)
-    for (const url of EDT_SOURCES) {
-      try {
-        const ctrl = new AbortController()
-        const t = setTimeout(() => ctrl.abort(), 30000)
-        const resp = await fetch(url, { signal: ctrl.signal })
-        clearTimeout(t)
-        if (!resp.ok) continue
-        const data = await resp.json() as Array<{ proxy: string; country?: string }>
-        const grouped: Record<string, string[]> = {}
-        for (const p of data) {
-          if (p.country) {
-            const key = p.country.toLowerCase()
-            if (!grouped[key]) grouped[key] = []
-            grouped[key].push(p.proxy)
-          }
+    try {
+      // Server-side fetch: the Worker downloads the list from its own real,
+      // unfiltered network with CDN fallbacks, so availability never depends
+      // on the user's connection or region (e.g. filtered CDNs in Iran).
+      const { data } = await api<{ data: Array<{ proxy: string; country?: string }> }>(`/proxy-list?protocol=${proxyProtocol}`)
+      const grouped: Record<string, string[]> = {}
+      for (const p of Array.isArray(data) ? data : []) {
+        if (p.country) {
+          const key = p.country.toLowerCase()
+          if (!grouped[key]) grouped[key] = []
+          grouped[key].push(p.proxy)
         }
-        if (Object.keys(grouped).length > 0) {
-          setProxyLists(grouped)
-          setProxyLoading(false)
-          setProxyError(null)
-          return
-        }
-      } catch { /* try next source */ }
+      }
+      if (Object.keys(grouped).length > 0) {
+        setProxyLists(grouped)
+        setProxyLoading(false)
+        return
+      }
+      setProxyError('هیچ پروکسی با کشور مشخص دریافت نشد')
+      setProxyLoading(false)
+    } catch {
+      setProxyError('دریافت پروکسی ناموفق بود — دوباره تلاش کنید')
+      setProxyLoading(false)
     }
-    setProxyError('دریافت پروکسی ناموفق بود — اینترنت خود را بررسی کنید')
-    setProxyLoading(false)
   }
 
   useEffect(() => {
