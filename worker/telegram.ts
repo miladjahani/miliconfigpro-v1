@@ -3,6 +3,7 @@ import { createSession, genId, nowIso } from './util'
 import { verifyRailwayToken } from './railway'
 import { verifyRenderToken } from './render'
 import { handleIpScanner, handleRangeScan } from './scanner'
+import { HOSTED_PANELS, getHostedPanel } from './panels'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // miliconfig Telegram bot — fully button-driven menu navigation.
@@ -955,11 +956,26 @@ async function showProviderTokenPick(env: Env, bt: string, chatId: string | numb
   await sendMsg(bt, chatId, `${t.emoji} <b>استقرار روی ${t.label}</b>\n\nتوکنی که با آن استقرار انجام شود را انتخاب کنید:`, KB(rows))
 }
 
+async function askHostedTemplate(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, p: 'rw' | 'rd', data: Record<string, string>): Promise<void> {
+  const t = PROVIDERS[p]
+  await setPending(env, userId, telegramId, p === 'rw' ? 'dpl_rw_tpl' : 'dpl_rd_tpl', data)
+  const rows: Array<Array<{ text: string; u?: string; c?: string }>> = HOSTED_PANELS.map((x) => [{ text: `${x.emoji} ${x.label}`, c: `dptpl:${p}:${x.slug}` }])
+  rows.push([btn('🔙 انتخاب توکن', prefixFor(p)), btn('✖️ انصراف', 'cnf:c')])
+  await sendMsg(bt, chatId,
+    `${t.emoji} <b>استقرار روی ${t.label}</b>\n\n` +
+    `کدام قالب پنل مستقر شود؟ (همان مخزن‌های بخش استقرار پنل وب — مراحل و اطلاعات ورود دقیقاً مثل آنجاست):`,
+    KB(rows))
+}
+
 async function askDeployName(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, p: Provider, tok: TokenChoice): Promise<void> {
   const t = PROVIDERS[p]
-  const step = p === 'cf' ? 'dpl_cf_name' : p === 'rw' ? 'dpl_rw_name' : 'dpl_rd_name'
-  await setPending(env, userId, telegramId, step, { tok: tok.id, tokName: tok.name })
   const providerLabel = p === 'cf' ? 'کلودفلر' : p === 'rw' ? 'Railway' : 'Render'
+  if (p === 'rw' || p === 'rd') {
+    // Railway / Render first ask which catalog panel to deploy.
+    await askHostedTemplate(env, bt, chatId, userId, telegramId, p, { tok: tok.id, tokName: tok.name })
+    return
+  }
+  await setPending(env, userId, telegramId, 'dpl_cf_name', { tok: tok.id, tokName: tok.name })
   await sendMsg(bt, chatId,
     `${t.emoji} <b>استقرار ${providerLabel}</b> با توکن <code>${escHtml(tok.name)}</code>\n\n` +
     `نام ورکر/پروژه را بنویسید (حروف کوچک انگلیسی، عدد و خط تیره، مثل <code>my-worker</code>):`,
@@ -1033,13 +1049,21 @@ async function runRailwayDeploy(env: Env, bt: string, chatId: string | number, u
   const name = (data.name ?? '').trim().toLowerCase()
   const tokenId = data.tok ?? ''
   const tokName = data.tokName ?? ''
+  const tpl = getHostedPanel(data.tpl)
   if (!DEPLOY_NAME_RE.test(name)) { await sendMsg(bt, chatId, '❌ نام پروژه نامعتبر است.'); return }
-  const res = await panelApi(env, userId, origin, '/api/railway/deploy', 'POST', { token_id: tokenId, name, region: 'us-west2' })
+  const res = await panelApi(env, userId, origin, '/api/railway/deploy', 'POST', { token_id: tokenId, name, region: 'us-west2', template: tpl.slug })
   if (!res.ok) { await sendMsg(bt, chatId, `❌ استقرار Railway <b>${escHtml(name)}</b> شروع نشد: ${escHtml(res.error)}`, KB([[btn('🏠 منو', 'm')]])); return }
-  const d = res.data as { deploymentId?: string }
+  const d = res.data as { deploymentId?: string; admin_username?: string | null; admin_password?: string | null }
+  let credsNote = ''
+  if (d.admin_username || d.admin_password) {
+    credsNote = `\n\n🔐 ورود پنل (یکبار):\n👤 ${escHtml(d.admin_username ?? '—')}\n🔑 <code>${escHtml(d.admin_password ?? '—')}</code>`
+  }
   await sendMsg(bt, chatId,
-    `🚂 استقرار Railway <b>${escHtml(name)}</b> شروع شد (منطقه us-west2) با توکن <code>${escHtml(tokName)}</code>.\n` +
-    `وضعیت را دنبال می‌کنم و همین‌جا خبر می‌دهم.`,
+    `🚂 استقرار Railway <b>${escHtml(name)}</b> شروع شد.\n` +
+    `${tpl.emoji} قالب: ${escHtml(tpl.label)} (<code>${tpl.repo}</code>)\n` +
+    `توکن: <code>${escHtml(tokName)}</code> · منطقه us-west2` +
+    credsNote +
+    `\n\nوضعیت را دنبال می‌کنم و وقتی تمام شد لینک پنل را همین‌جا می‌فرستم.`,
     KB([[btn('📋 ورکرها', 'wk'), btn('🏠 منو', 'm')]]))
   if (d.deploymentId) ctx.waitUntil(pollRailwayDeploy(env, bt, chatId, userId, origin, tokenId, d.deploymentId))
 }
@@ -1048,13 +1072,21 @@ async function runRenderDeploy(env: Env, bt: string, chatId: string | number, us
   const name = (data.name ?? '').trim().toLowerCase()
   const tokenId = data.tok ?? ''
   const tokName = data.tokName ?? ''
+  const tpl = getHostedPanel(data.tpl)
   if (!DEPLOY_NAME_RE.test(name)) { await sendMsg(bt, chatId, '❌ نام سرویس نامعتبر است.'); return }
-  const res = await panelApi(env, userId, origin, '/api/render/deploy', 'POST', { token_id: tokenId, name })
+  const res = await panelApi(env, userId, origin, '/api/render/deploy', 'POST', { token_id: tokenId, name, template: tpl.slug })
   if (!res.ok) { await sendMsg(bt, chatId, `❌ استقرار Render <b>${escHtml(name)}</b> شروع نشد: ${escHtml(res.error)}`, KB([[btn('🏠 منو', 'm')]])); return }
-  const d = res.data as { deployId?: string; serviceId?: string }
+  const d = res.data as { deployId?: string; serviceId?: string; admin_username?: string | null; admin_password?: string | null }
+  let credsNote = ''
+  if (d.admin_username || d.admin_password) {
+    credsNote = `\n\n🔐 ورود پنل (یکبار):\n👤 ${escHtml(d.admin_username ?? '—')}\n🔑 <code>${escHtml(d.admin_password ?? '—')}</code>`
+  }
   await sendMsg(bt, chatId,
-    `🧊 استقرار Render <b>${escHtml(name)}</b> شروع شد با کلید <code>${escHtml(tokName)}</code>.\n` +
-    `وضعیت را دنبال می‌کنم و همین‌جا خبر می‌دهم.`,
+    `🧊 استقرار Render <b>${escHtml(name)}</b> شروع شد.\n` +
+    `${tpl.emoji} قالب: ${escHtml(tpl.label)} (<code>${tpl.repo}</code>)\n` +
+    `کلید: <code>${escHtml(tokName)}</code>` +
+    credsNote +
+    `\n\nوضعیت را دنبال می‌کنم و وقتی تمام شد لینک پنل را همین‌جا می‌فرستم.`,
     KB([[btn('📋 ورکرها', 'wk'), btn('🏠 منو', 'm')]]))
   if (d.deployId && d.serviceId) ctx.waitUntil(pollRenderDeploy(env, bt, chatId, userId, origin, tokenId, d.deployId, d.serviceId))
 }
@@ -1063,14 +1095,25 @@ async function pollRailwayDeploy(env: Env, bt: string, chatId: string | number, 
   for (let i = 0; i < 14; i++) {
     await botSleep(15000)
     await panelApi(env, userId, origin, `/api/railway/status?token_id=${encodeURIComponent(tokenId)}&deployment_id=${encodeURIComponent(deploymentId)}`, 'GET')
-    const row = await env.DB.prepare('SELECT status, url, panel_url FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ status: string; url: string | null; panel_url: string | null }>()
+    const row = await env.DB.prepare('SELECT status, url, panel_url, template, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ status: string; url: string | null; panel_url: string | null; template: string | null; admin_username: string | null; admin_password: string | null }>()
     if (!row) return
     if (row.status === 'success') {
-      const creds = await env.DB.prepare('SELECT domain, admin_username, admin_password FROM railway_deploys WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ domain: string | null; admin_username: string | null; admin_password: string | null }>()
-      const pub = row.url ?? (creds?.domain ? `https://${creds.domain}` : null)
-      const panel = row.panel_url ?? (pub ? `${pub.replace(/\/+$/, '')}/login` : null)
-      let m = `✅ <b>استقرار Railway تمام شد</b>\n\n🔗 آدرس: <code>${escHtml(pub ?? '—')}</code>\n🔐 پنل (لاگین): <code>${escHtml(panel ?? '—')}</code>`
-      if (creds?.admin_username && creds.admin_password) m += `\n\n👤 کاربر: <code>${escHtml(creds.admin_username)}</code>\n🔑 گذرواژه: <code>${escHtml(creds.admin_password)}</code>`
+      const meta = getHostedPanel(row.template ?? 'stanng')
+      let user = row.admin_username ?? null
+      let pass = row.admin_password ?? null
+      let legacyDomain: string | null = null
+      if (!user && !pass) {
+        const legacy = await env.DB.prepare('SELECT domain, admin_username, admin_password FROM railway_deploys WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ domain: string | null; admin_username: string | null; admin_password: string | null }>()
+        user = legacy?.admin_username ?? null
+        pass = legacy?.admin_password ?? null
+        legacyDomain = legacy?.domain ?? null
+      }
+      if (!user && !pass && meta.fixedCreds) { user = meta.fixedCreds.username; pass = meta.fixedCreds.password }
+      const pub = row.url ?? (legacyDomain ? `https://${legacyDomain}` : null)
+      const panel = row.panel_url ?? (pub ? `${pub.replace(/\/+$/, '')}${meta.loginPath}` : null)
+      let m = `✅ <b>استقرار Railway تمام شد — ${meta.label}</b>\n\n🔗 آدرس: <code>${escHtml(pub ?? '—')}</code>\n🔐 پنل (لاگین): <code>${escHtml(panel ?? '—')}</code>`
+      if (user || pass) m += `\n\n👤 کاربر: <code>${escHtml(user ?? '—')}</code>\n🔑 گذرواژه: <code>${escHtml(pass ?? '—')}</code>`
+      if (meta.note) m += `\n\n💡 ${escHtml(meta.note)}`
       const kbRows: Array<Array<{ text: string; u?: string; c?: string }>> = []
       if (panel) kbRows.push([{ text: '🔐 باز کردن پنل', u: panel }])
       kbRows.push([btn('🏠 منو', 'm')])
@@ -1089,10 +1132,16 @@ async function pollRenderDeploy(env: Env, bt: string, chatId: string | number, u
   for (let i = 0; i < 14; i++) {
     await botSleep(15000)
     await panelApi(env, userId, origin, `/api/render/status?token_id=${encodeURIComponent(tokenId)}&deploy_id=${encodeURIComponent(deployId)}&service_id=${encodeURIComponent(serviceId)}`, 'GET')
-    const row = await env.DB.prepare('SELECT status, url, panel_url, dashboard_url FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ status: string; url: string | null; panel_url: string | null; dashboard_url: string | null }>()
+    const row = await env.DB.prepare('SELECT status, url, panel_url, dashboard_url, template, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ status: string; url: string | null; panel_url: string | null; dashboard_url: string | null; template: string | null; admin_username: string | null; admin_password: string | null }>()
     if (!row) return
     if (row.status === 'success') {
-      let m = `✅ <b>استقرار Render تمام شد</b>\n\n🔐 پنل: <code>${escHtml(row.panel_url ?? row.url ?? '—')}</code>`
+      const meta = getHostedPanel(row.template ?? 'stanng')
+      let user = row.admin_username ?? null
+      let pass = row.admin_password ?? null
+      if (!user && !pass && meta.fixedCreds) { user = meta.fixedCreds.username; pass = meta.fixedCreds.password }
+      let m = `✅ <b>استقرار Render تمام شد — ${meta.label}</b>\n\n🔐 پنل: <code>${escHtml(row.panel_url ?? row.url ?? '—')}</code>`
+      if (user || pass) m += `\n\n👤 کاربر: <code>${escHtml(user ?? '—')}</code>\n🔑 گذرواژه: <code>${escHtml(pass ?? '—')}</code>`
+      if (meta.note) m += `\n\n💡 ${escHtml(meta.note)}`
       const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
       if (row.panel_url || row.url) rows.push([{ text: '🔐 باز کردن پنل', u: row.panel_url ?? row.url ?? '' }])
       if (row.dashboard_url) rows.push([{ text: '📊 داشبورد Render', u: row.dashboard_url }])
@@ -1108,7 +1157,6 @@ async function pollRenderDeploy(env: Env, bt: string, chatId: string | number, u
   }
   await sendMsg(bt, chatId, '⏳ استقرار Render هنوز در جریان است — چند دقیقه بعد از 📋 ورکرها وضعیت را ببینید.', KB([[btn('📋 ورکرها', 'wk'), btn('🏠 منو', 'm')]]))
 }
-
 // ── Pending text input handling ────────────────────────────────────────────
 
 async function handlePendingText(env: Env, cfg: BotConfigRow, chatId: string | number, telegramId: string, text: string, messageId: number | undefined, origin: string, ctx: ExecutionContext): Promise<void> {
@@ -1377,6 +1425,41 @@ async function handleCallback(env: Env, cfg: BotConfigRow, cq: TgCbQuery, origin
     const tok = await env.DB.prepare(`SELECT id, name FROM ${t.table} WHERE id = ? AND user_id = ? AND status = 'active'`).bind(id, cfg.user_id).first<TokenChoice>()
     if (!tok) { await sendMsg(bt, chatId, '❌ توکن فعال پیدا نشد.'); return }
     await askDeployName(env, bt, chatId, cfg.user_id, tgId, p, tok)
+    return
+  }
+
+  // ── Railway/Render deploy: catalog template picker
+  const tplMatch = data.match(/^dptpl:(rw|rd):([a-z0-9]+)$/)
+  if (tplMatch) {
+    const p = tplMatch[1] as 'rw' | 'rd'
+    const slug = tplMatch[2]
+    const meta = getHostedPanel(slug)
+    const row2 = await getBotUser(env, cfg.user_id, tgId)
+    const pend = row2 ? parsePending(row2) : null
+    if (!pend || pend.step !== (p === 'rw' ? 'dpl_rw_tpl' : 'dpl_rd_tpl')) return
+    await setPending(env, cfg.user_id, tgId, p === 'rw' ? 'dpl_rw_name' : 'dpl_rd_name', {
+      tok: pend.data.tok ?? '',
+      tokName: pend.data.tokName ?? '',
+      tpl: slug,
+    })
+    const label = PROVIDERS[p].label
+    let credsNote = ''
+    if (meta.fixedCreds) credsNote = `🔐 ورود: <code>${escHtml(meta.fixedCreds.username)}</code> / <code>${escHtml(meta.fixedCreds.password)}</code> — در اولین ورود عوض کنید\n`
+    else if (meta.credsMode === 'env-pass' || meta.credsMode === 'env-user-pass') credsNote = '🔐 کاربر/گذرواژه ادمین هنگام استقرار ساخته و همین‌جا اعلام می‌شود\n'
+    await sendMsg(bt, chatId,
+      `${meta.emoji} <b>استقرار ${label} — ${meta.label}</b>\n\n` +
+      `📦 مخزن: <code>${meta.repo}</code>\n` +
+      credsNote +
+      `${meta.desc}\n\n` +
+      `نام پروژه را بنویسید (حروف کوچک انگلیسی، عدد و خط تیره، مثل <code>my-panel</code>):`,
+      KB([[btn('🔙 قالب', p === 'rw' ? 'tplb:rw' : 'tplb:rd'), btn('🔙 توکن', prefixFor(p)), btn('✖️ انصراف', 'cnf:c')]]))
+    return
+  }
+  if (data === 'tplb:rw' || data === 'tplb:rd') {
+    const p = data === 'tplb:rw' ? ('rw' as const) : ('rd' as const)
+    const row2 = await getBotUser(env, cfg.user_id, tgId)
+    const pend = row2 ? parsePending(row2) : null
+    if (pend) await askHostedTemplate(env, bt, chatId, cfg.user_id, tgId, p, { tok: pend.data.tok ?? '', tokName: pend.data.tokName ?? '' })
     return
   }
 

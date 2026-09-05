@@ -72,6 +72,9 @@ const SCHEMA_STATEMENTS = [
     provider_deployment_id TEXT NOT NULL,
     provider_service_id TEXT,
     token_id TEXT NOT NULL,
+    template TEXT NOT NULL DEFAULT 'stanng',
+    admin_username TEXT,
+    admin_password TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -240,6 +243,9 @@ const MIGRATIONS = [
   `ALTER TABLE optimizer_jobs ADD COLUMN opt_options TEXT`,
   `ALTER TABLE bot_users ADD COLUMN pending_action TEXT`,
   `ALTER TABLE bot_users ADD COLUMN pending_data TEXT`,
+  `ALTER TABLE hosted_deployments ADD COLUMN template TEXT NOT NULL DEFAULT 'stanng'`,
+  `ALTER TABLE hosted_deployments ADD COLUMN admin_username TEXT`,
+  `ALTER TABLE hosted_deployments ADD COLUMN admin_password TEXT`,
 ]
 
 let ready: Promise<void> | null = null

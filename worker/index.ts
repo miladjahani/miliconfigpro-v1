@@ -4,6 +4,7 @@ import { handleSignup, handleLogin, handleLogout, handleMe } from './auth'
 import { runDeployment } from './deploy'
 import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiError } from './railway'
 import { verifyRenderToken, deployToRender, renderDeployStatus, RenderApiError } from './render'
+import { getHostedPanel, type HostedPanelTemplate } from './panels'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleProxyList } from './proxylist'
@@ -27,6 +28,45 @@ interface DeploymentBody {
   proxyip?: string
   admin_password?: string
   cf_token_id?: string
+}
+
+/** Generate deploy-time admin credentials + env vars for a catalog panel. */
+function buildHostedCreds(tpl: HostedPanelTemplate): {
+  username: string | null
+  password: string | null
+  env: Array<{ key: string; value: string }>
+} {
+  const gen = () => `mil${genId().replaceAll('-', '')}`.slice(0, 14)
+  const username = tpl.credsUsername ?? 'admin'
+  switch (tpl.credsMode) {
+    // StanNG: generated creds, finalized through POST /api/setup after LIVE.
+    case 'setup':
+      return { username, password: gen(), env: [] }
+    // Marzban: generated admin baked into SUDO_USERNAME / SUDO_PASSWORD env.
+    case 'env-user-pass': {
+      const password = gen()
+      return {
+        username,
+        password,
+        env: [
+          { key: tpl.credsEnv?.user ?? 'SUDO_USERNAME', value: username },
+          { key: tpl.credsEnv?.pass ?? 'SUDO_PASSWORD', value: password },
+        ],
+      }
+    }
+    // X4G: single password login (ADMIN_PASSWORD env).
+    case 'env-pass': {
+      const password = gen()
+      return { username: null, password, env: [{ key: tpl.credsEnv?.pass ?? 'ADMIN_PASSWORD', value: password }] }
+    }
+    // Heimdall / 3x-ui: creds are fixed by the repo (shown to the owner).
+    case 'fixed':
+    case 'default':
+      return { username: tpl.fixedCreds?.username ?? null, password: tpl.fixedCreds?.password ?? null, env: [] }
+    // PasarGuard: admin is created from the provider console via CLI.
+    case 'cli':
+      return { username, password: null, env: [] }
+  }
 }
 
 /** Validate the shared deployment policy before any provider API call. The
@@ -146,50 +186,59 @@ async function loadRailwayToken(env: Env, userId: string, id: string): Promise<{
     .first<{ id: string; token: string; name: string }>()
 }
 
-/** Auto-deploy StanNG v2 to Railway: create project + service (US region), start deploy. */
+/** Auto-deploy a catalog panel (StanNG, 3x-ui, Heimdall, Marzban, ...) to Railway. */
 async function handleRailwayDeploy(env: Env, userId: string, request: Request): Promise<Response> {
-  const body = safeJsonParse<{ token_id?: string; name?: string; region?: string }>(await request.text().catch(() => ''), {})
+  const body = safeJsonParse<{ token_id?: string; name?: string; region?: string; template?: string }>(await request.text().catch(() => ''), {})
   const name = String(body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام پروژه نامعتبر است')
   const region = /^[a-z0-9-]+$/.test(String(body.region ?? '')) ? String(body.region) : 'us-west2'
+  const tpl = getHostedPanel(body.template)
   const slotError = await validateDeploymentSlot(env, userId, name)
   if (slotError) return apiError(slotError, 409)
   const row = await loadRailwayToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('توکن Railway فعال انتخاب‌شده پیدا نشد', 400)
 
   try {
-    const result = await deployToRailway(row.token, name, region)
+    const creds = buildHostedCreds(tpl)
+    const result = await deployToRailway(row.token, name, tpl, region, creds.env)
+    const domainUrl = normalizeHostedUrl(result.domain)
+    const panelUrl = domainUrl ? `${domainUrl.replace(/\/+$/, '')}${tpl.loginPath}` : null
+    const adminUsername = creds.username
+    const adminPassword = creds.password
 
-    // One-time admin credentials for the StanNG panel — persisted so the status
-    // poller can finish /api/setup automatically once the deploy is live.
-    const adminUsername = 'admin'
-    const adminPassword = `mil${genId().replaceAll('-', '')}`.slice(0, 14)
-    await env.DB.prepare(
-      `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, admin_username, admin_password, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, adminUsername, adminPassword, nowIso()).run()
+    // StanNG exposes /api/setup: persist one-time admin creds so the status
+    // poller finishes panel setup automatically once the deploy is live.
+    if (tpl.credsMode === 'setup' && adminUsername && adminPassword) {
+      await env.DB.prepare(
+        `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, admin_username, admin_password, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, adminUsername, adminPassword, nowIso()).run()
+    }
 
     await env.DB.prepare(
       `INSERT INTO hosted_deployments
-       (id, user_id, provider, name, status, region, url, panel_url, dashboard_url, provider_deployment_id, provider_service_id, token_id, created_at, updated_at)
-       VALUES (?, ?, 'railway', ?, 'deploying', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, user_id, provider, name, status, region, url, panel_url, dashboard_url, provider_deployment_id, provider_service_id, token_id, template, admin_username, admin_password, created_at, updated_at)
+       VALUES (?, ?, 'railway', ?, 'deploying', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       result.deploymentId,
       userId,
       name,
       region,
-      normalizeHostedUrl(result.domain),
-      normalizeHostedUrl(result.domain) ? `${normalizeHostedUrl(result.domain)!.replace(/\/+$/, '')}/login` : null,
+      domainUrl,
+      panelUrl,
       result.projectUrl,
       result.deploymentId,
       result.serviceId,
       row.id,
+      tpl.slug,
+      adminUsername,
+      adminPassword,
       nowIso(),
       nowIso(),
     ).run()
     await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
-    await logActivity(env, userId, 'railway_deploy_started', 'deployment', name, { provider: 'railway', region })
-    return json({ data: { ...result, admin_username: adminUsername, admin_password: adminPassword } })
+    await logActivity(env, userId, 'railway_deploy_started', 'deployment', name, { provider: 'railway', region, template: tpl.slug })
+    return json({ data: { ...result, template: tpl.slug, admin_username: adminUsername, admin_password: adminPassword } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
     return apiError(msg, 400)
@@ -254,26 +303,43 @@ async function loadRenderToken(env: Env, userId: string, id: string): Promise<{ 
     .first<{ id: string; token: string; name: string }>()
 }
 
-/** Auto-deploy StanNG v2 to Render.com: create Blueprint service, start deploy. */
+/** Auto-deploy a catalog panel (StanNG, 3x-ui, Marzban, ...) to Render.com. */
 async function handleRenderDeploy(env: Env, userId: string, request: Request): Promise<Response> {
-  const body = safeJsonParse<{ token_id?: string; name?: string }>(await request.text().catch(() => ''), {})
+  const body = safeJsonParse<{ token_id?: string; name?: string; template?: string }>(await request.text().catch(() => ''), {})
   const name = String(body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام سرویس نامعتبر است')
+  const tpl = getHostedPanel(body.template)
   const slotError = await validateDeploymentSlot(env, userId, name)
   if (slotError) return apiError(slotError, 409)
   const row = await loadRenderToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('کلید API رندر انتخاب‌شده پیدا نشد', 400)
 
   try {
-    const result = await deployToRender(row.token, name)
+    const creds = buildHostedCreds(tpl)
+    const result = await deployToRender(row.token, name, tpl, creds.env)
+    const adminUsername = creds.username
+    const adminPassword = creds.password
     await env.DB.prepare(
       `INSERT INTO hosted_deployments
-       (id, user_id, provider, name, status, dashboard_url, provider_deployment_id, provider_service_id, token_id, created_at, updated_at)
-       VALUES (?, ?, 'render', ?, 'deploying', ?, ?, ?, ?, ?, ?)`,
-    ).bind(result.deployId, userId, name, result.dashboardUrl, result.deployId, result.serviceId, row.id, nowIso(), nowIso()).run()
+       (id, user_id, provider, name, status, dashboard_url, provider_deployment_id, provider_service_id, token_id, template, admin_username, admin_password, created_at, updated_at)
+       VALUES (?, ?, 'render', ?, 'deploying', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      result.deployId,
+      userId,
+      name,
+      result.dashboardUrl,
+      result.deployId,
+      result.serviceId,
+      row.id,
+      tpl.slug,
+      adminUsername,
+      adminPassword,
+      nowIso(),
+      nowIso(),
+    ).run()
     await env.DB.prepare('UPDATE render_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
-    await logActivity(env, userId, 'render_deploy_started', 'deployment', name, { provider: 'render' })
-    return json({ data: result })
+    await logActivity(env, userId, 'render_deploy_started', 'deployment', name, { provider: 'render', template: tpl.slug })
+    return json({ data: { ...result, template: tpl.slug, admin_username: adminUsername, admin_password: adminPassword } })
   } catch (err) {
     const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Render'
     return apiError(msg, 400)
@@ -291,8 +357,10 @@ async function handleRenderStatus(env: Env, userId: string, url: URL): Promise<R
   try {
     const status = await renderDeployStatus(row.token, deployId, serviceId)
     const normalized = status.status === 'LIVE' ? 'success' : ['FAILED', 'CANCELED', 'DEACTIVATED'].includes(status.status) ? 'failed' : 'deploying'
+    const meta = await env.DB.prepare('SELECT template FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ template: string }>()
+    const tpl = getHostedPanel(meta?.template)
     const publicUrl = normalizeHostedUrl(status.url)
-    const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}/login` : null
+    const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}${tpl.loginPath}` : null
     await env.DB.prepare(
       `UPDATE hosted_deployments SET status = ?, url = COALESCE(?, url), panel_url = COALESCE(?, panel_url), error_message = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`,
@@ -344,8 +412,10 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
       }
     }
     const normalized = status.status === 'SUCCESS' ? 'success' : ['FAILED', 'CRASHED', 'SKIPPED', 'REMOVED'].includes(status.status) ? 'failed' : 'deploying'
+    const meta = await env.DB.prepare('SELECT template FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ template: string }>()
+    const tpl = getHostedPanel(meta?.template)
     const publicUrl = normalizeHostedUrl(status.url)
-    const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}/login` : null
+    const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}${tpl.loginPath}` : null
     await env.DB.prepare(
       `UPDATE hosted_deployments SET status = ?, url = COALESCE(?, url), panel_url = COALESCE(?, panel_url), error_message = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`,
@@ -413,7 +483,7 @@ async function listHostedDeployments(env: Env, userId: string): Promise<Response
   }))
 
   const r = await env.DB.prepare(
-    `SELECT id, provider, name, status, region, url, panel_url, dashboard_url,
+    `SELECT id, provider, name, status, region, url, panel_url, dashboard_url, template,
             provider_deployment_id, provider_service_id, error_message, created_at, updated_at
      FROM hosted_deployments WHERE user_id = ? ORDER BY created_at DESC`,
   ).bind(userId).all()

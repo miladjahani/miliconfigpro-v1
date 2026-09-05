@@ -3,12 +3,16 @@
  *
  * Railway exposes its dashboard API at https://backboard.railway.com/graphql/v2.
  * Account/workspace tokens authenticate via `Authorization: Bearer <token>`.
- * We use it to auto-deploy the public StanNG v2 repo (youdidking/stanngv2) into
- * a brand-new Railway project, exactly like the Cloudflare flow creates workers:
+ * We use it to auto-deploy any panel repo from the catalog (worker/panels.ts,
+ * e.g. youdidking/stanngv2, x4gpanell/3x-ui, x4gpanell/Marzban, ...) into a
+ * brand-new Railway project, exactly like the Cloudflare flow creates workers:
  *
  *   projectCreate → default environment → serviceCreate (source = GitHub repo)
- *   → PORT variable → serviceInstanceDeployV2 → poll deployment(id) until SUCCESS
+ *   → PORT variable + template env vars → serviceInstanceDeployV2 →
+ *   poll deployment(id) until SUCCESS
  */
+
+import type { HostedPanelTemplate } from './panels'
 
 export class RailwayApiError extends Error {
   constructor(message: string) {
@@ -77,16 +81,22 @@ export interface RailwayDeployResult {
   domain?: string | null
 }
 
-const STANNG_REPO = 'youdidking/stanngv2'
-const STANNG_PORT = '8000'
-
 interface EnvEdge { node?: { id?: string; name?: string } }
 
 /**
- * Create a Railway project from the public StanNG repo and trigger a deploy.
+ * Create a Railway project from a catalog panel repo and trigger a deploy.
  * Returns the resource ids + a dashboard link to the new project.
+ *
+ * `extraEnv` carries deploy-time variables whose values are only known now
+ * (e.g. generated admin credentials), merged after the template's static env.
  */
-export async function deployToRailway(token: string, projectName: string, region = 'us-west2'): Promise<RailwayDeployResult> {
+export async function deployToRailway(
+  token: string,
+  projectName: string,
+  template: HostedPanelTemplate,
+  region = 'us-west2',
+  extraEnv: Array<{ key: string; value: string }> = [],
+): Promise<RailwayDeployResult> {
   // 0. The live API requires a workspaceId on projectCreate — resolve the
   //    token's first workspace via `me { workspaces }`. Tolerate both the
   //    direct-list and Relay (edges/node) response shapes.
@@ -137,15 +147,15 @@ export async function deployToRailway(token: string, projectName: string, region
         projectId,
         environmentId,
         name: projectName,
-        branch: 'main',
-        source: { repo: STANNG_REPO },
+        branch: template.branch,
+        source: { repo: template.repo },
       },
     },
   )
   const serviceId = (svc.serviceCreate as { id?: string } | undefined)?.id
   if (!serviceId) {
     throw new RailwayApiError(
-      'اتصال مخزن StanNG به Railway ناموفق بود. مطمئن شوید حساب GitHub شما در Railway متصل است (Railway → Account Settings → GitHub)، سپس دوباره تلاش کنید.',
+      `اتصال مخزن ${template.repo} به Railway ناموفق بود. مطمئن شوید حساب GitHub شما در Railway متصل است (Railway → Account Settings → GitHub)، سپس دوباره تلاش کنید.`,
     )
   }
 
@@ -171,13 +181,16 @@ export async function deployToRailway(token: string, projectName: string, region
     /* the domain can still be generated later from the dashboard */
   }
 
-  // 4. Pin PORT so the container listens where Railway expects it
-  //    (entrypoint.sh defaults to 8000 already — this makes it explicit).
-  await gql(
-    token,
-    'mutation ($input: VariableUpsertInput!) { variableUpsert(input: $input) }',
-    { input: { projectId, environmentId, serviceId, name: 'PORT', value: STANNG_PORT } },
-  ).catch(() => null)
+  // 4. Pin PORT so the container listens where Railway expects it, then apply
+  //    the template's static env vars plus any deploy-time values.
+  const envs = [...(template.envVars ?? []), { key: 'PORT', value: template.port }, ...extraEnv]
+  for (const e of envs) {
+    await gql(
+      token,
+      'mutation ($input: VariableUpsertInput!) { variableUpsert(input: $input) }',
+      { input: { projectId, environmentId, serviceId, name: e.key, value: e.value } },
+    ).catch(() => null)
+  }
 
   // 5. Trigger the deploy. Returns the deployment id (string).
   const dep = await gql(
