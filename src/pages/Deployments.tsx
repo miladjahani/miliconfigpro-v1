@@ -61,7 +61,8 @@ interface EdgeConfig {
 }
 
 interface ScanResult {
-  ip: string; latencyMs: number | null; status: 'ok' | 'timeout' | 'error'
+  ip: string; latencyMs: number | null; tcpLatencyMs?: number | null; httpLatencyMs?: number | null; speedMbps?: number
+  status: 'ok' | 'timeout' | 'error'; verified?: boolean; verification?: string
   region?: string; type: 'cloudflare' | 'clean' | 'proxy'; source: string
   port?: number; protocol?: string; proxy?: string
 }
@@ -1201,6 +1202,7 @@ function ScannerTab() {
   const [ranges, setRanges] = useState('')
   const [ports, setPorts] = useState('443')
   const [includeProxies, setIncludeProxies] = useState(false)
+  const [runSpeedTest, setRunSpeedTest] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [results, setResults] = useState<ScanResult[]>([])
   const [proxies, setProxies] = useState<ScanResult[]>([])
@@ -1231,8 +1233,8 @@ function ScannerTab() {
       const scanPromise = api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string; scanned?: number }>('/ip-scanner', {
         method: 'POST',
         body: scanMode === 'ranges'
-          ? { mode: 'ranges', ranges, ports, count: 50, timeout: 2500 }
-          : { type: scanType, count: 30, includeProxies },
+          ? { mode: 'ranges', ranges, ports, count: 50, timeout: 2500, speedtest: runSpeedTest }
+          : { type: scanType, count: 30, includeProxies, speedtest: runSpeedTest },
       })
       const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('اسکن بیش از حد طول کشید — دوباره تلاش کنید')), 45000))
       const data = await Promise.race([scanPromise, timeoutPromise])
@@ -1352,6 +1354,9 @@ function ScannerTab() {
         </div>
         )}
 
+        <div className="mb-3">
+          <Toggle checked={runSpeedTest} onChange={() => setRunSpeedTest(!runSpeedTest)} label="تست سرعت واقعی (دانلود روی ۱۰ IP برتر — چند ثانیه بیشتر)" />
+        </div>
         <div className="mb-4">
           <Toggle checked={includeProxies} onChange={() => setIncludeProxies(!includeProxies)} label="دریافت لیست پروکسی از EDT-Pages/Proxy-List (HTTPS, SOCKS5, HTTP)" />
         </div>
@@ -1435,7 +1440,9 @@ function ScannerTab() {
                   <th className="text-right p-3 w-8"></th>
                   <th className="text-right p-3">IP</th>
                   <th className="text-right p-3">نوع</th>
-                  <th className="text-right p-3">Ping</th>
+                  <th className="text-right p-3">Ping TCP</th>
+                  <th className="text-right p-3">وضعیت</th>
+                  {runSpeedTest && <th className="text-right p-3">سرعت</th>}
                   <th className="text-right p-3">منطقه</th>
                   <th className="text-right p-3">منبع</th>
                   <th className="text-right p-3"></th>
@@ -1460,6 +1467,24 @@ function ScannerTab() {
                         </span>
                       ) : <span className="text-sm text-slate-500">—</span>}
                     </td>
+                    <td className="p-3">
+                      {r.verified === false ? (
+                        <span className="badge text-xs bg-amber-500/10 text-amber-400" title={r.verification ?? ''}>{r.verification ?? 'تأییدنشده'}</span>
+                      ) : (
+                        <span className="badge text-xs bg-green-500/10 text-green-400" title={r.verification ?? ''}>
+                          {r.httpLatencyMs != null && r.verified ? `HTTPS ${r.httpLatencyMs} ms` : 'TCP ✓'}
+                        </span>
+                      )}
+                    </td>
+                    {runSpeedTest && (
+                      <td className="p-3">
+                        {r.speedMbps != null && r.speedMbps > 0 ? (
+                          <span className={`text-sm font-medium ${r.speedMbps >= 10 ? 'text-green-400' : r.speedMbps >= 3 ? 'text-warning-400' : 'text-error-400'}`}>
+                            {r.speedMbps >= 1000 ? `${(r.speedMbps / 1000).toFixed(1)} Gbps` : `${r.speedMbps.toFixed(1)} Mbps`}
+                          </span>
+                        ) : <span className="text-sm text-slate-500">—</span>}
+                      </td>
+                    )}
                     <td className="p-3"><span className="text-sm text-slate-300" dir="ltr">{r.region ?? '—'}</span></td>
                     <td className="p-3"><span className="text-xs text-slate-500 truncate max-w-[120px] block" dir="ltr">{r.source}</span></td>
                     <td className="p-3">
@@ -1492,7 +1517,7 @@ function ScannerTab() {
                   <th className="text-right p-3">آدرس پروکسی</th>
                   <th className="text-right p-3">پروتکل</th>
                   <th className="text-right p-3">کشور</th>
-                  <th className="text-right p-3">سازمان</th>
+                  <th className="text-right p-3">Ping (واقعی)</th>
                   <th className="text-right p-3"></th>
                 </tr>
               </thead>
@@ -1506,7 +1531,13 @@ function ScannerTab() {
                       </span>
                     </td>
                     <td className="p-3"><span className="text-sm text-slate-300" dir="ltr">{p.region ?? '—'}</span></td>
-                    <td className="p-3"><span className="text-xs text-slate-500">{(p as unknown as Record<string, unknown>).asOrganization as string ?? '—'}</span></td>
+                    <td className="p-3">
+                      {p.latencyMs != null ? (
+                        <span className={`text-sm font-medium ${p.latencyMs < 300 ? 'text-green-400' : p.latencyMs < 800 ? 'text-warning-400' : 'text-error-400'}`}>
+                          {p.latencyMs} ms
+                        </span>
+                      ) : <span className="text-sm text-slate-500">—</span>}
+                    </td>
                     <td className="p-3">
                       <button onClick={() => navigator.clipboard?.writeText(p.proxy ?? '')}
                         className="p-1.5 rounded-lg bg-slate-700/30 text-slate-400 hover:text-white transition-all">

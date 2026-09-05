@@ -837,7 +837,7 @@ async function handleRouted(
       return await handleSourceNodes(env, user.id, path.split('/')[3])
     }
     if (path === '/api/ip-scanner' && method === 'POST') {
-      const body = safeJsonParse<{ mode?: string; ranges?: string; ports?: string; count?: number; timeout?: number }>(await request.text().catch(() => ''), {})
+      const body = safeJsonParse<{ mode?: string; ranges?: string; ports?: string; count?: number; timeout?: number; speedtest?: boolean }>(await request.text().catch(() => ''), {})
       if (body.mode === 'ranges') return await handleRangeScan(body)
       return await handleIpScanner(body)
     }

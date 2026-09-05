@@ -1,5 +1,5 @@
 import type { Env } from './env'
-import { genId, nowIso } from './util'
+import { createSession, genId, nowIso } from './util'
 
 interface TgUser { id: number; username?: string; first_name?: string; last_name?: string }
 interface TgMessage { chat: { id: number }; from?: TgUser; text?: string }
@@ -40,8 +40,13 @@ async function getActiveConfig(env: Env): Promise<BotConfigRow | null> {
  *  Telegram echoes back the secret_token we registered via setWebhook in the
  *  X-Telegram-Bot-Api-Secret-Token header — use it to route precisely, so a
  *  stale or other user's active row can never swallow this bot's updates.
- *  Falls back to the legacy "first active row" for hooks registered before
- *  secrets existed (they self-heal on the next save/reconnect). */
+ *
+ *  Self-heal rule: when the secret matches nothing but exactly ONE active bot
+ *  exists in the whole DB, the update is still for that bot — a common case
+ *  when a hook was re-registered (redeploy, second panel, manual setWebhook)
+ *  and the stored secret went stale. Routing to the only bot is unambiguous.
+ *  With several active bots and no secret match the identity claim cannot be
+ *  verified, so the update is dropped instead of mis-routed. */
 async function resolveConfig(env: Env, request: Request): Promise<BotConfigRow | null> {
   const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
   if (secret) {
@@ -49,9 +54,8 @@ async function resolveConfig(env: Env, request: Request): Promise<BotConfigRow |
       'SELECT id, user_id, bot_token, is_active, welcome_message, chat_id FROM bot_config WHERE webhook_secret = ? AND is_active = 1 LIMIT 1',
     ).bind(secret).first<BotConfigRow>()
     if (bySecret) return bySecret
-    // A secret header is an explicit identity claim. Never fall back to an
-    // unrelated active bot when it does not match, otherwise one bot's update
-    // could be processed under another account.
+    const actives = await env.DB.prepare('SELECT COUNT(*) AS c FROM bot_config WHERE is_active = 1').first<{ c: number }>()
+    if ((actives?.c ?? 0) === 1) return getActiveConfig(env)
     return null
   }
   return getActiveConfig(env)
@@ -203,6 +207,51 @@ async function sendOptimizerList(env: Env, bt: string, chatId: number | string, 
   await sendMsg(bt, chatId, m)
 }
 
+/** Start a real Cloudflare worker deployment straight from Telegram.
+ *  Reuses the panel's own /api/deployments route (same origin as the webhook)
+ *  with a short-lived session, so name/quota validation, KV/R2 creation and
+ *  the automatic completion push (notifyDeployment) all behave exactly like
+ *  the web panel. */
+async function botDeploy(env: Env, bt: string, chatId: string | number, userId: string, rawName: string, origin: string): Promise<void> {
+  const name = rawName.trim().toLowerCase()
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+    await sendMsg(bt, chatId, '❌ نام ورکر نامعتبر است — فقط حروف کوچک انگلیسی، عدد و خط تیره. نمونه: <code>/deploy my-worker</code>')
+    return
+  }
+  const tokenRow = await env.DB.prepare("SELECT id FROM cf_tokens WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1")
+    .bind(userId).first<{ id: string }>()
+  if (!tokenRow) {
+    await sendMsg(bt, chatId, '🔑 توکن Cloudflare فعالی برای استقرار نیست — اول از پنل وب (بخش توکن‌ها) یک توکن با دسترسی Workers Scripts و KV اضافه کنید.')
+    return
+  }
+  const session = await createSession(env, userId)
+  let errorText = ''
+  try {
+    const resp = await fetch(`${origin}/api/deployments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({
+        name,
+        uuid: crypto.randomUUID(),
+        method: 'workers',
+        worker_source: 'edgetunnel',
+        cf_token_id: tokenRow.id,
+      }),
+    })
+    const data = await resp.json().catch(() => null) as { error?: string } | null
+    if (resp.ok) {
+      await sendMsg(bt, chatId, `🚀 استقرار <b>${name}</b> شروع شد — ساخت KV، اتصال D1 و فعال‌سازی gRPC/WebSocket خودکار انجام می‌شود. وقتی تمام شد نتیجه را همین‌جا می‌فرستم.`)
+      return
+    }
+    errorText = data?.error ?? `خطای سرور (HTTP ${resp.status})`
+  } catch {
+    errorText = 'ارتباط با سرور پنل برقرار نشد'
+  } finally {
+    await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(session.token).run().catch(() => null)
+  }
+  await sendMsg(bt, chatId, `❌ استقرار <b>${name}</b> شروع نشد: ${errorText}`)
+}
+
 async function findWorker(env: Env, userId: string, rawName: string) {
   const wn = rawName.toLowerCase().replace(/[^a-z0-9-]/g, '')
   return env.DB.prepare('SELECT id, name, status, worker_url, panel_url, uuid, custom_path FROM deployments WHERE user_id = ? AND name = ?')
@@ -210,8 +259,50 @@ async function findWorker(env: Env, userId: string, rawName: string) {
     .first<{ id: string; name: string; status: string; worker_url: string | null; panel_url: string | null; uuid: string | null; custom_path: string | null }>()
 }
 
+/** List the user's group subscriptions with live links. */
+async function sendGroups(env: Env, bt: string, chatId: string | number, userId: string, origin: string): Promise<void> {
+  const gs = await env.DB.prepare('SELECT name, sub_token, format FROM sub_groups WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').bind(userId).all<{ name: string; sub_token: string; format: string }>()
+  if (!gs.results.length) { await sendMsg(bt, chatId, '📚 هنوز ساب گروهی ساخته نشده — از پنل وب بخش «ساب گروهی» بسازید.'); return }
+  const labels: Record<string, string> = { base64: 'Base64', plain: 'متن ساده', clash: 'Clash Meta', singbox: 'Sing-Box' }
+  let m = '📚 <b>ساب‌های گروهی:</b>\n\n'
+  for (const g of gs.results) m += `📦 <b>${g.name || 'بدون نام'}</b> · ${labels[g.format] ?? 'Base64'}\n🔗 <code>${origin}/api/sub/group/${g.sub_token}</code>\n\n`
+  await sendMsg(bt, chatId, m)
+}
+
+/** Pick a worker to inspect members for. */
+async function sendMemberHelp(env: Env, bt: string, chatId: string | number, userId: string): Promise<void> {
+  const ws = await env.DB.prepare("SELECT name FROM deployments WHERE user_id = ? AND status = 'deployed' ORDER BY created_at DESC LIMIT 10").bind(userId).all<{ name: string }>()
+  if (!ws.results.length) { await sendMsg(bt, chatId, '👥 ورکر مستقر شده‌ای نیست — اول یک ورکر مستقر کنید.'); return }
+  let m = '👥 <b>کاربران</b> — نام ورکر را انتخاب و بنویسید:\n\n'
+  for (const w of ws.results) m += `<code>/members ${w.name}</code>\n`
+  m += '\nساخت کاربر جدید از پنل وب (تب کاربران) انجام می‌شود؛ اینجا وضعیت و سهمیه کاربران را می‌بینید.'
+  await sendMsg(bt, chatId, m)
+}
+
+/** Show members of one deployed worker with live status links. */
+async function sendMembers(env: Env, bt: string, chatId: string | number, userId: string, workerName: string, origin: string): Promise<void> {
+  const w = await findWorker(env, userId, workerName)
+  if (!w) { await sendMsg(bt, chatId, `❌ <code>${workerName}</code> پیدا نشد.`); return }
+  const rows = await env.DB.prepare(
+    `SELECT m.name, m.enabled, m.used_bytes, m.quota_bytes, m.expires_at, m.token
+     FROM worker_members m JOIN deployments d ON d.id = m.deployment_id
+     WHERE d.user_id = ? AND d.name = ? ORDER BY m.created_at DESC LIMIT 15`,
+  ).bind(userId, w.name).all<{ name: string; enabled: number; used_bytes: number; quota_bytes: number | null; expires_at: string | null; token: string }>()
+  if (!rows.results.length) { await sendMsg(bt, chatId, `👥 <code>${w.name}</code> هنوز کاربری ندارد — از پنل وب بسازید.`); return }
+  let m = `👥 <b>${w.name}</b> — ${rows.results.length} کاربر\n\n`
+  for (const r of rows.results) {
+    const gb = (n: number) => `${Math.round((n / 1073741824) * 100) / 100} GB`
+    const quota = r.quota_bytes != null ? gb(r.quota_bytes) : 'نامحدود'
+    const used = gb(r.used_bytes ?? 0)
+    const exp = r.expires_at ? new Date(r.expires_at).toLocaleDateString('fa-IR') : 'بدون انقضا'
+    m += `${r.enabled ? '🟢' : '🔴'} <b>${r.name}</b> — ${used} از ${quota} · انقضا: ${exp}\n🔗 <code>${origin}/status/${r.token}</code>\n\n`
+  }
+  await sendMsg(bt, chatId, m)
+}
+
 export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, request: Request): Promise<Response> {
   const ok = () => new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
+  const origin = new URL(request.url).origin
   let update: TgUpdate
   try {
     update = (await request.json()) as TgUpdate
@@ -231,9 +322,15 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     else if (cq.data === 'workers') ctx.waitUntil(sendWorkers(env, cfg.bot_token, chatId, cfg.user_id))
     else if (cq.data === 'configs') ctx.waitUntil(sendConfigs(env, cfg.bot_token, chatId, cfg.user_id))
     else if (cq.data === 'optimizer') ctx.waitUntil(sendOptimizerList(env, cfg.bot_token, chatId, cfg.user_id))
+    else if (cq.data === 'deploy') {
+      ctx.waitUntil(sendMsg(cfg.bot_token, chatId, '🚀 استقرار ورکر — نام دلخواه خود را بفرستید:\n\n<code>/deploy my-worker</code>\n\nبا اولین توکن Cloudflare فعال شما و سورس پیش‌فرض (edgetunnel) مستقر می‌شود و وقتی تمام شد نتیجه را همین‌جا می‌فرستم.'))
+    }
     else if (cq.data?.startsWith('w:')) {
       ctx.waitUntil(sendWorkerDetail(env, cfg.bot_token, chatId, cfg.user_id, cq.data.slice(2)))
     }
+    else if (cq.data === 'groups') ctx.waitUntil(sendGroups(env, cfg.bot_token, chatId, cfg.user_id, origin))
+    else if (cq.data === 'members') ctx.waitUntil(sendMemberHelp(env, cfg.bot_token, chatId, cfg.user_id))
+    else ctx.waitUntil(sendMsg(cfg.bot_token, chatId, 'این دکمه فعلاً در دسترس نیست — <code>/help</code> را بفرستید.'))
     return ok()
   }
 
@@ -259,7 +356,8 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     inline_keyboard: [
       [{ text: '🚀 استقرار ورکر', callback_data: 'deploy' }, { text: '📊 وضعیت', callback_data: 'status' }],
       [{ text: '📋 ورکرها', callback_data: 'workers' }, { text: '🔗 کانفیگ‌ها', callback_data: 'configs' }],
-      [{ text: '⚡ ساب‌های بهینه', callback_data: 'optimizer' }],
+      [{ text: '⚡ ساب‌های بهینه', callback_data: 'optimizer' }, { text: '📚 ساب‌های گروهی', callback_data: 'groups' }],
+      [{ text: '👥 کاربران', callback_data: 'members' }],
     ],
   }
 
@@ -272,6 +370,12 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     await sendWorkers(env, bt, chatId, cfg.user_id)
   } else if (text.startsWith('/configs')) {
     await sendConfigs(env, bt, chatId, cfg.user_id)
+  } else if (text === '/groups') {
+    await sendGroups(env, bt, chatId, cfg.user_id, origin)
+  } else if (text.startsWith('/members')) {
+    const parts = text.split(/\s+/)
+    if (parts.length < 2) await sendMemberHelp(env, bt, chatId, cfg.user_id)
+    else await sendMembers(env, bt, chatId, cfg.user_id, parts.slice(1).join('-'), origin)
   } else if (text === '/tokens') {
     const ts = await env.DB.prepare('SELECT name, status FROM cf_tokens WHERE user_id = ? ORDER BY created_at DESC').bind(cfg.user_id).all<{ name: string; status: string }>()
     if (!ts.results.length) { await sendMsg(bt, chatId, '🔑 هنوز توکنی اضافه نشده.') }
@@ -342,12 +446,12 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
   } else if (text.startsWith('/deploy')) {
     const parts = text.split(/\s+/)
     if (parts.length < 2) { await sendMsg(bt, chatId, '🚀 استفاده: <code>/deploy my-worker</code>') }
-    else if (!(await checkIsAdmin(env, cfg.user_id, telegramId))) { await sendMsg(bt, chatId, '⛔ فقط ادمین. از پنل استقرار دهید.') }
+    else if (!(await checkIsAdmin(env, cfg.user_id, telegramId))) { await sendMsg(bt, chatId, '⛔ فقط ادمین. از پنل وب استقرار دهید.') }
     else {
-      await sendMsg(bt, chatId, '🚀 استقرار از طریق ربات غیرفعال است — لطفاً از پنل وب استفاده کنید.')
+      await botDeploy(env, bt, chatId, cfg.user_id, parts.slice(1).join('-'), origin)
     }
   } else if (text === '/help') {
-    await sendMsg(bt, chatId, '📖 <b>دستورات:</b>\n\n/start - شروع\n/workers - ورکرها\n/config &lt;name&gt; - کانفیگ\n/sub [name] - ساب\n/panel [name] - پنل\n/status - وضعیت\n/tokens - توکن‌ها\n/help - راهنما')
+    await sendMsg(bt, chatId, '📖 <b>دستورات:</b>\n\n/deploy &lt;name&gt; - استقرار ورکر جدید\n/workers - لیست ورکرها\n/config &lt;name&gt; - کانفیگ\n/sub [name] - ساب\n/panel [name] - پنل\n/groups - ساب‌های گروهی\n/members [worker] - کاربران هر ورکر\n/set &lt;worker&gt; &lt;key&gt; &lt;value&gt; - تغییر path/proxyip/region/homepage\n/status - وضعیت سرویس‌ها\n/tokens - توکن‌های کلودفلر\n/help - راهنما')
   } else {
     await sendMsg(bt, chatId, 'متوجه نشدم. /help را بفرست.')
   }

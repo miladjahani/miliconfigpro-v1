@@ -1,9 +1,14 @@
 import { apiError, json } from './util'
-import { expandRanges, probeBatch } from './net'
+import { expandRanges, probeBatch, tcpProbe } from './net'
+import { coloProbe, measureSpeed, runWithConcurrency } from './probe'
+import { connect } from 'cloudflare:sockets'
 
 interface ScanResult {
   ip: string
   latencyMs: number | null
+  tcpLatencyMs?: number | null
+  httpLatencyMs?: number | null
+  speedMbps?: number
   status: 'ok' | 'timeout' | 'error'
   region?: string
   type: 'cloudflare' | 'clean' | 'proxy'
@@ -11,6 +16,10 @@ interface ScanResult {
   port?: number
   protocol?: string
   proxy?: string
+  username?: string
+  password?: string
+  verified?: boolean
+  verification?: string
 }
 
 const FALLBACK_CF_IPS = [
@@ -19,23 +28,48 @@ const FALLBACK_CF_IPS = [
   '162.159.0.2', '1.1.1.1', '1.0.0.1',
 ]
 
-async function probeIP(ip: string, type: 'cloudflare' | 'clean' | 'proxy', source: string, timeoutMs = 5000): Promise<ScanResult> {
+async function probeIP(ip: string, type: 'cloudflare' | 'clean' | 'proxy', source: string, timeoutMs = 3500): Promise<ScanResult> {
   const controller = new AbortController()
   const tid = setTimeout(() => controller.abort(), timeoutMs)
-  const t0 = Date.now()
   try {
-    const r = await fetch(`https://${ip}/cdn-cgi/trace`, {
-      signal: controller.signal,
-      headers: { Host: 'speed.cloudflare.com' },
-      redirect: 'manual',
-    })
+    // This is a server-side TCP handshake, so it works identically for mobile,
+    // desktop and Windows browsers; the browser never attempts ICMP/CORS.
+    const tcp = await tcpProbe(ip, 443, timeoutMs)
+    if (tcp === null) {
+      return { ip, latencyMs: null, tcpLatencyMs: null, status: controller.signal.aborted ? 'timeout' : 'error', type, source, verified: false, verification: 'TCP unreachable' }
+    }
+
+    if (type === 'cloudflare') {
+      // Resolve the TLS request to the candidate IP while keeping valid SNI.
+      // A successful trace is stronger than an open port: it confirms a real
+      // Cloudflare edge response and gives us the actual colo.
+      const colo = await coloProbe(ip, timeoutMs)
+      return {
+        ip,
+        latencyMs: tcp,
+        tcpLatencyMs: tcp,
+        httpLatencyMs: colo.latency,
+        status: 'ok',
+        region: colo.colo ?? undefined,
+        type,
+        source,
+        verified: colo.status === 'ok',
+        verification: colo.status === 'ok' ? 'TCP + Cloudflare HTTPS verified' : 'TCP reachable; HTTPS not verified',
+      }
+    }
+
+    return {
+      ip,
+      latencyMs: tcp,
+      tcpLatencyMs: tcp,
+      status: 'ok',
+      type,
+      source,
+      verified: true,
+      verification: 'TCP reachable',
+    }
+  } finally {
     clearTimeout(tid)
-    const text = await r.text().catch(() => '')
-    const coloMatch = text.match(/colo=([A-Z]{3})/)
-    return { ip, latencyMs: Date.now() - t0, status: 'ok', region: coloMatch ? coloMatch[1] : undefined, type, source }
-  } catch {
-    clearTimeout(tid)
-    return { ip, latencyMs: null, status: controller.signal.aborted ? 'timeout' : 'error', type, source }
   }
 }
 
@@ -90,7 +124,7 @@ async function fetchProxyList(protocol: 'https' | 'socks5' | 'http'): Promise<Sc
     if (!Array.isArray(data)) return []
     return (data as Array<Record<string, unknown>>)
       .filter((item) => item?.ip && item?.port)
-      .slice(0, 30)
+      .slice(0, 20)
       .map((item) => ({
         ip: String(item.ip),
         latencyMs: null,
@@ -105,6 +139,79 @@ async function fetchProxyList(protocol: 'https' | 'socks5' | 'http'): Promise<Sc
   } catch {
     return []
   }
+}
+
+interface ProxyProbe {
+  latencyMs: number | null
+  status: 'ok' | 'error'
+  verification: string
+}
+
+async function probeProxy(proxy: ScanResult, timeoutMs = 3000): Promise<ProxyProbe> {
+  if (!proxy.port || !proxy.protocol) return { latencyMs: null, status: 'error', verification: 'پروتکل یا پورت نامعتبر' }
+  const started = Date.now()
+  let socket: ReturnType<typeof connect> | null = null
+  try {
+    const protocol = proxy.protocol.toLowerCase()
+    socket = connect(`${proxy.ip}:${proxy.port}`, {
+      secureTransport: protocol === 'https' ? 'on' : 'off',
+      allowUntrustedTls: true,
+    })
+    const opened = await Promise.race([
+      socket.opened.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ])
+    if (!opened) return { latencyMs: null, status: 'error', verification: 'اتصال TCP timeout' }
+
+    const reader = socket.readable.getReader()
+    const writer = socket.writable.getWriter()
+    try {
+      if (protocol === 'socks5') {
+        await writer.write(new Uint8Array([5, 1, 0]))
+        const first = await Promise.race([
+          reader.read().then((r) => r.value ?? null),
+          new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+        ])
+        if (!first || first[0] !== 5 || (first[1] !== 0 && first[1] !== 2)) {
+          return { latencyMs: null, status: 'error', verification: 'پاسخ SOCKS5 نامعتبر' }
+        }
+        return { latencyMs: Date.now() - started, status: 'ok', verification: first[1] === 0 ? 'SOCKS5 handshake verified' : 'SOCKS5 reachable; auth required' }
+      }
+
+      const auth = proxy.username
+        ? `Proxy-Authorization: Basic ${btoa(`${proxy.username}:${proxy.password ?? ''}`)}\r\n`
+        : ''
+      await writer.write(new TextEncoder().encode(`CONNECT cloudflare.com:443 HTTP/1.1\r\nHost: cloudflare.com:443\r\n${auth}Connection: close\r\n\r\n`))
+      const first = await Promise.race([
+        reader.read().then((r) => r.value ?? null),
+        new Promise<Uint8Array | null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+      ])
+      const text = first ? new TextDecoder().decode(first) : ''
+      if (!/^HTTP\/\d(?:\.\d)?\s+\d{3}/i.test(text)) {
+        return { latencyMs: null, status: 'error', verification: 'پاسخ HTTP proxy نامعتبر' }
+      }
+      const statusCode = Number(text.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})/i)?.[1] ?? 0)
+      if (statusCode < 200 || statusCode >= 300) {
+        return { latencyMs: null, status: 'error', verification: `HTTP proxy پاسخ ${statusCode}` }
+      }
+      return { latencyMs: Date.now() - started, status: 'ok', verification: 'HTTP CONNECT handshake verified' }
+    } finally {
+      reader.releaseLock()
+      writer.releaseLock()
+    }
+  } catch {
+    return { latencyMs: null, status: 'error', verification: 'proxy handshake failed' }
+  } finally {
+    try { socket?.close() } catch { /* already closed */ }
+  }
+}
+
+async function verifyProxyList(items: ScanResult[]): Promise<ScanResult[]> {
+  const checked = await runWithConcurrency(items, 10, async (proxy) => {
+    const result = await probeProxy(proxy)
+    return { ...proxy, latencyMs: result.latencyMs, status: result.status === 'ok' ? 'ok' as const : 'error' as const, verified: result.status === 'ok', verification: result.verification }
+  })
+  return checked.filter((proxy) => proxy.status === 'ok').sort((a, b) => (a.latencyMs ?? 99999) - (b.latencyMs ?? 99999)).slice(0, 50)
 }
 
 /** Official Cloudflare ranges (always available) — expands CIDRs into a
@@ -152,6 +259,7 @@ export async function handleRangeScan(body: {
   ports?: string
   count?: number
   timeout?: number
+  speedtest?: boolean
 }): Promise<Response> {
   const ranges = (body.ranges ?? '').split(/[\n,]/).map((r) => r.trim()).filter(Boolean).slice(0, 8)
   if (!ranges.length) return apiError('حداقل یک بازه IP وارد کنید (مثلاً 104.16.0.0/24)')
@@ -168,7 +276,7 @@ export async function handleRangeScan(body: {
   const targets = ips.flatMap((ip) => ports.map((port) => ({ host: ip, port, ip })))
   const probed = await probeBatch(targets, 20, Math.min(Math.max(body.timeout ?? 2500, 500), 5000))
 
-  const ok = probed
+  const ok: ScanResult[] = probed
     .filter((p) => p.latencyMs !== null)
     .sort((a, b) => (a.latencyMs ?? 99999) - (b.latencyMs ?? 99999))
     .slice(0, Math.min(Math.max(body.count ?? 50, 1), 200))
@@ -176,10 +284,21 @@ export async function handleRangeScan(body: {
       ip: p.ip,
       port: p.port,
       latencyMs: p.latencyMs,
+      tcpLatencyMs: p.latencyMs,
       status: 'ok' as const,
       type: 'cloudflare' as const,
       source: 'tcp-scan',
+      verified: true,
+      verification: 'TCP reachable',
     }))
+
+  if (body.speedtest && ok.length > 0) {
+    const speedTargets = ok.slice(0, 10)
+    const speeds = await runWithConcurrency(speedTargets, 3, (item) => measureSpeed(item.ip, 1_000_000, 8000))
+    speeds.forEach((speed, index) => {
+      speedTargets[index]!.speedMbps = speed.mbps
+    })
+  }
 
   return json({
     success: ok.length > 0,
@@ -189,7 +308,7 @@ export async function handleRangeScan(body: {
   })
 }
 
-export async function handleIpScanner(body: { type?: string; count?: number; includeProxies?: boolean }): Promise<Response> {
+export async function handleIpScanner(body: { type?: string; count?: number; includeProxies?: boolean; speedtest?: boolean }): Promise<Response> {
   const type = body.type === 'clean' ? 'clean' : 'cloudflare'
   const safeCount = Math.min(Math.max(5, body.count ?? 30), 50)
 
@@ -230,10 +349,18 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
     allResults.push(...(await Promise.all(batch.map((c) => probeIP(c.ip, c.type, c.source)))))
   }
 
-  const sorted = allResults
-    .filter((r) => r.status === 'ok' && r.latencyMs !== null)
+  const sorted: ScanResult[] = allResults
+    .filter((r) => r.status === 'ok' && r.latencyMs !== null && (type !== 'cloudflare' || r.verified === true))
     .sort((a, b) => (a.latencyMs ?? 9999) - (b.latencyMs ?? 9999))
     .slice(0, safeCount)
+
+  if (body.speedtest && sorted.length > 0) {
+    const speedTargets = sorted.slice(0, 10)
+    const speeds = await runWithConcurrency(speedTargets, 3, (item) => measureSpeed(item.ip, 1_000_000, 8000))
+    speeds.forEach((speed, index) => {
+      speedTargets[index]!.speedMbps = speed.mbps
+    })
+  }
 
   let proxies: ScanResult[] = []
   if (body.includeProxies) {
@@ -248,20 +375,22 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
       list.map((p) => ({
         ip: p.ip,
         latencyMs: null,
-        status: 'ok' as const,
+        status: 'error' as const,
         type: 'proxy' as const,
         source,
         port: p.port,
         protocol,
         proxy: `${protocol}://${p.ip}:${p.port}`,
+        verified: false,
+        verification: 'در انتظار بررسی پروتکل',
       }))
-    proxies = [
+    proxies = await verifyProxyList([
       ...httpsProxies,
       ...socks5Proxies,
       ...httpProxies,
       ...mapToResult(speedxHttp, 'http', 'TheSpeedX/PROXY-List'),
       ...mapToResult(speedxSocks, 'socks5', 'TheSpeedX/PROXY-List'),
-    ]
+    ])
   }
 
   if (sorted.length === 0) {

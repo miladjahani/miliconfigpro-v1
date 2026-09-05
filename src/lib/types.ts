@@ -140,6 +140,11 @@ export interface AdminUser {
 }
 
 export interface ScanResultItem {
+  tcpLatencyMs?: number | null
+  httpLatencyMs?: number | null
+  speedMbps?: number
+  verified?: boolean
+  verification?: string
   ip: string
   port?: number
   latencyMs: number | null
