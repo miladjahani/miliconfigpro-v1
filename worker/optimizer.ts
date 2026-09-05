@@ -1,4 +1,5 @@
 import type { Env } from './env'
+import { notifyOptimizer } from './telegram'
 import { apiError, genId, json, nowIso, safeJsonParse } from './util'
 import { b64encodeUtf8, probeBatch } from './net'
 import { fetchMultiSubLines, renderSubscription } from './formats'
@@ -252,8 +253,14 @@ export async function runOptimizerJob(env: Env, jobId: string, input: string, op
       result_sub: b64encodeUtf8(optimizedLines.join('\n')),
     })
     void araApplied
+    // Push the result to the bot owner when the panel has a bot configured.
+    const owner = await env.DB.prepare('SELECT user_id, name FROM optimizer_jobs WHERE id = ?').bind(jobId).first<{ user_id: string; name: string }>()
+    if (owner) await notifyOptimizer(env, owner.user_id, owner.name, alive.length, unique.length, null)
   } catch (err) {
-    await update({ status: 'failed', error_message: err instanceof Error ? err.message : 'خطای نامشخص' }).catch(() => null)
+    const msg = err instanceof Error ? err.message : 'خطای نامشخص'
+    await update({ status: 'failed', error_message: msg }).catch(() => null)
+    const owner = await env.DB.prepare('SELECT user_id, name FROM optimizer_jobs WHERE id = ?').bind(jobId).first<{ user_id: string; name: string }>()
+    if (owner) await notifyOptimizer(env, owner.user_id, owner.name, 0, 0, null, msg)
   }
 }
 

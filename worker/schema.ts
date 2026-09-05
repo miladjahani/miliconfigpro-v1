@@ -238,6 +238,8 @@ const MIGRATIONS = [
   `ALTER TABLE worker_members ADD COLUMN notified_level INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE injector_jobs ADD COLUMN rotate_minutes INTEGER`,
   `ALTER TABLE optimizer_jobs ADD COLUMN opt_options TEXT`,
+  `ALTER TABLE bot_users ADD COLUMN pending_action TEXT`,
+  `ALTER TABLE bot_users ADD COLUMN pending_data TEXT`,
 ]
 
 let ready: Promise<void> | null = null
