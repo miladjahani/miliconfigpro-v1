@@ -250,7 +250,7 @@ async function showHelp(env: Env, bt: string, chatId: string | number): Promise<
     '🚀 <b>استقرار ورکر</b> — کلودفلر / Railway / Render مثل پنل وب (نام، UUID دلخواه یا خودکار، مسیر ساب)\n' +
     '📋 <b>ورکرها</b> — لیست، ساب/پنل، کاربران، تنظیمات و حذف\n' +
     '🔑 <b>توکن‌ها</b> — افزودن (با تأیید زنده)، فعال/غیرفعال، حذف\n' +
-    '👥 <b>کاربران</b> — سهمیه و لینک وضعیت هر عضو\n\n' +
+    '👥 <b>کاربران</b> — مشاهده سهمیه و ساخت کاربر جدید (حجم، اعتبار، لوکیشن خروجی)\n\n' +
     'برای لغو هر مرحله دکمه ✖️ یا /cancel را بزنید.',
     mainKeyboard())
 }
@@ -453,9 +453,12 @@ async function showWorkerPickForMembers(env: Env, bt: string, chatId: string | n
     await sendMsg(bt, chatId, '👥 ورکر مستقر شده‌ای نیست — اول یک ورکر مستقر کنید.', KB([[btn('🚀 استقرار ورکر', 'dp'), btn('🏠 منو', 'm')]]))
     return
   }
-  const rows: Array<Array<{ text: string; u?: string; c?: string }>> = ws.results.map((w) => [{ text: `👥 ${w.name}`, c: `wd:${w.id}:mb` }])
+  const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
+  for (const w of ws.results) {
+    rows.push([{ text: `👥 ${w.name}`, c: `wd:${w.id}:mb` }, { text: `➕ ساخت کاربر`, c: `mnew:${w.id}` }])
+  }
   rows.push([btn('🏠 منو', 'm')])
-  await sendMsg(bt, chatId, '👥 <b>کاربران</b> — ورکر را انتخاب کنید تا کاربران و سهمیه‌هایش را ببینید:', KB(rows))
+  await sendMsg(bt, chatId, '👥 <b>کاربران</b> — با 👥 کاربرانِ هر ورکر را ببینید یا با ➕ در همان ورکر کاربر بسازید:', KB(rows))
 }
 
 async function showMembersOf(env: Env, bt: string, chatId: string | number, userId: string, depId: string, origin: string): Promise<void> {
@@ -469,8 +472,8 @@ async function showMembersOf(env: Env, bt: string, chatId: string | number, user
   const gb = (n: number) => `${Math.round((n / 1073741824) * 100) / 100} GB`
   const rowsKb: Array<Array<{ text: string; u?: string; c?: string }>> = []
   if (!rows.results.length) {
-    await sendMsg(bt, chatId, `👥 <code>${escHtml(w.name)}</code> هنوز کاربری ندارد — از پنل وب (تب کاربران) بسازید.`,
-      KB([[btn('🔙 کاربران', 'mb'), btn('🏠 منو', 'm')]]))
+    await sendMsg(bt, chatId, `👥 <code>${escHtml(w.name)}</code> هنوز کاربری ندارد — با دکمه زیر اولین کاربر را بسازید:`,
+      KB([[btn('➕ ساخت کاربر', `mnew:${w.id}`)], [btn('🔙 کاربران', 'mb'), btn('🏠 منو', 'm')]]))
     return
   }
   let m = `👥 <b>${escHtml(w.name)}</b> — ${rows.results.length} کاربر\n\n`
@@ -481,8 +484,170 @@ async function showMembersOf(env: Env, bt: string, chatId: string | number, user
     m += `${r.enabled ? '🟢' : '🔴'} <b>${escHtml(r.name)}</b> — ${used} از ${quota} · انقضا: ${exp}\n`
     rowsKb.push([{ text: `🔗 وضعیت ${r.name}`, u: `${origin}/status/${r.token}` }])
   }
+  rowsKb.push([btn('➕ ساخت کاربر جدید', `mnew:${w.id}`)])
   rowsKb.push([btn('🔙 کاربران', 'mb'), btn('🏠 منو', 'm')])
   await sendMsg(bt, chatId, m, KB(rowsKb))
+}
+
+// ── Member creation (button wizard — name, quota, expiry, devices, countries) ──
+
+const MEMBER_COUNTRIES: Array<{ code: string; flag: string; label: string }> = [
+  { code: 'us', flag: '🇺🇸', label: 'آمریکا' },
+  { code: 'de', flag: '🇩🇪', label: 'آلمان' },
+  { code: 'nl', flag: '🇳🇱', label: 'هلند' },
+  { code: 'tr', flag: '🇹🇷', label: 'ترکیه' },
+  { code: 'ae', flag: '🇦🇪', label: 'امارات' },
+  { code: 'fi', flag: '🇫🇮', label: 'مولتی' },
+  { code: 'gb', flag: '🇬🇧', label: 'بریتانیا' },
+  { code: 'fr', flag: '🇫🇷', label: 'فرانسه' },
+  { code: 'jp', flag: '🇯🇵', label: 'ژاپن' },
+  { code: 'sg', flag: '🇸🇬', label: 'سنگاپور' },
+  { code: 'kr', flag: '🇰🇷', label: 'کره' },
+  { code: 'in', flag: '🇮🇳', label: 'هند' },
+  { code: 'br', flag: '🇧🇷', label: 'برزیل' },
+  { code: 'ca', flag: '🇨🇦', label: 'کانادا' },
+  { code: 'au', flag: '🇦🇺', label: 'استرالیا' },
+]
+const MEMBER_COUNTRY_CODES = MEMBER_COUNTRIES.map((c) => c.code)
+
+function memCountryLabel(code: string): string {
+  const c = MEMBER_COUNTRIES.find((x) => x.code === code)
+  return c ? `${c.flag} ${c.label}` : code.toUpperCase()
+}
+
+function memPreview(data: Record<string, string>): string {
+  const lines: string[] = []
+  if (data.wname) lines.push(`📦 ورکر: <code>${escHtml(data.wname)}</code>`)
+  if (data.name) lines.push(`👤 نام: <b>${escHtml(data.name)}</b>`)
+  if (data.quota) lines.push(`📊 حجم: ${data.quota === 'inf' ? '∞ بدون سقف' : `${data.quota} GB`}`)
+  if (data.exp) lines.push(`⏳ اعتبار: ${data.exp === 'inf' ? '∞ بدون انقضا' : `${data.exp} روز`}`)
+  if (data.dev) lines.push(`📱 دستگاه: ${data.dev === 'inf' ? '∞ بدون محدودیت' : `${data.dev} دستگاه`}`)
+  if ('ctry' in data) {
+    const codes = (data.ctry ?? '').split(',').filter(Boolean)
+    lines.push(`🌍 لوکیشن: ${codes.length ? codes.map(memCountryLabel).join('، ') : 'پیش‌فرض ورکر (بدون کشور)'}`)
+  }
+  return lines.join('\n')
+}
+
+async function askMemberName(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, depId: string, wname: string): Promise<void> {
+  await setPending(env, userId, telegramId, 'mn_name', { dep: depId, wname })
+  await sendMsg(bt, chatId,
+    `👥 <b>ساخت کاربر</b>\n\n📦 ورکر: <code>${escHtml(wname)}</code>\n\n` +
+    'نام کاربر را بنویسید — یا با ⚡ کاربری سریع با تنظیمات پیش‌فرض بسازید:',
+    KB([[btn('⚡ ساخت سریع (پیش‌فرض‌ها)', `mnq:${depId}`)], [btn('✖️ انصراف', 'cnf:c')]]))
+}
+
+async function memberAskQuota(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, data: Record<string, string>): Promise<void> {
+  await setPending(env, userId, telegramId, 'mn_quota', data)
+  await sendMsg(bt, chatId,
+    `👥 <b>ساخت کاربر</b>\n\n${memPreview(data)}\n\n` +
+    '<b>سقف حجم</b> این کاربر را انتخاب کنید:',
+    KB([
+      [btn('∞ بدون سقف', 'mn:q:inf'), btn('1 GB', 'mn:q:1'), btn('5 GB', 'mn:q:5')],
+      [btn('10 GB', 'mn:q:10'), btn('50 GB', 'mn:q:50'), btn('✍️ دلخواه', 'mn:q:c')],
+      [btn('✖️ انصراف', 'cnf:c')],
+    ]))
+}
+
+async function memberAskExpiry(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, data: Record<string, string>): Promise<void> {
+  await setPending(env, userId, telegramId, 'mn_exp', data)
+  await sendMsg(bt, chatId,
+    `👥 <b>ساخت کاربر</b>\n\n${memPreview(data)}\n\n` +
+    '<b>مدت اعتبار</b> (از همین حالا) را انتخاب کنید:',
+    KB([
+      [btn('∞ بدون انقضا', 'mn:e:inf'), btn('7 روز', 'mn:e:7'), btn('30 روز', 'mn:e:30')],
+      [btn('90 روز', 'mn:e:90'), btn('365 روز', 'mn:e:365'), btn('✍️ دلخواه', 'mn:e:c')],
+      [btn('✖️ انصراف', 'cnf:c')],
+    ]))
+}
+
+async function memberAskDevices(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, data: Record<string, string>): Promise<void> {
+  await setPending(env, userId, telegramId, 'mn_dev', data)
+  await sendMsg(bt, chatId,
+    `👥 <b>ساخت کاربر</b>\n\n${memPreview(data)}\n\n` +
+    '<b>حداکثر دستگاه هم‌زمان</b> (بر اساس آی‌پی واقعی):',
+    KB([
+      [btn('∞ نامحدود', 'mn:d:inf'), btn('1', 'mn:d:1'), btn('2', 'mn:d:2'), btn('3', 'mn:d:3'), btn('5', 'mn:d:5')],
+      [btn('✖️ انصراف', 'cnf:c')],
+    ]))
+}
+
+async function memberCountryPick(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, data: Record<string, string>): Promise<void> {
+  await setPending(env, userId, telegramId, 'mn_ctry', data)
+  const codes = (data.ctry ?? '').split(',').filter(Boolean)
+  const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
+  for (let i = 0; i < MEMBER_COUNTRIES.length; i += 2) {
+    const row: Array<{ text: string; u?: string; c?: string }> = []
+    for (let j = 0; j < 2; j++) {
+      const c = MEMBER_COUNTRIES[i + j]
+      if (c) row.push({ text: `${codes.includes(c.code) ? '✅ ' : ''}${c.flag} ${c.label}`, c: `mnc:${c.code}` })
+    }
+    rows.push(row)
+  }
+  rows.push([btn(`✅ ادامه${codes.length ? ` (${codes.length} کشور)` : ' — بدون لوکیشن'}`, 'mnc:ok')])
+  rows.push([btn('✖️ انصراف', 'cnf:c')])
+  const note = codes.length
+    ? `نودها از آی‌پی‌های واقعی همین کشورها ساخته می‌شوند (${codes.length * 3} نود درخواستی).`
+    : 'بدون انتخاب کشور، ساب از نودهای پیش‌فرض ورکر ساخته می‌شود.'
+  await sendMsg(bt, chatId,
+    `👥 <b>ساخت کاربر</b>\n\n${memPreview(data)}\n\n` +
+    `🌍 <b>لوکیشن خروجی</b> را انتخاب کنید (حداکثر ۸ کشور، ${note})`,
+    KB(rows))
+}
+
+async function memberConfirm(env: Env, bt: string, chatId: string | number, userId: string, telegramId: string, data: Record<string, string>): Promise<void> {
+  await setPending(env, userId, telegramId, 'mn_ok', data)
+  await sendMsg(bt, chatId,
+    `👥 <b>تأیید ساخت کاربر</b>\n\n${memPreview(data)}\n\n` +
+    'کاربر ساخته شود؟ لینک ساب بدون لاگین و صفحه وضعیت بلافاصله همین‌جا داده می‌شود.',
+    KB([[btn('✅ ساخت کاربر', 'mn:go')], [btn('✖️ انصراف', 'cnf:c')]]))
+}
+
+async function runMemberCreate(env: Env, bt: string, chatId: string | number, userId: string, origin: string, data: Record<string, string>): Promise<void> {
+  const depId = data.dep ?? ''
+  let wname = data.wname ?? ''
+  if (!wname) {
+    const w = await env.DB.prepare('SELECT name FROM deployments WHERE id = ? AND user_id = ?').bind(depId, userId).first<{ name: string }>()
+    wname = w?.name ?? ''
+  }
+  const name = (data.name ?? '').trim().replace(/[<>]/g, '').slice(0, 60) || `کاربر-${Math.random().toString(36).slice(2, 6)}`
+  const quotaGb = !data.quota || data.quota === 'inf' ? null : Math.min(1024, Math.max(1, Math.round(Number(data.quota))))
+  const days = !data.exp || data.exp === 'inf' ? null : Math.min(3650, Math.max(1, Math.round(Number(data.exp))))
+  const devLimit = !data.dev || data.dev === 'inf' ? null : Math.min(1000, Math.max(1, Math.round(Number(data.dev))))
+  const countries = (data.ctry ?? '').split(',').filter((c) => MEMBER_COUNTRY_CODES.includes(c)).slice(0, 8)
+  const body: Record<string, unknown> = {
+    deployment_id: depId,
+    name,
+    quota_gb: quotaGb,
+    ip_limit: devLimit,
+    expires_at: days ? new Date(Date.now() + days * 86_400_000).toISOString() : null,
+    countries,
+    max_nodes_per_location: 3,
+  }
+  const res = await panelApi(env, userId, origin, '/api/members', 'POST', body)
+  if (!res.ok) {
+    await sendMsg(bt, chatId, `❌ ساخت کاربر <b>${escHtml(name)}</b> انجام نشد: ${escHtml(res.error)}`, KB([[btn('🔙 کاربران', 'mb'), btn('🏠 منو', 'm')]]))
+    return
+  }
+  const token = (res.data as { data?: { token?: string } }).data?.token ?? (res.data as { token?: string }).token
+  const quotaTxt = quotaGb != null ? `${quotaGb} GB` : '∞'
+  const expTxt = days ? new Date(Date.now() + days * 86_400_000).toLocaleDateString('fa-IR') : '∞'
+  const devTxt = devLimit != null ? `${devLimit} دستگاه` : '∞'
+  let m = `✅ <b>کاربر ساخته شد</b>\n\n` +
+    `👤 <b>${escHtml(name)}</b>\n` +
+    `📦 ورکر: <code>${escHtml(wname)}</code>\n` +
+    `📊 حجم: ${quotaTxt} · 📱 دستگاه: ${devTxt} · ⏳ انقضا: ${expTxt}\n`
+  const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
+  if (token) {
+    const subUrl = `${origin}/api/sub/member/${token}`
+    m += `\n🔗 ساب بدون لاگین:\n<code>${escHtml(subUrl)}</code>\n` +
+      `\n📊 وضعیت مصرف:\n<code>${escHtml(origin)}/status/${token}</code>`
+    rows.push([{ text: '🔗 دریافت ساب', u: subUrl }, { text: '📊 وضعیت', u: `${origin}/status/${token}` }])
+  } else {
+    m += '\n(لینک ساب از پنل وب در دسترس است)'
+  }
+  rows.push([btn('👥 کاربران ورکر', `wd:${depId}:mb`), btn('🏠 منو', 'm')])
+  await sendMsg(bt, chatId, m, KB(rows))
 }
 
 // ── Workers ────────────────────────────────────────────────────────────────
@@ -1073,6 +1238,35 @@ async function handlePendingText(env: Env, cfg: BotConfigRow, chatId: string | n
     return
   }
 
+  // ── Member create: name / custom quota / custom expiry
+  if ((pend.step as string) === 'mn_name') {
+    const name = text.trim().replace(/[<>]/g, '').slice(0, 60)
+    if (!name) {
+      await sendMsg(bt, chatId, '❌ نام خالی است — دوباره بنویسید یا ✖️ بزنید.', KB([[btn('✖️ انصراف', 'cnf:c')]]))
+      return
+    }
+    await memberAskQuota(env, bt, chatId, cfg.user_id, telegramId, { ...pend.data, name })
+    return
+  }
+  if ((pend.step as string) === 'mn_quota_v') {
+    const gb = Math.round(Number(text.trim().replace(/[،,]/, '.')))
+    if (!Number.isFinite(gb) || gb < 1 || gb > 1024) {
+      await sendMsg(bt, chatId, '❌ عدد معتبر نبود — سقف حجم را به گیگابایت بنویسید (۱ تا ۱۰۲۴) یا ✖️ بزنید.', KB([[btn('✖️ انصراف', 'cnf:c')]]))
+      return
+    }
+    await memberAskExpiry(env, bt, chatId, cfg.user_id, telegramId, { ...pend.data, quota: String(gb) })
+    return
+  }
+  if ((pend.step as string) === 'mn_exp_v') {
+    const days = Math.round(Number(text.trim()))
+    if (!Number.isFinite(days) || days < 1 || days > 3650) {
+      await sendMsg(bt, chatId, '❌ عدد معتبر نبود — مدت اعتبار را به روز بنویسید (۱ تا ۳۶۵۰) یا ✖️ بزنید.', KB([[btn('✖️ انصراف', 'cnf:c')]]))
+      return
+    }
+    await memberAskDevices(env, bt, chatId, cfg.user_id, telegramId, { ...pend.data, exp: String(days) })
+    return
+  }
+
   // ── Railway / Render deploy: name
   if (pend.step === 'dpl_rw_name' || pend.step === 'dpl_rd_name') {
     const name = text.trim().toLowerCase()
@@ -1082,6 +1276,7 @@ async function handlePendingText(env: Env, cfg: BotConfigRow, chatId: string | n
     }
     const data = { ...pend.data, name }
     await clearPending(env, cfg.user_id, telegramId)
+
     if (pend.step === 'dpl_rw_name') await runRailwayDeploy(env, bt, chatId, cfg.user_id, data, origin, ctx)
     else await runRenderDeploy(env, bt, chatId, cfg.user_id, data, origin, ctx)
     return
@@ -1270,6 +1465,81 @@ async function handleCallback(env: Env, cfg: BotConfigRow, cq: TgCbQuery, origin
   }
   if (data.startsWith('wh:')) {
     await showHostedDetail(env, bt, chatId, cfg.user_id, data.slice(3))
+    return
+  }
+
+
+  // ── Member creation wizard (buttons + short text steps)
+  if (data.startsWith('mnew:')) {
+    const depId = data.slice(5)
+    const w = await env.DB.prepare("SELECT name FROM deployments WHERE id = ? AND user_id = ? AND status = 'deployed'").bind(depId, cfg.user_id).first<{ name: string }>()
+    if (!w) { await sendMsg(bt, chatId, '❌ ورکر پیدا نشد یا استقرارش کامل نیست.', KB([[btn('🔙 کاربران', 'mb'), btn('🏠 منو', 'm')]])); return }
+    await clearPending(env, cfg.user_id, tgId)
+    await askMemberName(env, bt, chatId, cfg.user_id, tgId, depId, w.name)
+    return
+  }
+  if (data.startsWith('mnq:')) {
+    // Quick create: defaults only, like the web panel's quick button.
+    const depId = data.slice(4)
+    const w = await env.DB.prepare("SELECT name FROM deployments WHERE id = ? AND user_id = ? AND status = 'deployed'").bind(depId, cfg.user_id).first<{ name: string }>()
+    if (!w) { await sendMsg(bt, chatId, '❌ ورکر پیدا نشد یا استقرارش کامل نیست.', KB([[btn('🔙 کاربران', 'mb')]])); return }
+    await clearPending(env, cfg.user_id, tgId)
+    await sendMsg(bt, chatId, '⏳ در حال ساخت کاربر سریع…')
+    await runMemberCreate(env, bt, chatId, cfg.user_id, origin, { dep: depId, wname: w.name, quota: 'inf', exp: 'inf', dev: 'inf', ctry: '' })
+    return
+  }
+  const mnChoice = data.match(/^mn:([qed]):(.+)$/)
+  if (mnChoice) {
+    const rowP = await getBotUser(env, cfg.user_id, tgId)
+    const pendP = rowP ? parsePending(rowP) : null
+    const d = pendP?.data ?? {}
+    const what = mnChoice[1]
+    const val = mnChoice[2]
+    if (what === 'q') {
+      if (val === 'c') {
+        await setPending(env, cfg.user_id, tgId, 'mn_quota_v', d)
+        await sendMsg(bt, chatId, '✍️ سقف حجم را به <b>گیگابایت</b> بنویسید (۱ تا ۱۰۲۴):', KB([[btn('✖️ انصراف', 'cnf:c')]]))
+      } else {
+        await memberAskExpiry(env, bt, chatId, cfg.user_id, tgId, { ...d, quota: val })
+      }
+      return
+    }
+    if (what === 'e') {
+      if (val === 'c') {
+        await setPending(env, cfg.user_id, tgId, 'mn_exp_v', d)
+        await sendMsg(bt, chatId, '✍️ مدت اعتبار را به <b>روز</b> بنویسید (۱ تا ۳۶۵۰):', KB([[btn('✖️ انصراف', 'cnf:c')]]))
+      } else {
+        await memberAskDevices(env, bt, chatId, cfg.user_id, tgId, { ...d, exp: val })
+      }
+      return
+    }
+    await memberCountryPick(env, bt, chatId, cfg.user_id, tgId, { ...d, dev: val })
+    return
+  }
+  if (data.startsWith('mnc:')) {
+    const arg = data.slice(4)
+    const rowP = await getBotUser(env, cfg.user_id, tgId)
+    const pendP = rowP ? parsePending(rowP) : null
+    const d = pendP?.data ?? {}
+    if (arg === 'ok') {
+      await memberConfirm(env, bt, chatId, cfg.user_id, tgId, d)
+      return
+    }
+    const codes = (d.ctry ?? '').split(',').filter(Boolean)
+    if (!codes.includes(arg) && codes.length >= 8) {
+      await sendMsg(bt, chatId, '⚠️ حداکثر ۸ کشور قابل انتخاب است — اول یکی را بردارید.', KB([[btn('🔙 لوکیشن‌ها', 'mnc:ok')]]))
+      return
+    }
+    const next = codes.includes(arg) ? codes.filter((x) => x !== arg) : [...codes, arg]
+    await memberCountryPick(env, bt, chatId, cfg.user_id, tgId, { ...d, ctry: next.join(',') })
+    return
+  }
+  if (data === 'mn:go') {
+    const rowP = await getBotUser(env, cfg.user_id, tgId)
+    const pendP = rowP ? parsePending(rowP) : null
+    if (!pendP || pendP.step !== 'mn_ok') return
+    await clearPending(env, cfg.user_id, tgId)
+    await runMemberCreate(env, bt, chatId, cfg.user_id, origin, pendP.data)
     return
   }
 
