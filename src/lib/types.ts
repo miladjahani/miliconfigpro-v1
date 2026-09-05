@@ -40,6 +40,10 @@ export interface HostedDeployment {
   provider_deployment_id: string
   provider_service_id: string | null
   error_message: string | null
+  setup_state?: 'none' | 'pending' | 'done' | 'failed' | string | null
+  setup_note?: string | null
+  setup_node_link?: string | null
+  setup_sub_url?: string | null
   created_at: string
   updated_at: string
 }

@@ -84,6 +84,10 @@ export default function DeployWizard() {
   // ── Panel template picker (Railway/Render auto-deploy) ───────────────
   const [hostedTemplate, setHostedTemplate] = useState<HostedPanelSlug>('stanng')
 
+  // Per-panel auto-setup result returned by the status pollers once LIVE:
+  // what was configured + the ready node / subscription links.
+  const [setupInfo, setSetupInfo] = useState<{ note?: string; nodeLink?: string; subUrl?: string } | null>(null)
+
   useEffect(() => {
     let cancelled = false
     api<{ data: CFToken[] }>('/tokens')
@@ -235,7 +239,7 @@ export default function DeployWizard() {
     const startedAt = Date.now()
     const tick = async () => {
       try {
-        const { data } = await api<{ data: { status: string; url: string | null } }>(
+        const { data } = await api<{ data: { status: string; url: string | null; setup_note?: string | null; node_link?: string | null; sub_url?: string | null } }>(
           `/render/status?deploy_id=${encodeURIComponent(deployId)}&service_id=${encodeURIComponent(serviceId)}&token_id=${encodeURIComponent(tokenId)}`,
         )
         const st = (data?.status ?? 'UNKNOWN').toUpperCase()
@@ -251,10 +255,11 @@ export default function DeployWizard() {
           const url = data?.url?.trim() || null
           const meta = hostedMetaRef.current
           const label = meta?.tpl.label ?? 'پنل'
+          setSetupInfo({ note: data?.setup_note ?? undefined, nodeLink: data?.node_link ?? undefined, subUrl: data?.sub_url ?? undefined })
           setDeployResult({
             success: true,
             message: url
-              ? `${label} با موفقیت روی Render مستقر شد! 🎉`
+              ? (data?.setup_note ? `${label} روی Render مستقر شد و تنظیم خودکار انجام شد! 🎉` : `${label} با موفقیت روی Render مستقر شد! 🎉`)
               : 'استقرار روی Render موفق بود — دامنه را در داشبورد سرویس فعال کنید.',
             url: url ?? undefined,
             panelUrl: url ? `${url.replace(/\/+$/, '')}${meta?.tpl.loginPath ?? '/login'}` : undefined,
@@ -285,7 +290,7 @@ export default function DeployWizard() {
     const startedAt = Date.now()
     const tick = async () => {
       try {
-        const { data } = await api<{ data: { status: string; url: string | null } }>(
+        const { data } = await api<{ data: { status: string; url: string | null; setup_note?: string | null; node_link?: string | null; sub_url?: string | null } }>(
           `/railway/status?deployment_id=${encodeURIComponent(deploymentId)}&token_id=${encodeURIComponent(tokenId)}`,
         )
         const st = (data?.status ?? 'UNKNOWN').toUpperCase()
@@ -302,12 +307,15 @@ export default function DeployWizard() {
           const meta = hostedMetaRef.current
           const label = meta?.tpl.label ?? 'پنل'
           const hasCreds = !!(meta?.user || meta?.pass)
+          setSetupInfo({ note: data?.setup_note ?? undefined, nodeLink: data?.node_link ?? undefined, subUrl: data?.sub_url ?? undefined })
           setDeployResult({
             success: true,
             message: url
-              ? (hasCreds
-                  ? `${label} مستقر شد و اطلاعات ورود آماده است! 🎉`
-                  : `${label} با موفقیت روی Railway مستقر شد! 🎉`)
+              ? (data?.setup_note
+                  ? `${label} مستقر شد و تنظیم خودکار انجام شد! 🎉`
+                  : hasCreds
+                    ? `${label} مستقر شد و اطلاعات ورود آماده است! 🎉`
+                    : `${label} با موفقیت روی Railway مستقر شد! 🎉`)
               : 'استقرار روی Railway موفق بود — دامنه را در بخش Networking پروژه فعال کنید.',
             url: url ?? undefined,
             panelUrl: url ? `${url.replace(/\/+$/, '')}${meta?.tpl.loginPath ?? '/login'}` : undefined,
@@ -596,6 +604,8 @@ export default function DeployWizard() {
     )
   }
 
+  const activeTpl = getHostedPanel(hostedTemplate)
+
   const steps = [
     { num: 1, label: 'نام و کلید', icon: Terminal },
     { num: 2, label: 'تنظیمات', icon: Settings },
@@ -649,37 +659,6 @@ export default function DeployWizard() {
       <div className="glass-card p-6 lg:p-8 min-h-[300px]">
         {step === 1 && (
           <div className="space-y-6 animate-fade-in">
-            <div className="rounded-xl border border-slate-700/60 bg-slate-900/30 p-4">
-              <label className="block text-sm text-slate-200 mb-1 font-bold">استقرار پنل آماده — هر پنل یک گزینه مستقل است</label>
-              <p className="text-xs text-slate-500 mb-3">روی دکمه‌ی Railway یا Render زیر هر پنل بزنید تا همان پنل، جدا و با هویت خودش (Marzban، 3x-ui، X4G و…) مستقر شود. StanNG هم مثل بقیه یکی از این گزینه‌هاست.</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                {HOSTED_PANELS.map((p) => {
-                  const railOn = hostedTemplate === p.slug && method === 'railway' && railMode === 'auto'
-                  const rdOn = hostedTemplate === p.slug && method === 'render'
-                  return (
-                    <div key={p.slug} className={`p-3 rounded-xl border text-right transition-all ${railOn || rdOn ? 'border-brand-500 bg-brand-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'}`}>
-                      <p className="text-sm font-bold text-white">{p.emoji} {p.label}</p>
-                      <p className="text-[11px] text-slate-500 font-mono mt-0.5" dir="ltr">{p.repo} · PORT {p.port}</p>
-                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{p.desc}</p>
-                      <div className="flex gap-2 mt-3">
-                        <button
-                          type="button"
-                          onClick={() => { setHostedTemplate(p.slug); setMethod('railway'); setRailMode('auto'); setError(null) }}
-                          className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${railOn ? 'border-purple-500 bg-purple-500/25 text-white' : 'border-slate-600 text-slate-300 hover:border-purple-400'}`}
-                        >🚂 استقرار روی Railway</button>
-                        <button
-                          type="button"
-                          onClick={() => { setHostedTemplate(p.slug); setMethod('render'); setRailMode('auto'); setError(null) }}
-                          className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-all ${rdOn ? 'border-teal-500 bg-teal-500/25 text-white' : 'border-slate-600 text-slate-300 hover:border-teal-400'}`}
-                        >🧊 استقرار روی Render</button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-              <p className="text-xs text-warning-400/80 mt-3">برای ورکرهای Cloudflare/Pages و خروجی VPS هنوز از کارت‌های مرحله‌ی «تنظیمات» استفاده کنید؛ این شش پنل فقط Docker هستند و روی Railway یا Render اجرا می‌شوند.</p>
-            </div>
-
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">نام ورکر</label>
               <div className="flex gap-2">
@@ -889,6 +868,36 @@ export default function DeployWizard() {
               </div>
             </div>
 
+            {(method === 'railway' && railMode === 'auto') || method === 'render' ? (
+              <div className="rounded-xl border border-brand-500/25 bg-brand-500/5 p-4">
+                <label className="block text-sm text-slate-200 mb-1 font-bold">
+                  {method === 'render' ? '🧊 پنل / ورکر موردنظر برای Render' : '🚂 پنل / ورکر موردنظر برای Railway'}
+                </label>
+                <p className="text-xs text-slate-500 mb-3">از فهرست زیر انتخاب کنید کدام پنل روی این محیط مستقر شود:</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {HOSTED_PANELS.map((p) => {
+                    const on = hostedTemplate === p.slug
+                    return (
+                      <button
+                        type="button"
+                        key={p.slug}
+                        onClick={() => setHostedTemplate(p.slug)}
+                        className={`p-3 rounded-xl border text-right transition-all ${on ? 'border-brand-500 bg-brand-500/10' : 'border-slate-700 bg-slate-900/40 hover:border-slate-600'}`}
+                      >
+                        <p className="text-sm font-bold text-white flex items-center justify-between gap-2">
+                          <span>{p.emoji} {p.label}</span>
+                          {on && <span className="w-2 h-2 rounded-full bg-brand-400 shrink-0" />}
+                        </p>
+                        <p className="text-[11px] text-slate-500 font-mono mt-0.5" dir="ltr">{p.repo} · PORT {p.port}</p>
+                        <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{p.desc}</p>
+                      </button>
+                    )
+                  })}
+                </div>
+                <p className="text-xs text-slate-500 mt-3">انتخاب فعلی: <span className="text-brand-300 font-bold">{activeTpl.emoji} {activeTpl.label}</span> — ورود پنل <code className="text-brand-300" dir="ltr">{activeTpl.loginPath}</code></p>
+              </div>
+            ) : null}
+
             {method === 'railway' && (
               <div>
                 <label className="block text-sm text-slate-300 mb-2 font-medium">روش استقرار Railway</label>
@@ -919,9 +928,15 @@ export default function DeployWizard() {
 
             <div>
               <label className="block text-sm text-slate-300 mb-2 font-medium">منبع ورکر</label>
-              {method === 'vps' || method === 'railway' || method === 'render' ? (
+              {(method === 'railway' && railMode === 'auto') || method === 'render' ? (
+                <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-3">
+                  <p className="text-sm text-white font-bold">{activeTpl.emoji} {activeTpl.label}</p>
+                  <p className="text-xs text-slate-400 font-mono mt-1" dir="ltr">{activeTpl.repo} · PORT {activeTpl.port}</p>
+                  <p className="text-xs text-slate-500 mt-1">ورود پنل: <code className="text-brand-300" dir="ltr">{activeTpl.loginPath}</code></p>
+                </div>
+              ) : method === 'vps' || method === 'railway' ? (
                 <select value={workerSource} onChange={(e) => setWorkerSource(e.target.value)} className="input-field">
-                  <option value="stanngv2">StanNG v2 — پنل VLESS با xray-core ({method === 'render' ? 'Render.com' : method === 'railway' ? 'Railway' : 'Docker + VPS'})</option>
+                  <option value="stanngv2">StanNG v2 — پنل VLESS با xray-core ({method === 'railway' ? 'Railway' : 'Docker + VPS'})</option>
                 </select>
               ) : (
                 <select value={workerSource} onChange={(e) => setWorkerSource(e.target.value)} className="input-field">
@@ -1005,7 +1020,7 @@ export default function DeployWizard() {
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">منبع ورکر</p>
-                  <p className="text-white font-medium" dir="ltr">{workerSource === 'custom' ? 'ورکر سفارشی ما' : workerSource === 'nexus' ? 'NEXUS — نسل جدید' : workerSource === 'miliconfigzeus' ? 'miliconfig zeus' : workerSource === 'edgetunnel' ? 'cmliu/edgetunnel' : 'cmliu/edgetunnel (KV)'}</p>
+                  <p className="text-white font-medium" dir="ltr">{(method === 'railway' && railMode === 'auto') || method === 'render' ? `${activeTpl.emoji} ${activeTpl.label}` : workerSource === 'custom' ? 'ورکر سفارشی ما' : workerSource === 'nexus' ? 'NEXUS — نسل جدید' : workerSource === 'miliconfigzeus' ? 'miliconfig zeus' : workerSource === 'edgetunnel' ? 'cmliu/edgetunnel' : 'cmliu/edgetunnel (KV)'}</p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">Proxy IP</p>
@@ -1030,8 +1045,8 @@ export default function DeployWizard() {
                 <div className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
                   <p className="text-xs text-slate-500 mb-1">مسیر پنل</p>
                   <p className="text-white font-medium" dir="ltr">
-                    {method === 'railway' && railMode === 'auto' || method === 'render'
-                      ? '/login (پنل StanNG)'
+                    {(method === 'railway' && railMode === 'auto') || method === 'render'
+                      ? `${activeTpl.loginPath} (${activeTpl.short})`
                       : workerSource === 'nexus' ? `/${uuid || '…'}` : `/${customPath || 'admin'}`}
                   </p>
                 </div>
@@ -1118,6 +1133,27 @@ export default function DeployWizard() {
                             )}
                           </div>
                         )}
+                        {setupInfo && (
+                          <div className="p-4 rounded-xl bg-green-500/5 border border-green-500/30 text-right">
+                            <p className="text-xs font-bold text-green-300 mb-2">✅ تنظیم خودکار انجام شد — همه‌چیز آماده است</p>
+                            {setupInfo.note && <p className="text-xs text-slate-300 leading-relaxed" dangerouslySetInnerHTML={{ __html: setupInfo.note }} />}
+                            {setupInfo.subUrl && (
+                              <a href={setupInfo.subUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-xs text-brand-300 hover:text-brand-200 mt-2 break-all" dir="ltr">
+                                <ExternalLink className="w-3.5 h-3.5 shrink-0" /> {setupInfo.subUrl}
+                              </a>
+                            )}
+                            {setupInfo.nodeLink && (
+                              <div className="mt-2 flex items-start gap-2">
+                                <code className="text-[11px] text-green-300/90 break-all flex-1 font-mono" dir="ltr">{setupInfo.nodeLink}</code>
+                                <button
+                                  type="button"
+                                  onClick={() => navigator.clipboard?.writeText(setupInfo.nodeLink ?? '')}
+                                  className="text-[11px] px-2 py-1 rounded-lg bg-slate-700/40 text-slate-300 hover:text-white shrink-0"
+                                >کپی</button>
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <p className="text-xs text-warning-400/80 px-4">لینک پنل را خصوصی نگه دارید — هر کس آن را داشته باشد می‌تواند ورکر را مدیریت کند.</p>
                       </div>
                     )}
@@ -1136,7 +1172,7 @@ export default function DeployWizard() {
                       {!(method === 'railway' && railMode === 'auto') && method !== 'render' && (
                         <button onClick={() => navigate('/deployments')} className="btn-primary">مشاهده ورکرها</button>
                       )}
-                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setRenderProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); hostedMetaRef.current = null; }} className="btn-ghost">استقرار جدید</button>
+                      <button onClick={() => { setStep(1); setDeployResult(null); setRailProjectUrl(null); setRenderProjectUrl(null); setName(genName()); setUuid(genUuid()); setCustomPath(''); setProxyIP(''); setAdminPassword(''); setDeployLogs([]); setSetupInfo(null); hostedMetaRef.current = null; }} className="btn-ghost">استقرار جدید</button>
                     </div>
                   </div>
                 ) : (

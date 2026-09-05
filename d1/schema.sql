@@ -87,6 +87,14 @@ CREATE TABLE IF NOT EXISTS hosted_deployments (
   provider_service_id TEXT,
   token_id TEXT NOT NULL,
   error_message TEXT,
+  template TEXT NOT NULL DEFAULT 'stanng',
+  admin_username TEXT,
+  admin_password TEXT,
+  setup_state TEXT NOT NULL DEFAULT 'none' CHECK (setup_state IN ('none','pending','done','failed')),
+  setup_note TEXT,
+  setup_node_link TEXT,
+  setup_sub_url TEXT,
+  setup_attempts INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

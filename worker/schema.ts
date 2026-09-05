@@ -76,6 +76,11 @@ const SCHEMA_STATEMENTS = [
     admin_username TEXT,
     admin_password TEXT,
     error_message TEXT,
+    setup_state TEXT NOT NULL DEFAULT 'none' CHECK (setup_state IN ('none','pending','done','failed')),
+    setup_note TEXT,
+    setup_node_link TEXT,
+    setup_sub_url TEXT,
+    setup_attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
@@ -246,6 +251,11 @@ const MIGRATIONS = [
   `ALTER TABLE hosted_deployments ADD COLUMN template TEXT NOT NULL DEFAULT 'stanng'`,
   `ALTER TABLE hosted_deployments ADD COLUMN admin_username TEXT`,
   `ALTER TABLE hosted_deployments ADD COLUMN admin_password TEXT`,
+  `ALTER TABLE hosted_deployments ADD COLUMN setup_state TEXT NOT NULL DEFAULT 'none'`,
+  `ALTER TABLE hosted_deployments ADD COLUMN setup_note TEXT`,
+  `ALTER TABLE hosted_deployments ADD COLUMN setup_node_link TEXT`,
+  `ALTER TABLE hosted_deployments ADD COLUMN setup_sub_url TEXT`,
+  `ALTER TABLE hosted_deployments ADD COLUMN setup_attempts INTEGER NOT NULL DEFAULT 0`,
 ]
 
 let ready: Promise<void> | null = null

@@ -708,9 +708,9 @@ async function showWorkerDetail(env: Env, bt: string, chatId: string | number, u
 }
 
 async function showHostedDetail(env: Env, bt: string, chatId: string | number, userId: string, id: string): Promise<void> {
-  const h = await env.DB.prepare('SELECT id, provider, template, name, status, url, panel_url, dashboard_url, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?')
+  const h = await env.DB.prepare('SELECT id, provider, template, name, status, url, panel_url, dashboard_url, admin_username, admin_password, setup_note, setup_node_link, setup_sub_url FROM hosted_deployments WHERE id = ? AND user_id = ?')
     .bind(id, userId)
-    .first<{ id: string; provider: string; template: string | null; name: string; status: string; url: string | null; panel_url: string | null; dashboard_url: string | null; admin_username: string | null; admin_password: string | null }>()
+    .first<{ id: string; provider: string; template: string | null; name: string; status: string; url: string | null; panel_url: string | null; dashboard_url: string | null; admin_username: string | null; admin_password: string | null; setup_note: string | null; setup_node_link: string | null; setup_sub_url: string | null }>()
   if (!h) { await sendMsg(bt, chatId, '❌ پنل پیدا نشد.', KB([[btn('🔙 ورکرها', 'wk'), btn('🏠 منو', 'm')]])); return }
   const tpl = h.template ? HOSTED_PANELS.find((x) => x.slug === h.template) : undefined
   const icon = h.provider === 'railway' ? '🚂' : '🧊'
@@ -720,6 +720,9 @@ async function showHostedDetail(env: Env, bt: string, chatId: string | number, u
   if (h.status === 'success' && h.admin_username && h.admin_password) {
     m += `\n👤 ${escHtml(h.admin_username)}\n🔑 <code>${escHtml(h.admin_password)}</code>`
   }
+  if (h.status === 'success' && h.setup_note) m += `\n\n✅ تنظیم خودکار:\n${escHtml(h.setup_note)}`
+  if (h.status === 'success' && h.setup_node_link) m += `\n\n🔗 لینک نود آماده:\n<code>${escHtml(h.setup_node_link)}</code>`
+  if (h.status === 'success' && h.setup_sub_url) m += `\n\n📥 ساب آماده:\n<code>${escHtml(h.setup_sub_url)}</code>`
   const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
   if (h.panel_url || h.url) rows.push([{ text: '🔐 باز کردن پنل', u: h.panel_url ?? h.url ?? '' }])
   if (h.dashboard_url) rows.push([{ text: '📊 داشبورد سرویس‌دهنده', u: h.dashboard_url }])
@@ -1101,7 +1104,7 @@ async function pollRailwayDeploy(env: Env, bt: string, chatId: string | number, 
   for (let i = 0; i < 14; i++) {
     await botSleep(15000)
     await panelApi(env, userId, origin, `/api/railway/status?token_id=${encodeURIComponent(tokenId)}&deployment_id=${encodeURIComponent(deploymentId)}`, 'GET')
-    const row = await env.DB.prepare('SELECT status, url, panel_url, template, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ status: string; url: string | null; panel_url: string | null; template: string | null; admin_username: string | null; admin_password: string | null }>()
+    const row = await env.DB.prepare('SELECT status, url, panel_url, template, admin_username, admin_password, setup_note, setup_node_link, setup_sub_url FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ status: string; url: string | null; panel_url: string | null; template: string | null; admin_username: string | null; admin_password: string | null; setup_note: string | null; setup_node_link: string | null; setup_sub_url: string | null }>()
     if (!row) return
     if (row.status === 'success') {
       const meta = getHostedPanel(row.template ?? 'stanng')
@@ -1120,8 +1123,12 @@ async function pollRailwayDeploy(env: Env, bt: string, chatId: string | number, 
       let m = `✅ <b>استقرار Railway تمام شد — ${meta.label}</b>\n\n🔗 آدرس: <code>${escHtml(pub ?? '—')}</code>\n🔐 پنل (لاگین): <code>${escHtml(panel ?? '—')}</code>`
       if (user || pass) m += `\n\n👤 کاربر: <code>${escHtml(user ?? '—')}</code>\n🔑 گذرواژه: <code>${escHtml(pass ?? '—')}</code>`
       if (meta.note) m += `\n\n💡 ${escHtml(meta.note)}`
+      if (row.setup_note) m += `\n\n✅ تنظیم خودکار:\n${escHtml(row.setup_note)}`
+      if (row.setup_node_link) m += `\n\n🔗 لینک نود آماده:\n<code>${escHtml(row.setup_node_link)}</code>`
+      if (row.setup_sub_url) m += `\n\n📥 ساب آماده:\n<code>${escHtml(row.setup_sub_url)}</code>`
       const kbRows: Array<Array<{ text: string; u?: string; c?: string }>> = []
       if (panel) kbRows.push([{ text: '🔐 باز کردن پنل', u: panel }])
+      if (row.setup_sub_url) kbRows.push([{ text: '📥 ساب', u: row.setup_sub_url }])
       kbRows.push([btn('🏠 منو', 'm')])
       await sendMsg(bt, chatId, m, KB(kbRows))
       return
@@ -1138,7 +1145,7 @@ async function pollRenderDeploy(env: Env, bt: string, chatId: string | number, u
   for (let i = 0; i < 14; i++) {
     await botSleep(15000)
     await panelApi(env, userId, origin, `/api/render/status?token_id=${encodeURIComponent(tokenId)}&deploy_id=${encodeURIComponent(deployId)}&service_id=${encodeURIComponent(serviceId)}`, 'GET')
-    const row = await env.DB.prepare('SELECT status, url, panel_url, dashboard_url, template, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ status: string; url: string | null; panel_url: string | null; dashboard_url: string | null; template: string | null; admin_username: string | null; admin_password: string | null }>()
+    const row = await env.DB.prepare('SELECT status, url, panel_url, dashboard_url, template, admin_username, admin_password, setup_note, setup_node_link, setup_sub_url FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ status: string; url: string | null; panel_url: string | null; dashboard_url: string | null; template: string | null; admin_username: string | null; admin_password: string | null; setup_note: string | null; setup_node_link: string | null; setup_sub_url: string | null }>()
     if (!row) return
     if (row.status === 'success') {
       const meta = getHostedPanel(row.template ?? 'stanng')
@@ -1148,9 +1155,13 @@ async function pollRenderDeploy(env: Env, bt: string, chatId: string | number, u
       let m = `✅ <b>استقرار Render تمام شد — ${meta.label}</b>\n\n🔐 پنل: <code>${escHtml(row.panel_url ?? row.url ?? '—')}</code>`
       if (user || pass) m += `\n\n👤 کاربر: <code>${escHtml(user ?? '—')}</code>\n🔑 گذرواژه: <code>${escHtml(pass ?? '—')}</code>`
       if (meta.note) m += `\n\n💡 ${escHtml(meta.note)}`
+      if (row.setup_note) m += `\n\n✅ تنظیم خودکار:\n${escHtml(row.setup_note)}`
+      if (row.setup_node_link) m += `\n\n🔗 لینک نود آماده:\n<code>${escHtml(row.setup_node_link)}</code>`
+      if (row.setup_sub_url) m += `\n\n📥 ساب آماده:\n<code>${escHtml(row.setup_sub_url)}</code>`
       const rows: Array<Array<{ text: string; u?: string; c?: string }>> = []
       if (row.panel_url || row.url) rows.push([{ text: '🔐 باز کردن پنل', u: row.panel_url ?? row.url ?? '' }])
       if (row.dashboard_url) rows.push([{ text: '📊 داشبورد Render', u: row.dashboard_url }])
+      if (row.setup_sub_url) rows.push([{ text: '📥 ساب', u: row.setup_sub_url }])
       rows.push([btn('🏠 منو', 'm')])
       if (row.dashboard_url) m += `\n📊 داشبورد Render: <code>${escHtml(row.dashboard_url)}</code>`
       await sendMsg(bt, chatId, m, KB(rows))

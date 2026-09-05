@@ -401,6 +401,27 @@ function WorkersTab() {
                   {item.error_message}
                 </div>
               )}
+              {item.status === 'success' && (item.setup_note || item.setup_node_link || item.setup_sub_url) && (
+                <div className="mx-5 mb-5 px-4 py-3 rounded-xl bg-green-500/5 border border-green-500/25 text-right">
+                  <p className="text-xs font-bold text-green-300 mb-1.5">✅ تنظیم خودکار انجام شد — نود آماده است</p>
+                  {item.setup_note && <p className="text-xs text-slate-300 leading-relaxed">{item.setup_note}</p>}
+                  {item.setup_node_link && (
+                    <div className="mt-2 flex items-start gap-2">
+                      <code className="text-[11px] text-green-300/90 break-all flex-1 font-mono" dir="ltr">{item.setup_node_link}</code>
+                      <button
+                        onClick={() => copySub(item.setup_node_link ?? '', `${item.id}-node`)}
+                        className="text-[11px] px-2 py-1 rounded-lg bg-slate-700/40 text-slate-300 hover:text-white shrink-0"
+                      >کپی</button>
+                    </div>
+                  )}
+                  {item.setup_sub_url && (
+                    <a href={item.setup_sub_url} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs text-brand-300 hover:text-brand-200 mt-2 break-all" dir="ltr">
+                      <ExternalLink className="w-3.5 h-3.5 shrink-0" /> {item.setup_sub_url}
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           )
         }

@@ -75,7 +75,7 @@ export const HOSTED_PANELS: HostedPanelTemplate[] = [
     loginPath: '/managepanel/',
     credsMode: 'default',
     fixedCreds: { username: 'admin', password: 'admin' },
-    note: 'در اولین ورود حتماً گذرواژه را از تنظیمات 3x-ui عوض کنید. اینباند VLESS باید روی پورت 8080 ساخته شود.',
+    note: 'تنظیم خودکار: بعد از LIVE، اینباند VLESS/ws روی پورت 8080 و یک کلاینت miliconfig ساخته می‌شود و لینک نود + ساب تحویل داده می‌شود. در اولین ورود حتماً گذرواژه را از تنظیمات 3x-ui عوض کنید.',
   },
   {
     slug: 'heimdall',
@@ -89,7 +89,7 @@ export const HOSTED_PANELS: HostedPanelTemplate[] = [
     loginPath: '/managepanel/',
     credsMode: 'fixed',
     fixedCreds: { username: 'X4GKIN', password: 'X4GKIN' },
-    note: 'پس از ورود گذرواژه را عوض کنید. صفحه ساب عمومی: <دامنه>/view/',
+    note: 'تنظیم خودکار: بعد از LIVE، اینباند VLESS/ws روی پورت 8080 و یک کلاینت miliconfig ساخته می‌شود و لینک نود + ساب تحویل داده می‌شود. پس از ورود گذرواژه را عوض کنید.',
   },
   {
     slug: 'marzban',
@@ -109,7 +109,7 @@ export const HOSTED_PANELS: HostedPanelTemplate[] = [
     credsMode: 'env-user-pass',
     credsUsername: 'admin',
     credsEnv: { user: 'SUDO_USERNAME', pass: 'SUDO_PASSWORD' },
-    note: 'برای ماندگاری داده‌ها یک Volume روی /code وصل کنید.',
+    note: 'تنظیم خودکار: ادمین، اینباند VLESS/ws و کاربر miliconfig بعد از LIVE ساخته می‌شود و لینک نود + ساب تحویل داده می‌شود. برای ماندگاری داده‌ها یک Volume روی /code وصل کنید.',
   },
   {
     slug: 'pasarguard',
@@ -124,7 +124,7 @@ export const HOSTED_PANELS: HostedPanelTemplate[] = [
     envVars: [{ key: 'SQLALCHEMY_DATABASE_URL', value: 'sqlite+aiosqlite:///db.sqlite3' }],
     credsMode: 'cli',
     credsUsername: 'admin',
-    note: 'بعد از LIVE شدن، از کنسول Railway/Render اجرا کنید: pasarguard cli admins --create admin',
+    note: 'ادمین باید یک‌بار از کنسول Railway/Render ساخته شود — بعد از LIVE شدن اجرا کنید: pasarguard cli admins --create admin',
   },
   {
     slug: 'x4g',
@@ -139,7 +139,7 @@ export const HOSTED_PANELS: HostedPanelTemplate[] = [
     envVars: [{ key: 'DATA_DIR', value: '/data' }],
     credsMode: 'env-pass',
     credsEnv: { pass: 'ADMIN_PASSWORD' },
-    note: 'برای ماندگاری داده‌ها یک Volume روی /data وصل کنید.',
+    note: 'تنظیم خودکار: بعد از LIVE، کانفیگ پیش‌فرض و گروه ساب «پیش‌فرض» ساخته می‌شود و لینک نود + ساب تحویل داده می‌شود. برای ماندگاری داده‌ها یک Volume روی /data وصل کنید.',
   },
 ]
 

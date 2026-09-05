@@ -5,6 +5,7 @@ import { runDeployment } from './deploy'
 import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiError } from './railway'
 import { verifyRenderToken, deployToRender, renderDeployStatus, RenderApiError } from './render'
 import { getHostedPanel, type HostedPanelTemplate } from './panels'
+import { finalizeHostedPanel } from './panelsetup'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleProxyList } from './proxylist'
@@ -346,6 +347,58 @@ async function handleRenderDeploy(env: Env, userId: string, request: Request): P
   }
 }
 
+/** Maximum setup attempts across status polls before giving up and keeping
+ * the manual note (≈ 1.5–2.5 minutes of polling at 5s intervals). */
+const MAX_SETUP_ATTEMPTS = 15
+
+/**
+ * Drive the per-panel post-deploy setup once the service is live. Runs at most
+ * one attempt per status poll; persists progress so repeated polls resume
+ * instead of re-running already-finished steps. `done` panels are never
+ * touched again.
+ */
+async function runPanelSetup(
+  env: Env,
+  userId: string,
+  deploymentId: string,
+  publicUrl: string | null,
+  tpl: HostedPanelTemplate,
+  creds: { username: string | null; password: string | null },
+): Promise<{ setup_state: string; setup_note: string | null; node_link: string | null; sub_url: string | null }> {
+  const row = await env.DB.prepare(
+    'SELECT setup_state, setup_note, setup_node_link, setup_sub_url, setup_attempts FROM hosted_deployments WHERE id = ? AND user_id = ?',
+  ).bind(deploymentId, userId).first<{ setup_state: string | null; setup_note: string | null; setup_node_link: string | null; setup_sub_url: string | null; setup_attempts: number | null }>()
+  const state = row?.setup_state ?? 'none'
+  if (state === 'done' || state === 'failed') {
+    return {
+      setup_state: state,
+      setup_note: row?.setup_note ?? null,
+      node_link: row?.setup_node_link ?? null,
+      sub_url: row?.setup_sub_url ?? null,
+    }
+  }
+  if (!publicUrl) return { setup_state: 'pending', setup_note: null, node_link: null, sub_url: null }
+
+  const outcome = await finalizeHostedPanel(publicUrl, tpl, creds)
+  const attempts = Number(row?.setup_attempts ?? 0) + 1
+  if (outcome.done) {
+    await env.DB.prepare(
+      'UPDATE hosted_deployments SET setup_state = ?, setup_note = ?, setup_node_link = ?, setup_sub_url = ?, setup_attempts = ? WHERE id = ? AND user_id = ?',
+    ).bind('done', outcome.note, outcome.nodeLink ?? null, outcome.subUrl ?? null, attempts, deploymentId, userId).run()
+    return { setup_state: 'done', setup_note: outcome.note, node_link: outcome.nodeLink ?? null, sub_url: outcome.subUrl ?? null }
+  }
+  if (attempts >= MAX_SETUP_ATTEMPTS) {
+    await env.DB.prepare(
+      'UPDATE hosted_deployments SET setup_state = ?, setup_note = ?, setup_attempts = ? WHERE id = ? AND user_id = ?',
+    ).bind('failed', outcome.note, attempts, deploymentId, userId).run()
+    return { setup_state: 'failed', setup_note: outcome.note, node_link: null, sub_url: null }
+  }
+  await env.DB.prepare(
+    'UPDATE hosted_deployments SET setup_state = ?, setup_note = ?, setup_attempts = ? WHERE id = ? AND user_id = ?',
+  ).bind('pending', outcome.note, attempts, deploymentId, userId).run()
+  return { setup_state: 'pending', setup_note: null, node_link: null, sub_url: null }
+}
+
 /** Poll the status of a Render deployment that handleRenderDeploy started. */
 async function handleRenderStatus(env: Env, userId: string, url: URL): Promise<Response> {
   const tokenId = url.searchParams.get('token_id') ?? ''
@@ -357,15 +410,24 @@ async function handleRenderStatus(env: Env, userId: string, url: URL): Promise<R
   try {
     const status = await renderDeployStatus(row.token, deployId, serviceId)
     const normalized = status.status === 'LIVE' ? 'success' : ['FAILED', 'CANCELED', 'DEACTIVATED'].includes(status.status) ? 'failed' : 'deploying'
-    const meta = await env.DB.prepare('SELECT template FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ template: string }>()
+    const meta = await env.DB.prepare('SELECT template, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deployId, userId).first<{ template: string; admin_username: string | null; admin_password: string | null }>()
     const tpl = getHostedPanel(meta?.template)
     const publicUrl = normalizeHostedUrl(status.url)
     const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}${tpl.loginPath}` : null
+
+    // Once LIVE, run the per-panel auto-setup (admin, inbound, node/sub links).
+    let setup: { setup_state: string; setup_note: string | null; node_link: string | null; sub_url: string | null } = { setup_state: 'none', setup_note: null, node_link: null, sub_url: null }
+    if (normalized === 'success' && publicUrl) {
+      setup = await runPanelSetup(env, userId, deployId, publicUrl, tpl, {
+        username: meta?.admin_username ?? null,
+        password: meta?.admin_password ?? null,
+      })
+    }
     await env.DB.prepare(
       `UPDATE hosted_deployments SET status = ?, url = COALESCE(?, url), panel_url = COALESCE(?, panel_url), error_message = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`,
     ).bind(normalized, publicUrl, panelUrl, normalized === 'failed' ? `Render: ${status.status}` : null, nowIso(), deployId, userId).run()
-    return json({ data: status })
+    return json({ data: { ...status, setup_state: setup.setup_state, setup_note: setup.setup_note, node_link: setup.node_link, sub_url: setup.sub_url } })
   } catch (err) {
     const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
     return apiError(msg, 400)
@@ -382,40 +444,26 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
   try {
     let status = await railwayDeployStatus(row.token, deploymentId)
 
-    // When the deploy goes live, finish the StanNG panel setup (POST /api/setup
-    // with the stored one-time admin credentials) and report the domain URL.
-    let setupDone = false
+    // The Railway domain is authoritative for the panel URL.
     if (status.status === 'SUCCESS') {
-      const rec = await env.DB.prepare(
-        'SELECT domain, admin_username, admin_password, setup_done FROM railway_deploys WHERE id = ? AND user_id = ?',
-      ).bind(deploymentId, userId).first<{ domain: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
+      const rec = await env.DB.prepare('SELECT domain FROM railway_deploys WHERE id = ? AND user_id = ?')
+        .bind(deploymentId, userId).first<{ domain: string | null }>()
       if (rec?.domain) status = { ...status, url: normalizeHostedUrl(rec.domain) }
-      if (rec?.domain && rec.admin_username && rec.admin_password && !rec.setup_done) {
-        // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
-        for (let attempt = 0; attempt < 4; attempt++) {
-          try {
-            await fetch(`https://${rec.domain}/api/setup`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
-              signal: AbortSignal.timeout(12000),
-            })
-            break
-          } catch {
-            if (attempt === 3) break
-            await new Promise((r) => setTimeout(r, 1500))
-          }
-        }
-        // Mark done regardless — an HTTP 400 (already-configured) counts as done.
-        await env.DB.prepare('UPDATE railway_deploys SET setup_done = 1 WHERE id = ? AND user_id = ?').bind(deploymentId, userId).run()
-        setupDone = true
-      }
     }
     const normalized = status.status === 'SUCCESS' ? 'success' : ['FAILED', 'CRASHED', 'SKIPPED', 'REMOVED'].includes(status.status) ? 'failed' : 'deploying'
-    const meta = await env.DB.prepare('SELECT template FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ template: string }>()
+    const meta = await env.DB.prepare('SELECT template, admin_username, admin_password FROM hosted_deployments WHERE id = ? AND user_id = ?').bind(deploymentId, userId).first<{ template: string; admin_username: string | null; admin_password: string | null }>()
     const tpl = getHostedPanel(meta?.template)
     const publicUrl = normalizeHostedUrl(status.url)
     const panelUrl = publicUrl ? `${publicUrl.replace(/\/+$/, '')}${tpl.loginPath}` : null
+
+    // Once SUCCESS, run the per-panel auto-setup (admin, inbound, node/sub links).
+    let setup: { setup_state: string; setup_note: string | null; node_link: string | null; sub_url: string | null } = { setup_state: 'none', setup_note: null, node_link: null, sub_url: null }
+    if (normalized === 'success' && publicUrl) {
+      setup = await runPanelSetup(env, userId, deploymentId, publicUrl, tpl, {
+        username: meta?.admin_username ?? null,
+        password: meta?.admin_password ?? null,
+      })
+    }
     await env.DB.prepare(
       `UPDATE hosted_deployments SET status = ?, url = COALESCE(?, url), panel_url = COALESCE(?, panel_url), error_message = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`,
@@ -428,7 +476,7 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
       deploymentId,
       userId,
     ).run()
-    return json({ data: { ...status, setup_done: setupDone } })
+    return json({ data: { ...status, setup_state: setup.setup_state, setup_note: setup.setup_note, node_link: setup.node_link, sub_url: setup.sub_url } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
     return apiError(msg, 400)
@@ -484,7 +532,8 @@ async function listHostedDeployments(env: Env, userId: string): Promise<Response
 
   const r = await env.DB.prepare(
     `SELECT id, provider, name, status, region, url, panel_url, dashboard_url, template,
-            provider_deployment_id, provider_service_id, error_message, created_at, updated_at
+            provider_deployment_id, provider_service_id, error_message, setup_state, setup_note,
+            setup_node_link, setup_sub_url, created_at, updated_at
      FROM hosted_deployments WHERE user_id = ? ORDER BY created_at DESC`,
   ).bind(userId).all()
   return json({ data: r.results })

@@ -2,9 +2,9 @@
 
 # ⚡ میلی‌کانفیگ پرو
 
-### پنل حرفه‌ای مدیریت، استقرار و توزیع کانفیگ روی Cloudflare Workers
+### پنل حرفه‌ای مدیریت، استقرار و توزیع کانفیگ — Cloudflare Workers + Railway + Render
 
-**بدون Supabase • بک‌اند کامل روی Workers + D1 • همه‌چیز در یک مخزن**
+**بدون Supabase • بک‌اند کامل روی Workers + D1 • استقرار پنل‌های آماده (Marzban، 3x-ui، X4G و…) با تنظیم خودکار • همه‌چیز در یک مخزن**
 
 [![GitHub Stars](https://img.shields.io/github/stars/miladjahani/miliconfigpro-v1?style=for-the-badge&logo=github&color=f1c40f&labelColor=1a1a2e)](https://github.com/miladjahani/miliconfigpro-v1/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/miladjahani/miliconfigpro-v1?style=for-the-badge&logo=github&color=3498db&labelColor=1a1a2e)](https://github.com/miladjahani/miliconfigpro-v1/network/members)
@@ -46,7 +46,9 @@
 
 میلی‌کانفیگ پرو یک **پنل تحت وب** برای مدیریت کامل زیرساخت کانفیگ شما روی کلودفلر است:
 
-- 🚀 **استقرار ورکر با یک کلیک** — edgetunnel و سورس اختصاصی، با ساخت خودکار KV و UUID
+- 🚀 **استقرار ورکر با یک کلیک** — edgetunnel، NEXUS و سورس اختصاصی، با ساخت خودکار KV و UUID
+- 🚂🧊 **پنل‌های آماده با تنظیم خودکار** — StanNG، 3x-ui، Heimdall، Marzban، PasarGuard و X4G روی **Railway/Render** مستقر می‌شوند و بعد از LIVE شدن، ادمین/اینباند/کاربر و ساب شان بدون دخالت شما ساخته و «نود آماده» تحویل داده می‌شود (هر پنل منحصربه‌فرد خودش)
+- 🗂 **ورکرها و پنل‌ها در یک فهرست** — ورکرهای کلودفلر و پنل‌های میزبانی‌شده کنار هم با نشان هویت هر پنل، وضعیت زنده و لینک نود/ساب
 - 👥 **کاربران اختصاصی برای هر ورکر** — هر کاربر ساب، کشور IP، فرگمنت، سقف حجم و تنظیمات منحصربه‌فرد خودش را دارد
 - 🧠 **موتور پارسر جهانی** — هر فرمت سابی (base64، sing-box JSON، Clash YAML، حتی HTML) را می‌خواند؛ چند لینک همزمان merge و dedupe می‌شوند
 - 🌍 **IP واقعی هر کشور، زنده** — متصل به اکوسیستم EDT (`ipdb.api.030101.xyz`) + بانک‌های Cloudflare رسمی و TheSpeedX
@@ -55,7 +57,7 @@
 - 📱 **افزودن یک‌کلیکی به کلاینت** — v2rayNG، Clash Meta، sing-box، Hiddify، Streisand با QR کد و صفحهٔ وضعیت عمومی
 - 🤖 **ربات تلگرام** — هشدار مصرف و مدیریت از داخل تلگرام
 - 📊 **سهمیه‌بندی** — سقف گیگ ماهانه، سقف درخواست، حد دستگاه همزمان، انقضا و ریست دوره‌ای برای هر کاربر
-- 💡 **راهنمای زنده** — اولین کلیک روی هر دکمه، خودش را توضیح می‌دهد
+- 💡 **راهنمای زنده + راهنمای کامل** — اولین کلیک روی هر دکمه خودش را توضیح می‌دهد؛ تب «راهنما» هم نقشهٔ تصویری مسیر کار، هم شرح بخش‌به‌بخش هر تب را دارد
 - 📦 **R2 رایگان خودکار** — با هر استقرار، باکت R2 ساخته و متصل می‌شود (۱۰ گیگ رایگان + egress صفر)
 - ⚙️ **gRPC/XHTTP بدون دردسر** — موقع استقرار، gRPC و WebSockets روی همهٔ زون‌ها خودکار روشن می‌شوند
 - ⚡ **سرعت** — فایل‌های استاتیک مستقیم از CDN لبه (بدون اجرای ورکر)، Smart Placement کنار D1، کش immutable یک‌ساله
@@ -70,9 +72,11 @@ flowchart LR
     B --> C[(D1 Database)]
     B --> D[KV ورکرهای مستقر]
     B -->|Cloudflare API| E[استقرار ورکر + KV]
-    B -->|زنده| F[EDT / IPDB / GitHub IP Banks]
-    E --> G[edgetunnel / سورس اختصاصی]
-    G --> H[ساب‌لینک کاربران]
+    B -->|Railway GraphQL / Render REST| F[پنل‌های آماده: StanNG، 3x-ui، Marzban و…]
+    B -->|زنده| G[EDT / IPDB / GitHub IP Banks]
+    E --> H[ورکرهای edgetunnel / NEXUS]
+    F --> I[تنظیم خودکار پس از LIVE → نود + ساب]
+    H --> J[ساب‌لینک کاربران]
 ```
 
 | لایه | تکنولوژی | محل |
@@ -80,8 +84,10 @@ flowchart LR
 | فرانت‌اند | React 18 + Vite + Tailwind + shadcn | `src/` |
 | بک‌اند | Cloudflare Worker (TypeScript) | `worker/` |
 | دیتابیس | Cloudflare D1 (SQLite) | `d1/schema.sql` |
-| موتور پارسر | universal multi-format | `worker/parser.ts` |
 | استقرار ورکر | Cloudflare REST API | `worker/deploy.ts` |
+| استقرار پنل روی Railway | GraphQL backboard | `worker/railway.ts` |
+| استقرار پنل روی Render | REST + Blueprint | `worker/render.ts` |
+| کاتالوگ و تنظیم خودکار پنل‌ها | هر پنل یک روتین مجزا | `worker/panels.ts` + `worker/panelsetup.ts` |
 
 ---
 
@@ -119,18 +125,44 @@ npm run deploy     # بیلد فرانت + اسکیمای D1 (idempotent) + wran
 
 <table>
 <tr><th>بخش</th><th>چه می‌کند؟</th></tr>
-<tr><td><b>🚀 استقرار</b></td><td>ورکر edgetunnel یا سورس اختصاصی با UUID و KV خودکار؛ تنظیمات زندهٔ KV مستقیم از پنل (ProxyIP، ECH، فرگمنت، SOCKS5، مسیر تصادفی و...)</td></tr>
+<tr><td><b>🚀 استقرار</b></td><td>ورکر edgetunnel/NEXUS/سورس اختصاصی با UUID و KV خودکار؛ محیط‌ها: CF Workers، CF Pages، Railway (خودکار/ZIP)، Render.com و VPS/Docker؛ تنظیمات زندهٔ KV مستقیم از پنل (ProxyIP، ECH، فرگمنت، SOCKS5، مسیر تصادفی و...)</td></tr>
+<tr><td><b>🚂🧊 پنل‌های آماده</b></td><td>استقرار یک‌کلیکی StanNG، 3x-ui (تک‌پورت)، Heimdall، Marzban، PasarGuard و X4G روی Railway/Render — بعد از LIVE شدن «تنظیم خودکار» هر پنل (ادمین، اینباند VLESS، کاربر و ساب) اجرا و لینک نود + ساب تحویل می‌شود</td></tr>
 <tr><td><b>👥 کاربران</b></td><td>برای هر ورکر: ساب خصوصی، انتخاب کشور با IP واقعی زنده، فرگمنت JSON دقیق، پریست اپراتورهای ایران، Cipher Suite، WARP، دور زدن تحریم، سقف حجم/درخواست/دستگاه، انقضا و ریست دوره‌ای</td></tr>
 <tr><td><b>💉 تزریق</b></td><td>IP ثابت ورود، چرخش خودکار IP، زنجیره HTTP/SOCKS5/TURN/SSTP، پارامترهای واقعی edgetunnel (proxyip، globalproxy، ech، ed=2560)</td></tr>
 <tr><td><b>📡 اسکنر</b></td><td>بانک‌های زندهٔ IP (EDT، IPDB، Cloudflare رسمی، cf-speedtest، TheSpeedX) + اسکن واقعی TCP روی بازه‌های CIDR + لیست پروکسی EDT-Pages</td></tr>
 <tr><td><b>⚡ بهینه‌ساز</b></td><td>پارسر جهانی همهٔ فرمت‌ها، چند لینک همزمان، پینگ واقعی، حذف نود مرده، خروجی Base64 / Clash / Sing-box / Plain</td></tr>
 <tr><td><b>📱 تحویل</b></td><td>صفحهٔ وضعیت عمومی هر کاربر با QR کد، دکمه‌های افزودن مستقیم به ۶ کلاینت، تشخیص خودکار فرمت از User-Agent، هدر Subscription-Userinfo</td></tr>
 <tr><td><b>🤖 ربات</b></td><td>وب‌هوک تلگرام، هشدار مصرف، مدیریت کاربران از تلگرام</td></tr>
-<tr><td><b>💡 راهنما</b></td><td>Coach-mark زندهٔ اولین کلیک روی همهٔ دکمه‌های پنل + راهنمای متنی کامل مسیر کاربری</td></tr>
+<tr><td><b>💡 راهنما</b></td><td>Coach-mark زندهٔ اولین کلیک روی همهٔ دکمه‌های پنل + تب «راهنما»: نقشهٔ تصویری مسیر، شرح بخش‌به‌بخش هر تب و سناریوهای پرتکرار</td></tr>
 <tr><td><b>📦 R2</b></td><td>باکت R2 رایگان با هر استقرار خودکار ساخته و به ورکر متصل می‌شود — داده‌های سنگین از D1 خارج می‌شوند</td></tr>
 <tr><td><b>⚙️ gRPC/XHTTP</b></td><td>روشن‌کردن خودکار gRPC + WebSockets روی زون‌ها موقع استقرار — نودها بدون تداخل با کلودفلر کار می‌کنند</td></tr>
 <tr><td><b>⚡ سرعت</b></td><td>استاتیک‌ها از CDN لبه بدون اجرای ورکر + Smart Placement کنار D1 + کش immutable یک‌ساله</td></tr>
 </table>
+
+---
+
+## 🚂🧊 پنل‌های آماده روی Railway / Render — با تنظیم خودکار
+
+شش پنل **مستقل** (نه قالب) را می‌توانید با یک کلیک روی Railway یا Render مستقر کنید؛ مثل انتخاب ورکر کلودفلر، هر پنل یک گزینهٔ جدا با هویت، مخزن و پورت خودش است. بعد از LIVE شدن، پنل به‌صورت خودکار و **منحصربه‌فرد برای همان پنل** تنظیم می‌شود تا کاربر بدون هیچ قدم اضافه‌ای، نود و ساب آماده تحویل بگیرد:
+
+| پنل | کاتالوگ | ورود پنل | تنظیم خودکار پس از LIVE |
+|---|---|---|---|
+| 🛡️ **StanNG v2** | `youdidking/stanngv2` | `/login` | ساخت ادمین یک‌بارمصرف از `/api/setup` |
+| 📡 **3x-ui (تک‌پورت)** | `x4gpanell/3x-ui` | `/managepanel/` | ورود → اینباند VLESS/ws روی ۸۰۸۰ + کلاینت + ساب |
+| 🧭 **Heimdall X-UI** | `x4gpanell/Heimdall` | `/managepanel/` | همان روتین X-UI (ورود X4GKIN/X4GKIN) |
+| 🟣 **Marzban** | `x4gpanell/Marzban` | `/dashboard` | ادمین → اینباند VLESS → کاربر → ساب |
+| ⚡ **X4G Gateway** | `x4gpanell/X4G` | `/login` | کانفیگ پیش‌فرض + گروه ساب «پیش‌فرض» |
+| 🛡️ **PasarGuard** | `x4gpanell/PasarGuard` | `/` | ساخت ادمین با CLI از کنسول (دستور دقیق در نتیجه نشان داده می‌شود) |
+
+### کلیدهای لازم
+
+| محیط | کلید | کجا ساخته می‌شود | ثبت در پنل |
+|---|---|---|---|
+| ورکرهای Cloudflare | API Token با `Workers Scripts:Edit` و `KV` | dash.cloudflare.com/profile/api-tokens | تب «توکن‌ها» |
+| Railway | Account Token | railway.com/account/tokens | تب «توکن‌ها» |
+| Render.com | API Key | dashboard.render.com/account/api-keys | تب «توکن‌ها» |
+
+> 💡 نتیجهٔ نهایی استقرار (لینک پنل، رمز ادمین، **لینک نود آماده** و **لینک ساب**) هم در ویزارد، هم در تب «ورکرها» و هم در ربات تلگرام نمایش داده می‌شود.
 
 ---
 
@@ -177,6 +209,10 @@ npx wrangler deploy -c public/repo/nexus-wrangler.toml
 │   ├── parser.ts           # موتور پارسر جهانی
 │   ├── members.ts          # ساب اختصاصی هر کاربر
 │   ├── deploy.ts           # استقرار ورکر با API کلودفلر
+│   ├── panels.ts           # کاتالوگ ۶ پنل آماده (Railway/Render)
+│   ├── panelsetup.ts       # تنظیم خودکار هر پنل پس از LIVE (نود + ساب)
+│   ├── railway.ts          # API استقرار خودکار روی Railway
+│   ├── render.ts           # API استقرار خودکار روی Render.com
 │   └── ...
 ├── d1/schema.sql           # اسکیمای کامل دیتابیس
 └── wrangler.toml           # کانفیگ Cloudflare
