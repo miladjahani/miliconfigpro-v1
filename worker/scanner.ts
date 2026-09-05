@@ -414,9 +414,18 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
   }
 
   if (sorted.length === 0) {
+    // On the deployed panel (a Cloudflare Worker), outbound sockets to
+    // Cloudflare's own anycast ranges are refused by network loop-protection,
+    // so "Cloudflare" mode can never return rows from here — tell the user why
+    // and point them at the alternative that does work from this vantage.
+    const cfHint =
+      type === 'cloudflare'
+        ? ' اسکن از داخل خود Cloudflare Workers اجرا می‌شود و اتصال به IPهای خود Cloudflare مسدود است (حفاظت ضدحلقه). از حالت «IP پاک»، اسکن از گره‌های VPS/Railway یا درخواست مستقیم از دستگاه خودتان استفاده کنید.'
+        : ' اینترنت/پورت‌های هدف را بررسی کنید و دوباره تلاش کنید.'
     return json({
       success: false,
-      error: 'هیچ IP پاسخ‌دهی پیدا نشد. اینترنت/پورت‌های هدف را بررسی کنید و دوباره تلاش کنید.',
+      error: `هیچ IP پاسخ‌دهی پیدا نشد.${cfHint}`,
+      note: type === 'cloudflare' ? 'IPهای Cloudflare از داخل Workers قابل اسکن نیستند — از حالت IP پاک استفاده کنید.' : undefined,
     }, 200)
   }
 
