@@ -305,6 +305,9 @@ export async function handleRangeScan(body: {
     scanned: targets.length,
     count: ok.length,
     results: ok,
+    ...(ok.length === 0
+      ? { error: 'هیچ IP از بازه انتخابی پاسخ نداد — بازه/پورت را بررسی یا عوض کنید و دوباره تلاش کنید.' }
+      : {}),
   })
 }
 
@@ -342,17 +345,34 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
 
   if (unique.length === 0) return apiError('هیچ IP از منابع دریافت نشد.', 502)
 
-  // Probe in batches of 8 until we have enough good results.
+  // Probe in batches of 8 until we have enough reachable results.
   const allResults: ScanResult[] = []
   for (let i = 0; i < unique.length && allResults.filter((r) => r.status === 'ok').length < safeCount; i += 8) {
     const batch = unique.slice(i, i + 8)
     allResults.push(...(await Promise.all(batch.map((c) => probeIP(c.ip, c.type, c.source)))))
   }
 
-  const sorted: ScanResult[] = allResults
-    .filter((r) => r.status === 'ok' && r.latencyMs !== null && (type !== 'cloudflare' || r.verified === true))
+  const reachable: ScanResult[] = allResults
+    .filter((r) => r.status === 'ok' && r.latencyMs !== null)
     .sort((a, b) => (a.latencyMs ?? 9999) - (b.latencyMs ?? 9999))
-    .slice(0, safeCount)
+
+  // Cloudflare mode prefers HTTPS-verified edges. If the colo/HTTPS check is
+  // unavailable on this account/plan (resolveOverride limits), do NOT discard
+  // every TCP-reachable IP: return them marked unverified (amber badge) so the
+  // scan still produces usable, server-measured results instead of failing.
+  // Verified rows always win the top slots.
+  let coloNote = ''
+  let sorted: ScanResult[] = []
+  if (type === 'cloudflare') {
+    const verified = reachable.filter((r) => r.verified === true)
+    const unverified = reachable.filter((r) => r.verified !== true)
+    if (unverified.length > 0 && verified.length === 0) {
+      coloNote = 'تأیید HTTPS/colo از این اکانت انجام نشد — نتایج بر اساس پینگ واقعی TCP هستند.'
+    }
+    sorted = [...verified, ...unverified].slice(0, safeCount)
+  } else {
+    sorted = reachable.slice(0, safeCount)
+  }
 
   if (body.speedtest && sorted.length > 0) {
     const speedTargets = sorted.slice(0, 10)
@@ -394,8 +414,17 @@ export async function handleIpScanner(body: { type?: string; count?: number; inc
   }
 
   if (sorted.length === 0) {
-    return json({ success: false, error: 'هیچ IP پاسخ‌دهی پیدا نشد. بعداً دوباره تلاش کنید.' }, 200)
+    return json({
+      success: false,
+      error: 'هیچ IP پاسخ‌دهی پیدا نشد. اینترنت/پورت‌های هدف را بررسی کنید و دوباره تلاش کنید.',
+    }, 200)
   }
 
-  return json({ success: true, count: sorted.length, results: sorted, proxies: proxies.length > 0 ? proxies.slice(0, 50) : undefined })
+  return json({
+    success: true,
+    count: sorted.length,
+    ...(coloNote ? { note: coloNote } : {}),
+    results: sorted,
+    proxies: proxies.length > 0 ? proxies.slice(0, 50) : undefined,
+  })
 }

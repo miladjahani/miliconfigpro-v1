@@ -1205,6 +1205,7 @@ function ScannerTab() {
   const [runSpeedTest, setRunSpeedTest] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [results, setResults] = useState<ScanResult[]>([])
+  const [scanNote, setScanNote] = useState<string | null>(null)
   const [proxies, setProxies] = useState<ScanResult[]>([])
   const [error, setError] = useState<string | null>(null)
   const [selectedIPs, setSelectedIPs] = useState<Set<string>>(new Set())
@@ -1227,7 +1228,7 @@ function ScannerTab() {
   }, [])
 
   const runScan = async () => {
-    setScanning(true); setError(null); setResults([]); setProxies([]); setSelectedIPs(new Set())
+    setScanning(true); setError(null); setScanNote(null); setResults([]); setProxies([]); setSelectedIPs(new Set())
     try {
       // Add timeout so mobile browsers don't kill the request when backgrounded
       const scanPromise = api<{ success: boolean; results?: ScanResult[]; proxies?: ScanResult[]; error?: string; scanned?: number }>('/ip-scanner', {
@@ -1240,6 +1241,7 @@ function ScannerTab() {
       const data = await Promise.race([scanPromise, timeoutPromise])
       if (data.success && data.results && data.results.length > 0) {
         setResults(data.results as ScanResult[])
+        if ((data as { note?: string }).note) setScanNote((data as { note?: string }).note as string)
         if (data.proxies) setProxies(data.proxies as ScanResult[])
       } else if (data.success) {
         setError('هیچ IP پاسخ‌دهی پیدا نشد. اتصال edge function به منابع خارجی را بررسی کنید.')
@@ -1389,6 +1391,12 @@ function ScannerTab() {
         <div className="glass-card p-4 border-error-500/30 flex items-center gap-3">
           <AlertTriangle className="w-5 h-5 text-error-400 shrink-0" />
           <span className="text-sm text-error-300">{error}</span>
+        </div>
+      )}
+
+      {scanNote && (
+        <div className="glass-card p-4 border-amber-500/40">
+          <p className="text-sm text-amber-300">{scanNote}</p>
         </div>
       )}
 
