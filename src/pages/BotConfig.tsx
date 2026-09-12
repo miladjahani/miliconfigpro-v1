@@ -293,8 +293,10 @@ export default function BotConfigPage() {
             { cmd: '/config <name>', desc: 'دریافت لینک پنل، ساب و کانفیگ' },
             { cmd: '/sub <name>', desc: 'دریافت لینک اشتراک (ساب)' },
             { cmd: '/panel <name>', desc: 'دریافت لینک پنل ورکر' },
+            { cmd: '/panels', desc: 'پنل‌های آمادهٔ استقرار (StanNG v2، PXPANEL، 3X-UI، S-UI، PasarGuard، Remnawave)' },
+            { cmd: '/servers', desc: 'پنل‌های مستقرشده روی Railway' },
             { cmd: '/set <name> <key> <value>', desc: 'تغییر تنظیمات ورکر' },
-            { cmd: '/status', desc: 'وضعیت سرویس‌ها' },
+            { cmd: '/status', desc: 'وضعیت سرویس‌ها و سرورها' },
             { cmd: '/tokens', desc: 'لیست توکن‌های کلودفلر' },
             { cmd: '/help', desc: 'راهنمای دستورات' },
           ].map((c) => (

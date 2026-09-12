@@ -6,7 +6,7 @@ import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiErr
 import { verifyRenderToken, deployToRender, renderDeployStatus, RenderApiError } from './render'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
-import { handleTelegramWebhook } from './telegram'
+import { handleTelegramWebhook, notifyDeployment } from './telegram'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
 import { handleOptProbe, handleOptPorts, handleOptScanBatch, handleOptSpeedtest } from './probe'
@@ -16,6 +16,7 @@ import { handleMemberCreate, handleMemberList, handleMemberPatch, handleMemberDe
 import { serveStatusPage } from './status'
 import { exportBackup, importBackup } from './backup'
 import { handleSourceSettings, handleSourceNodes } from './sourcebridge'
+import { resolvePanel } from '../shared/panels'
 
 interface DeploymentBody {
   name?: string
@@ -119,30 +120,32 @@ async function loadRailwayToken(env: Env, userId: string, id: string): Promise<{
     .first<{ id: string; token: string; name: string }>()
 }
 
-/** Auto-deploy StanNG v2 to Railway: create project + service (US region), start deploy. */
+/** Auto-deploy a catalog panel to Railway: create project + service, start deploy. */
 async function handleRailwayDeploy(env: Env, userId: string, request: Request): Promise<Response> {
-  const body = safeJsonParse<{ token_id?: string; name?: string; region?: string }>(await request.text().catch(() => ''), {})
+  const body = safeJsonParse<{ token_id?: string; name?: string; region?: string; panel?: string }>(await request.text().catch(() => ''), {})
   const name = (body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام پروژه نامعتبر است')
   const region = /^[a-z0-9-]+$/.test(body.region ?? '') ? (body.region as string) : 'us-west2'
+  const panel = resolvePanel(body.panel)
   const row = await loadRailwayToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('توکن Railway فعال انتخاب‌شده پیدا نشد', 400)
 
   try {
-    const result = await deployToRailway(row.token, name, region)
-
-    // One-time admin credentials for the StanNG panel — persisted so the status
-    // poller can finish /api/setup automatically once the deploy is live.
+    // One-time credentials for the panel — generated here, pushed as env vars,
+    // and persisted so the status poller can finish the admin bootstrap.
     const adminUsername = 'admin'
-    const adminPassword = `mil${genId().replaceAll('-', '')}`.slice(0, 14)
+    const adminPassword = panel.defaultAdminPassword ?? `mil${genId().replaceAll('-', '')}`.slice(0, 14)
+    const secretKey = genId()
+    const result = await deployToRailway(row.token, name, region, panel, { adminPassword, secretKey })
+
     await env.DB.prepare(
-      `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, admin_username, admin_password, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, adminUsername, adminPassword, nowIso()).run()
+      `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, name, panel, admin_username, admin_password, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, name, panel.id, adminUsername, adminPassword, nowIso()).run()
 
     await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
     await logActivity(env, userId, 'railway_deploy_started', 'deployment', name)
-    return json({ data: { ...result, admin_username: adminUsername, admin_password: adminPassword } })
+    return json({ data: { ...result, panel: panel.id, panel_name: panel.name, panel_path: panel.panelPath, admin_username: adminUsername, admin_password: adminPassword } })
   } catch (err) {
     const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
     return apiError(msg, 400)
@@ -207,19 +210,26 @@ async function loadRenderToken(env: Env, userId: string, id: string): Promise<{ 
     .first<{ id: string; token: string; name: string }>()
 }
 
-/** Auto-deploy StanNG v2 to Render.com: create Blueprint service, start deploy. */
+/** Auto-deploy a catalog panel to Render.com: create Blueprint service, start deploy. */
 async function handleRenderDeploy(env: Env, userId: string, request: Request): Promise<Response> {
-  const body = safeJsonParse<{ token_id?: string; name?: string }>(await request.text().catch(() => ''), {})
+  const body = safeJsonParse<{ token_id?: string; name?: string; panel?: string }>(await request.text().catch(() => ''), {})
   const name = (body.name ?? '').trim().toLowerCase()
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام سرویس نامعتبر است')
+  const panel = resolvePanel(body.panel)
   const row = await loadRenderToken(env, userId, body.token_id ?? '')
   if (!row) return apiError('کلید API رندر انتخاب‌شده پیدا نشد', 400)
 
   try {
-    const result = await deployToRender(row.token, name)
+    const adminPassword = panel.defaultAdminPassword ?? `mil${genId().replaceAll('-', '')}`.slice(0, 14)
+    const secretKey = genId()
+    const result = await deployToRender(row.token, name, panel, { adminPassword, secretKey })
+    await env.DB.prepare(
+      `INSERT INTO render_deploys (id, user_id, token_id, service_id, name, panel, admin_username, admin_password, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(result.deployId, userId, row.id, result.serviceId, name, panel.id, 'admin', adminPassword, nowIso()).run()
     await env.DB.prepare('UPDATE render_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
     await logActivity(env, userId, 'render_deploy_started', 'deployment', name)
-    return json({ data: result })
+    return json({ data: { ...result, panel: panel.id, panel_name: panel.name, panel_path: panel.panelPath, admin_username: 'admin', admin_password: adminPassword } })
   } catch (err) {
     const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Render'
     return apiError(msg, 400)
@@ -235,7 +245,49 @@ async function handleRenderStatus(env: Env, userId: string, url: URL): Promise<R
   const row = await loadRenderToken(env, userId, tokenId)
   if (!row) return apiError('کلید API رندر پیدا نشد', 400)
   try {
-    return json({ data: await renderDeployStatus(row.token, deployId, serviceId) })
+    const status = await renderDeployStatus(row.token, deployId, serviceId)
+    const rec = await env.DB.prepare(
+      'SELECT name, panel, url, admin_username, admin_password, setup_done FROM render_deploys WHERE id = ? AND user_id = ?',
+    ).bind(deployId, userId).first<{ name: string | null; panel: string | null; url: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
+    const liveUrl = status.url ?? rec?.url ?? null
+
+    // Persist the live URL as soon as Render publishes it.
+    if (status.url && rec && rec.url !== status.url) {
+      await env.DB.prepare('UPDATE render_deploys SET url = ? WHERE id = ? AND user_id = ?').bind(status.url, deployId, userId).run()
+    }
+
+    // One-time transition once the service is live: bootstrap the panel admin
+    // (if it exposes a setup endpoint) and notify the bot owner.
+    if (status.status === 'LIVE' && liveUrl && rec && !rec.setup_done) {
+      const panel = resolvePanel(rec.panel)
+      if (panel.setupPath && rec.admin_username && rec.admin_password) {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            await fetch(`${liveUrl}${panel.setupPath}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
+              signal: AbortSignal.timeout(12000),
+            })
+            break
+          } catch {
+            if (attempt === 3) break
+            await new Promise((r) => setTimeout(r, 1500))
+          }
+        }
+      }
+      await env.DB.prepare('UPDATE render_deploys SET setup_done = 1, url = ? WHERE id = ? AND user_id = ?').bind(liveUrl, deployId, userId).run()
+      await notifyDeployment(
+        env,
+        userId,
+        rec.name ?? panel.name,
+        'deployed',
+        liveUrl,
+        `${liveUrl}${panel.panelPath}`,
+      ).catch(() => null)
+    }
+
+    return json({ data: { ...status, url: liveUrl } })
   } catch (err) {
     const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
     return apiError(msg, 400)
@@ -257,28 +309,41 @@ async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<
     let setupDone = false
     if (status.status === 'SUCCESS') {
       const rec = await env.DB.prepare(
-        'SELECT domain, admin_username, admin_password, setup_done FROM railway_deploys WHERE id = ? AND user_id = ?',
-      ).bind(deploymentId, userId).first<{ domain: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
+        'SELECT name, domain, panel, admin_username, admin_password, setup_done FROM railway_deploys WHERE id = ? AND user_id = ?',
+      ).bind(deploymentId, userId).first<{ name: string | null; domain: string | null; panel: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
       if (rec?.domain) status = { ...status, url: rec.domain }
-      if (rec?.domain && rec.admin_username && rec.admin_password && !rec.setup_done) {
-        // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
-        for (let attempt = 0; attempt < 4; attempt++) {
-          try {
-            await fetch(`https://${rec.domain}/api/setup`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
-              signal: AbortSignal.timeout(12000),
-            })
-            break
-          } catch {
-            if (attempt === 3) break
-            await new Promise((r) => setTimeout(r, 1500))
+      const panel = resolvePanel(rec?.panel)
+      // One-time transition once the panel is live: bootstrap its admin account
+      // (only panels that expose a setup endpoint) and notify the bot owner.
+      if (rec?.domain && !rec.setup_done) {
+        if (panel.setupPath && rec.admin_username && rec.admin_password) {
+          // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
+          for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+              await fetch(`https://${rec.domain}${panel.setupPath}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
+                signal: AbortSignal.timeout(12000),
+              })
+              break
+            } catch {
+              if (attempt === 3) break
+              await new Promise((r) => setTimeout(r, 1500))
+            }
           }
+          setupDone = true
         }
         // Mark done regardless — an HTTP 400 (already-configured) counts as done.
         await env.DB.prepare('UPDATE railway_deploys SET setup_done = 1 WHERE id = ? AND user_id = ?').bind(deploymentId, userId).run()
-        setupDone = true
+        await notifyDeployment(
+          env,
+          userId,
+          rec.name ?? panel.name,
+          'deployed',
+          `https://${rec.domain}`,
+          `https://${rec.domain}${panel.panelPath}`,
+        ).catch(() => null)
       }
     }
     return json({ data: { ...status, setup_done: setupDone } })

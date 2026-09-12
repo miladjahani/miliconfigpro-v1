@@ -4,14 +4,17 @@
  * Mirror of the Railway flow: an account API key (created at
  * https://dashboard.render.com/account/api-keys) authenticates via
  * `Authorization: Bearer <key>`. We create a Blueprint from an embedded
- * render.yaml-style spec (Docker service), which provisions a new web service
- * from the public StanNG repo, then trigger a deploy and poll its status:
+ * render.yaml-style spec for a catalog panel (see shared/panels.ts) — Docker
+ * or native Python depending on the panel runtime — then trigger a deploy and
+ * poll its status:
  *
  *   GET  /v1/owners                 → owner id for the key (verify)
  *   POST /v1/blueprints (multipart) → resources[] (web service id)
  *   POST /v1/services/{serviceId}/deploys → deploy id
  *   GET  /v1/deploys/{id} → status (created → build_in_progress → live)
  */
+
+import type { PanelSpec } from '../shared/panels'
 
 export class RenderApiError extends Error {
   constructor(message: string) {
@@ -86,8 +89,6 @@ export interface RenderDeployResult {
   dashboardUrl: string
 }
 
-const STANNG_REPO = 'youdidking/stanngv2'
-
 interface RenderResource {
   id?: string
   type?: string
@@ -100,39 +101,78 @@ interface BlueprintResponse {
 }
 
 /**
- * render.yaml as YAML text — Docker env so xray + nginx (entrypoint.sh) run
- * exactly like Railway. The Blueprint API wants this as a `file` part in a
- * multipart form, next to an `ownerId` field.
+ * render.yaml as YAML text. Docker panels build the repo's own Dockerfile;
+ * native panels run the panel's build/start commands on Render's Python image.
+ * The Blueprint API wants this as a `file` part in a multipart form, next to
+ * an `ownerId` field.
  */
-function buildRenderYaml(name: string): string {
-  return [
+function buildRenderYaml(name: string, panel: PanelSpec, values: PanelDeployEnv): string {
+  const lines: string[] = [
     'services:',
     '  - type: web',
     `    name: ${name}`,
-    '    env: docker',
-    '    plan: free',
-    `    repo: https://github.com/${STANNG_REPO}`,
-    '    dockerfilePath: Dockerfile',
-    '    envVars:',
-    '      - key: PORT',
-    '        value: "8000"',
-    '    autoDeploy: true',
-    '',
-  ].join('\n')
+  ]
+
+  if (panel.runtime === 'docker') {
+    lines.push(
+      '    env: docker',
+      '    plan: free',
+      `    repo: https://github.com/${panel.repo}`,
+      `    dockerfilePath: ${panel.dockerfilePath ?? 'Dockerfile'}`,
+    )
+  } else {
+    lines.push(
+      '    env: python',
+      '    plan: free',
+      `    repo: https://github.com/${panel.repo}`,
+      '    branch: main',
+      `    buildCommand: ${panel.buildCommand ?? 'pip install -r requirements.txt'}`,
+      `    startCommand: ${panel.startCommand ?? 'python main.py'}`,
+      `    healthCheckPath: ${panel.healthPath ?? panel.panelPath}`,
+    )
+  }
+
+  const envVars: Array<[string, string]> = []
+  if (panel.env.port) envVars.push([panel.env.port, String(panel.port)])
+  if (panel.env.adminPassword) envVars.push([panel.env.adminPassword, values.adminPassword])
+  if (panel.env.secretKey) envVars.push([panel.env.secretKey, values.secretKey])
+  if (panel.env.dataDir) envVars.push([panel.env.dataDir, '/data'])
+
+  if (envVars.length) {
+    lines.push('    envVars:')
+    for (const [key, value] of envVars) {
+      lines.push(`      - key: ${key}`)
+      lines.push(`        value: "${value}"`)
+    }
+  }
+  lines.push('    autoDeploy: true')
+  lines.push('')
+  return lines.join('\n')
+}
+
+/** Values generated per-deploy and injected as panel env vars. */
+export interface PanelDeployEnv {
+  adminPassword: string
+  secretKey: string
 }
 
 /**
- * Create a Render Blueprint from the public StanNG repo and trigger a deploy.
+ * Create a Render Blueprint from a catalog panel repo and trigger a deploy.
  * Returns the new web-service id, the deploy id and a dashboard link.
  */
-export async function deployToRender(token: string, projectName: string): Promise<RenderDeployResult> {
+export async function deployToRender(
+  token: string,
+  projectName: string,
+  panel: PanelSpec,
+  values: PanelDeployEnv,
+): Promise<RenderDeployResult> {
   // 0. Resolve the owner id that this API key belongs to.
   const owner = await verifyRenderToken(token)
 
   // 1. Provision the web service via a Blueprint (multipart form).
   const form = new FormData()
   form.append('ownerId', owner.id)
-  form.append('file', new Blob([buildRenderYaml(projectName)], { type: 'text/yaml' }), 'render.yaml')
+  form.append('file', new Blob([buildRenderYaml(projectName, panel, values)], { type: 'text/yaml' }), 'render.yaml')
 
   const blueprint = await renderFetch<BlueprintResponse>(token, '/blueprints', {
     method: 'POST',

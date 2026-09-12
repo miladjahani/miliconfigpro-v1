@@ -125,12 +125,60 @@ npm run deploy     # بیلد فرانت + اسکیمای D1 (idempotent) + wran
 <tr><td><b>📡 اسکنر</b></td><td>بانک‌های زندهٔ IP (EDT، IPDB، Cloudflare رسمی، cf-speedtest، TheSpeedX) + اسکن واقعی TCP روی بازه‌های CIDR + لیست پروکسی EDT-Pages</td></tr>
 <tr><td><b>⚡ بهینه‌ساز</b></td><td>پارسر جهانی همهٔ فرمت‌ها، چند لینک همزمان، پینگ واقعی، حذف نود مرده، خروجی Base64 / Clash / Sing-box / Plain</td></tr>
 <tr><td><b>📱 تحویل</b></td><td>صفحهٔ وضعیت عمومی هر کاربر با QR کد، دکمه‌های افزودن مستقیم به ۶ کلاینت، تشخیص خودکار فرمت از User-Agent، هدر Subscription-Userinfo</td></tr>
-<tr><td><b>🤖 ربات</b></td><td>وب‌هوک تلگرام، هشدار مصرف، مدیریت کاربران از تلگرام</td></tr>
+<tr><td><b>🤖 ربات</b></td><td>وب‌هوک تلگرام، هشدار مصرف، مدیریت کاربران از تلگرام + کاتالوگ پنل‌ها (<code>/panels</code>)، لیست پنل‌های مستقرشده روی Railway/Render (<code>/servers</code>) و اعلان خودکار لحظهٔ آمادهشدن پنل</td></tr>
 <tr><td><b>💡 راهنما</b></td><td>Coach-mark زندهٔ اولین کلیک روی همهٔ دکمه‌های پنل + راهنمای متنی کامل مسیر کاربری</td></tr>
 <tr><td><b>📦 R2</b></td><td>باکت R2 رایگان با هر استقرار خودکار ساخته و به ورکر متصل می‌شود — داده‌های سنگین از D1 خارج می‌شوند</td></tr>
 <tr><td><b>⚙️ gRPC/XHTTP</b></td><td>روشن‌کردن خودکار gRPC + WebSockets روی زون‌ها موقع استقرار — نودها بدون تداخل با کلودفلر کار می‌کنند</td></tr>
 <tr><td><b>⚡ سرعت</b></td><td>استاتیک‌ها از CDN لبه بدون اجرای ورکر + Smart Placement کنار D1 + کش immutable یک‌ساله</td></tr>
+<tr><td><b>🧩 چند زیرساخت</b></td><td>استقرار روی Cloudflare (Workers/Pages)، Railway، Render.com و هر VPS با Docker — با کاتالوگ پنل‌های آمادهٔ بررسی‌شده (StanNG v2، PXPANEL، 3X-UI، S-UI، PasarGuard، Remnawave) و تولید خودکار Dockerfile / docker-compose / railway.toml / render.yaml</td></tr>
 </table>
+
+---
+
+## 🧩 کاتالوگ پنل‌ها (Railway · Render.com · VPS)
+
+هر پنلی که می‌توان روی Railway، Render.com یا یک VPS داکری مستقر کرد، در یک فایل مشترک تعریف می‌شود:
+
+```
+shared/panels.ts
+```
+
+این کاتالوگ هم در بک‌اند (Worker: `railway.ts`، `render.ts`، `index.ts`) و هم در فرانت‌اند (`DeployWizard`، `vps-deploy.ts`) استفاده می‌شود — پس افزودن یک پنل جدید با یک ورودی، بلافاصله در **همهٔ بخش‌های برنامه** (ویزارد استقرار، توکن‌ها، مستندات، ساخت فایل‌های استقرار) ظاهر می‌شود؛ دقیقاً مثل سورس‌های ورکر کلودفلر.
+
+| پنل | مخزن | جامعه | نوع اجرا | مسیر پنل | پورت | هدف‌ها |
+|---|---|---|---|---|---|---|
+| **StanNG v2** | `youdidking/stanngv2` | 🌍 | Docker (Dockerfile مخزن) | `/login` | 8000 | Railway · Render · VPS |
+| **PXPANEL** | `iran-px-panel/pxpanel` | 🇮🇷 | Python / FastAPI | `/dashboard` | 8000 | Railway · Render · VPS |
+| **3X-UI** | `MHSanaei/3x-ui` | 🇮🇷 | Docker (ایمیج رسمی) | `/` | 2053 | VPS |
+| **S-UI** | `alireza0/s-ui` | 🇮🇷 | Docker (ایمیج رسمی) | `/app/` | 2095 (+2096) | VPS |
+| **PasarGuard** | `PasarGuard/panel` | 🇮🇷 | Docker + PostgreSQL | `/` | 8000 | VPS |
+| **Remnawave** | `remnawave/backend` | 🇷🇺 | Docker + PostgreSQL + Redis | `/` | 3000 | VPS |
+| **Luffy Panel** | `luffy-sh-op/LUFFY_PANEL` | 🌍 | Python / FastAPI (Procfile خودش) | `/` | 8000 | Railway · Render · VPS |
+| **WG-Easy** | `wg-easy/wg-easy` | 🌍 | Docker (WireGuard/AmneziaWG) | `/` | 51821 (+51820/udp) | VPS |
+
+### پنل‌های اسکریپتی (نصب مستقیم روی VPS)
+
+بعضی پروژه‌ها مستقیم روی خود هاست نصب می‌شوند (systemd/SSH) و در قالب داکر بالا نمی‌آیند؛ این‌ها در `shared/vps-scripts.ts` هستند و ویزارد **دستور نصب رسمی تأییدشده‌شان** را نشان می‌دهد:
+
+| پروژه | جامعه | روش | آخرین کامیت |
+|---|---|---|---|
+| `HamedAp/ShahanPanel` (پنل شاهان) | 🇮🇷 | اسکریپت رسمی (`install.sh`) | 2026-09-12 |
+| `mack-a/v2ray-agent` | 🇨🇳 | اسکریپت یک‌خطی Xray/sing-box (+ نسخهٔ داکری) | 2026-09-09 |
+| `hiddify/Hiddify-Manager` | 🌍 | اسکریپت رسمی مخزن | 2026-09-07 |
+
+> برندهایی که اسمشان زیاد شنیده می‌شود ولی **مخزن عمومی قابل‌تأییدی ندارند** (SLV، RVG، loofi، sanayii، solgx) و همچنین مخازن راکد/۴۰۴، در `EXCLUDED_REPOS`، `EXCLUDED_WORKER_SOURCES` و `UNVERIFIABLE_PANEL_BRANDS` با دلیل ثبت شده‌اند.
+
+**قاعدهٔ افزودن:** هر پنل فقط بعد از **بررسی زندهٔ مخزن** اضافه می‌شود. هر ورودی `lastCommit` (تاریخ آخرین کامیت بالادست) و `verifiedAt` (تاریخ بررسی) دارد و در ویزارد به‌صورت بج «✅ last upstream commit …» نمایش داده می‌شود. مخازنی که راکد بودند (مثلاً `Gozargah/Marzban` با آخرین کامیت ۲۰۲۵-۰۱-۰۹) در فهرست `EXCLUDED_REPOS` با دلیل ثبت شده‌اند تا حذف‌شدنشان تصادفی به نظر نرسد.
+
+برای هر پنل، ویزارد استقرار از این سه روش پشتیبانی می‌کند:
+
+1. **Railway (خودکار)** — پروژه ساخته می‌شود، مخزن به‌عنوان سرویس متصل، متغیرهای محیطی (`ADMIN_PASSWORD`، `SECRET_KEY`، `PORT` و...) ست و دیپلوی اجرا می‌شود.
+2. **Render.com (خودکار)** — یک Blueprint (render.yaml) ساخته می‌شود؛ برای پنل داکری `env: docker` و برای پنل پایتونی `env: python` با build/start command مناسب.
+3. **VPS (Docker)** — بستهٔ ZIP شامل `docker-compose.yml`، `nginx.conf`، `.env`، `deploy.sh` و `README.md` دانلود می‌شود. برای پنل‌های پایتونی `Dockerfile` هم ساخته می‌شود؛ پنل‌های دارای ایمیج رسمی مستقیم از همان ایمیج بالا می‌آیند و در صورت نیاز، سرویس‌های **PostgreSQL** و **Redis** خودکار به compose اضافه می‌شوند.
+
+> رمز ادمین و کلید سشن در هر استقرار به‌صورت تصادفی ساخته می‌شوند و در متغیرهای محیطی همان سرویس قرار می‌گیرند؛ فقط یک‌بار پس از استقرار نمایش داده می‌شوند.
+
+**افزودن پنل جدید:** یک ورودی به آرایهٔ `PANELS` در `shared/panels.ts` اضافه کنید (مخزن، نوع اجرا، پورت، مسیر پنل و نام متغیرهای محیطی). نیازی به تغییر جای دیگری از کد نیست.
 
 ---
 

@@ -54,6 +54,21 @@ const SCHEMA_STATEMENTS = [
     environment_id TEXT NOT NULL,
     region TEXT NOT NULL DEFAULT 'us-west2',
     domain TEXT,
+    name TEXT,
+    panel TEXT,
+    admin_username TEXT,
+    admin_password TEXT,
+    setup_done INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE TABLE IF NOT EXISTS render_deploys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_id TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    name TEXT,
+    panel TEXT,
+    url TEXT,
     admin_username TEXT,
     admin_password TEXT,
     setup_done INTEGER NOT NULL DEFAULT 0,
@@ -179,6 +194,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_railway_tokens_user ON railway_tokens(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_railway_deploys_user ON railway_deploys(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_render_tokens_user ON render_tokens(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_render_deploys_user ON render_deploys(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_deployments_user ON deployments(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status)`,
   `CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id)`,
@@ -214,6 +230,8 @@ const MIGRATIONS = [
   `ALTER TABLE worker_members ADD COLUMN notified_level INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE injector_jobs ADD COLUMN rotate_minutes INTEGER`,
   `ALTER TABLE optimizer_jobs ADD COLUMN opt_options TEXT`,
+  `ALTER TABLE railway_deploys ADD COLUMN panel TEXT`,
+  `ALTER TABLE railway_deploys ADD COLUMN name TEXT`,
 ]
 
 let ready: Promise<void> | null = null

@@ -1,5 +1,6 @@
 import type { Env } from './env'
 import { genId, nowIso } from './util'
+import { PANELS, resolvePanel } from '../shared/panels'
 
 interface TgUser { id: number; username?: string; first_name?: string; last_name?: string }
 interface TgMessage { chat: { id: number }; from?: TgUser; text?: string }
@@ -152,7 +153,9 @@ async function sendStatus(env: Env, bt: string, chatId: number | string, userId:
   const tokens = await env.DB.prepare('SELECT COUNT(*) AS c FROM cf_tokens WHERE user_id = ?').bind(userId).first<{ c: number }>()
   const deps = await env.DB.prepare("SELECT COUNT(*) AS c FROM deployments WHERE user_id = ? AND status = 'deployed'").bind(userId).first<{ c: number }>()
   const users = await env.DB.prepare('SELECT COUNT(*) AS c FROM bot_users WHERE user_id = ?').bind(userId).first<{ c: number }>()
-  await sendMsg(bt, chatId, `📊 <b>وضعیت:</b>\n\n🔑 توکن‌ها: ${tokens?.c ?? 0}\n🚀 ورکرهای مستقر: ${deps?.c ?? 0}\n👥 کاربران: ${users?.c ?? 0}\n🤖 ربات: ${active ? 'فعال ✅' : 'غیرفعال ❌'}`)
+  const rails = await env.DB.prepare('SELECT COUNT(*) AS c FROM railway_deploys WHERE user_id = ?').bind(userId).first<{ c: number }>()
+  const renders = await env.DB.prepare('SELECT COUNT(*) AS c FROM render_deploys WHERE user_id = ?').bind(userId).first<{ c: number }>()
+  await sendMsg(bt, chatId, `📊 <b>وضعیت:</b>\n\n🔑 توکن‌ها: ${tokens?.c ?? 0}\n🚀 ورکرهای مستقر: ${deps?.c ?? 0}\n🏗 پنل‌های Railway: ${rails?.c ?? 0}\n☁️ پنل‌های Render: ${renders?.c ?? 0}\n👥 کاربران: ${users?.c ?? 0}\n🤖 ربات: ${active ? 'فعال ✅' : 'غیرفعال ❌'}`)
 }
 
 async function sendWorkers(env: Env, bt: string, chatId: number | string, userId: string): Promise<void> {
@@ -187,6 +190,96 @@ async function sendWorkerDetail(env: Env, bt: string, chatId: number | string, u
   if (subUrl) buttons.push([{ text: '🔗 دریافت ساب', url: subUrl }])
   if (w.panel_url) buttons.push([{ text: '🔐 باز کردن پنل', url: w.panel_url }])
   await sendMsg(bt, chatId, `📦 <b>${w.name}</b>\n${subUrl ? `🔗 ساب:\n<code>${subUrl}</code>\n\n` : ''}${w.panel_url ? `🔐 پنل:\n<code>${w.panel_url}</code>` : ''}`, buttons.length ? { inline_keyboard: buttons } : undefined)
+}
+
+/** The shared deployment catalog (shared/panels.ts), surfaced in Telegram. */
+async function sendPanels(bt: string, chatId: number | string): Promise<void> {
+  let m = '🧩 <b>پنل‌های آمادهٔ استقرار</b>\n\n'
+  const buttons: Array<Array<{ text: string; url: string }>> = []
+  for (const p of PANELS) {
+    const targets = p.targets
+      .map((t) => (t === 'railway' ? 'Railway' : t === 'render' ? 'Render' : 'VPS'))
+      .join(' / ')
+    m += `📦 <b>${p.name}</b>\n${p.tagline}\n`
+    m += `مخزن: <code>${p.repo}</code>\n`
+    m += `اجرا: ${p.runtime === 'docker' ? 'Docker' : 'Python'} · پورت <code>${p.port}</code> · مسیر <code>${p.panelPath}</code>\n`
+    m += `هدف‌ها: ${targets}\n\n`
+    buttons.push([{ text: `↗ ${p.name} در GitHub`, url: p.url }])
+  }
+  m += 'برای استقرار: پنل وب → «استقرار جدید» → روش Railway / Render / VPS → انتخاب پنل.'
+  await sendMsg(bt, chatId, m, buttons.length ? { inline_keyboard: buttons } : undefined)
+}
+
+/** Panel deployments started from the web wizard, on Railway and Render. */
+async function sendServers(env: Env, bt: string, chatId: number | string, userId: string): Promise<void> {
+  const rails = await env.DB.prepare(
+    `SELECT name, panel, region, domain, admin_username, created_at FROM railway_deploys
+     WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`,
+  ).bind(userId).all<{ name: string | null; panel: string | null; region: string; domain: string | null; admin_username: string | null; created_at: string }>()
+  const renders = await env.DB.prepare(
+    `SELECT name, panel, url, admin_username, created_at FROM render_deploys
+     WHERE user_id = ? ORDER BY created_at DESC LIMIT 10`,
+  ).bind(userId).all<{ name: string | null; panel: string | null; url: string | null; admin_username: string | null; created_at: string }>()
+
+  if (!rails.results.length && !renders.results.length) {
+    await sendMsg(bt, chatId, '🖥 هنوز پنلی روی Railway یا Render مستقر نشده. از پنل وب استقرار دهید.')
+    return
+  }
+
+  let m = '🖥 <b>پنل‌های مستقرشده</b>\n\n'
+  const buttons: Array<Array<{ text: string; url: string }>> = []
+
+  const row = (
+    label: string,
+    meta: string,
+    base: string | null,
+    panelPath: string,
+    panelName: string,
+    admin: string | null,
+  ) => {
+    m += `📦 <b>${label}</b> — ${panelName}\n${meta}`
+    if (admin) m += ` · ادمین <code>${admin}</code>`
+    m += '\n'
+    if (base) {
+      m += `🔐 <code>${base}${panelPath}</code>\n\n`
+      buttons.push([{ text: `🔐 پنل ${panelName}`, url: `${base}${panelPath}` }])
+    } else {
+      m += '⏳ هنوز دامنه عمومی فعال نشده\n\n'
+    }
+  }
+
+  if (rails.results.length) {
+    m += '<b>🏗 Railway</b>\n'
+    for (const r of rails.results) {
+      const panel = resolvePanel(r.panel)
+      const base = r.domain ? `https://${r.domain}` : null
+      row(
+        r.name ?? panel.name,
+        `📍 ${r.region} · ${new Date(r.created_at).toLocaleDateString('fa-IR')}`,
+        base,
+        panel.panelPath,
+        panel.name,
+        r.admin_username,
+      )
+    }
+  }
+
+  if (renders.results.length) {
+    m += '<b>☁️ Render.com</b>\n'
+    for (const r of renders.results) {
+      const panel = resolvePanel(r.panel)
+      row(
+        r.name ?? panel.name,
+        `📅 ${new Date(r.created_at).toLocaleDateString('fa-IR')}`,
+        r.url,
+        panel.panelPath,
+        panel.name,
+        r.admin_username,
+      )
+    }
+  }
+
+  await sendMsg(bt, chatId, m, buttons.length ? { inline_keyboard: buttons } : undefined)
 }
 
 async function sendOptimizerList(env: Env, bt: string, chatId: number | string, userId: string): Promise<void> {
@@ -227,6 +320,8 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     else if (cq.data === 'workers') ctx.waitUntil(sendWorkers(env, cfg.bot_token, chatId, cfg.user_id))
     else if (cq.data === 'configs') ctx.waitUntil(sendConfigs(env, cfg.bot_token, chatId, cfg.user_id))
     else if (cq.data === 'optimizer') ctx.waitUntil(sendOptimizerList(env, cfg.bot_token, chatId, cfg.user_id))
+    else if (cq.data === 'panels') ctx.waitUntil(sendPanels(cfg.bot_token, chatId))
+    else if (cq.data === 'servers') ctx.waitUntil(sendServers(env, cfg.bot_token, chatId, cfg.user_id))
     else if (cq.data?.startsWith('w:')) {
       ctx.waitUntil(sendWorkerDetail(env, cfg.bot_token, chatId, cfg.user_id, cq.data.slice(2)))
     }
@@ -255,6 +350,7 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     inline_keyboard: [
       [{ text: '🚀 استقرار ورکر', callback_data: 'deploy' }, { text: '📊 وضعیت', callback_data: 'status' }],
       [{ text: '📋 ورکرها', callback_data: 'workers' }, { text: '🔗 کانفیگ‌ها', callback_data: 'configs' }],
+      [{ text: '🧩 پنل‌ها', callback_data: 'panels' }, { text: '🖥 سرورها', callback_data: 'servers' }],
       [{ text: '⚡ ساب‌های بهینه', callback_data: 'optimizer' }],
     ],
   }
@@ -268,6 +364,10 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
     await sendWorkers(env, bt, chatId, cfg.user_id)
   } else if (text.startsWith('/configs')) {
     await sendConfigs(env, bt, chatId, cfg.user_id)
+  } else if (text === '/panels') {
+    await sendPanels(bt, chatId)
+  } else if (text === '/servers') {
+    await sendServers(env, bt, chatId, cfg.user_id)
   } else if (text === '/tokens') {
     const ts = await env.DB.prepare('SELECT name, status FROM cf_tokens WHERE user_id = ? ORDER BY created_at DESC').bind(cfg.user_id).all<{ name: string; status: string }>()
     if (!ts.results.length) { await sendMsg(bt, chatId, '🔑 هنوز توکنی اضافه نشده.') }
@@ -343,7 +443,7 @@ export async function handleTelegramWebhook(env: Env, ctx: ExecutionContext, req
       await sendMsg(bt, chatId, '🚀 استقرار از طریق ربات غیرفعال است — لطفاً از پنل وب استفاده کنید.')
     }
   } else if (text === '/help') {
-    await sendMsg(bt, chatId, '📖 <b>دستورات:</b>\n\n/start - شروع\n/workers - ورکرها\n/config &lt;name&gt; - کانفیگ\n/sub [name] - ساب\n/panel [name] - پنل\n/status - وضعیت\n/tokens - توکن‌ها\n/help - راهنما')
+    await sendMsg(bt, chatId, '📖 <b>دستورات:</b>\n\n/start - شروع\n/workers - ورکرها\n/config &lt;name&gt; - کانفیگ\n/sub [name] - ساب\n/panel [name] - پنل ورکر\n/panels - پنل‌های آمادهٔ استقرار\n/servers - پنل‌های Railway\n/status - وضعیت\n/tokens - توکن‌ها\n/help - راهنما')
   } else {
     await sendMsg(bt, chatId, 'متوجه نشدم. /help را بفرست.')
   }
