@@ -131,7 +131,7 @@ npm run deploy     # بیلد فرانت + اسکیمای D1 (idempotent) + wran
 <tr><td><b>⚙️ gRPC/XHTTP</b></td><td>روشن‌کردن خودکار gRPC + WebSockets روی زون‌ها موقع استقرار — نودها بدون تداخل با کلودفلر کار می‌کنند</td></tr>
 <tr><td><b>⚡ سرعت</b></td><td>استاتیک‌ها از CDN لبه بدون اجرای ورکر + Smart Placement کنار D1 + کش immutable یک‌ساله</td></tr>
 <tr><td><b>🧩 چند زیرساخت</b></td><td>استقرار روی Cloudflare (Workers/Pages)، Railway، Render.com و هر VPS با Docker — با کاتالوگ پنل‌های آمادهٔ بررسی‌شده (StanNG v2، PXPANEL، 3X-UI، S-UI، PasarGuard، Remnawave) و تولید خودکار Dockerfile / docker-compose / railway.toml / render.yaml</td></tr>
-<tr><td><b>🤖 ربات تلگرام</b></td><td>معماری سه‌لایه (<code>telegram-core</code> / <code>telegram-ui</code> / <code>telegram</code>) — کیبورد دائمی، صفحه‌های تک‌پیامی که درجا ویرایش می‌شوند، ویزارد استقرار (روش ← منبع ← توکن ← تأیید)، جست‌وجو، لینک‌های عمیق <code>?start=workers</code>، قفل مالکیت با کد اتصال یک‌بارمصرف و اعلان لحظه‌ای پنل‌های Railway/Render</td></tr>
+<tr><td><b>🤖 ربات تلگرام</b></td><td>معماری سه‌لایه (<code>telegram-core</code> / <code>telegram-ui</code> / <code>telegram</code>) — کیبورد دائمی، صفحه‌های تک‌پیامی که درجا ویرایش می‌شوند، ویزارد استقرار ورکر کلودفلر **و استقرار پنل روی Railway/Render** (روش ← منبع/پنل ← توکن ← تأیید، با نمایش یک‌بار رمز ادمین و دکمهٔ بررسی زندهٔ وضعیت)، جست‌وجو، لینک‌های عمیق <code>?start=workers</code>، قفل مالکیت با کد اتصال یک‌بارمصرف و اعلان لحظه‌ای پنل‌های Railway/Render</td></tr>
 </table>
 
 ---

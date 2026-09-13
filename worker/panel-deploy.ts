@@ -1,0 +1,263 @@
+/**
+ * Shared Railway / Render panel-deploy engine.
+ *
+ * The web wizard and the Telegram bot must behave identically when starting a
+ * panel deployment (validation, credential generation, DB bookkeeping) and
+ * when finishing one (admin bootstrap + owner notification), so both call
+ * into this module instead of each implementing its own version.
+ */
+
+import type { Env } from './env'
+import { genId, nowIso } from './util'
+import { resolvePanel, type PanelSpec } from '../shared/panels'
+import { deployToRailway, RailwayApiError, railwayDeployStatus } from './railway'
+import { deployToRender, RenderApiError, renderDeployStatus } from './render'
+import { notifyDeployment } from './telegram-core'
+
+export type PanelPlatform = 'railway' | 'render'
+
+/** Everything a caller needs to start a panel deployment. */
+export interface StartPanelDeployInput {
+  userId: string
+  /** Row id of the Railway (`railway_tokens`) or Render (`render_tokens`) token. */
+  tokenId: string
+  /** Lowercase letters, digits and hyphens — used as the project/service name. */
+  name: string
+  panel: PanelSpec
+  /** Railway region; ignored by Render. */
+  region?: string
+}
+
+export type StartPanelDeployResult =
+  | {
+      ok: true
+      platform: PanelPlatform
+      /** Id stored in `railway_deploys` / `render_deploys` (deployment id). */
+      id: string
+      /** Render only — needed to poll the deploy status. */
+      serviceId?: string
+      adminUsername: string
+      adminPassword: string
+      /** Railway may already return the generated *.up.railway.app domain. */
+      domain: string | null
+      dashboardUrl: string
+    }
+  | { ok: false; error: string }
+
+/**
+ * Validate + start a panel deployment on Railway or Render.
+ * Credentials are generated once, pushed to the service as env vars and
+ * persisted so the watcher can bootstrap the panel admin when it goes live.
+ */
+export async function startPanelDeploy(env: Env, input: StartPanelDeployInput): Promise<StartPanelDeployResult> {
+  const name = (input.name ?? '').trim().toLowerCase()
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+    return { ok: false, error: 'نام پروژه نامعتبر است (حروف کوچک انگلیسی، عدد و خط تیره)' }
+  }
+  if (!input.panel.targets.includes('railway') && !input.panel.targets.includes('render')) {
+    return { ok: false, error: `${input.panel.name} روی Railway/Render مستقر نمی‌شود — از روش VPS استفاده کنید` }
+  }
+
+  // The token decides the platform: a Railway token deploys to Railway, a
+  // Render key to Render — the same rule the web wizard follows.
+  const rail = await env.DB.prepare("SELECT id, token, name FROM railway_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
+    .bind(input.tokenId, input.userId)
+    .first<{ id: string; token: string; name: string }>()
+  const render = rail ? null : await env.DB.prepare("SELECT id, token, name FROM render_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
+    .bind(input.tokenId, input.userId)
+    .first<{ id: string; token: string; name: string }>()
+
+  if (!rail && !render) return { ok: false, error: 'توکن Railway/Render فعال انتخاب‌شده پیدا نشد' }
+  const platform: PanelPlatform = rail ? 'railway' : 'render'
+  if (platform === 'railway' && !input.panel.targets.includes('railway')) {
+    return { ok: false, error: `${input.panel.name} روی Railway مستقر نمی‌شود — یک کلید Render انتخاب کنید` }
+  }
+  if (platform === 'render' && !input.panel.targets.includes('render')) {
+    return { ok: false, error: `${input.panel.name} روی Render مستقر نمی‌شود — یک توکن Railway انتخاب کنید` }
+  }
+
+  const token = (rail ?? render)!.token
+  const tokenId = (rail ?? render)!.id
+  const adminUsername = 'admin'
+  const adminPassword = input.panel.defaultAdminPassword ?? `mil${genId().replaceAll('-', '')}`.slice(0, 14)
+  const secretKey = genId()
+
+  try {
+    if (platform === 'railway') {
+      const region = /^[a-z0-9-]+$/.test(input.region ?? '') ? (input.region as string) : 'us-west2'
+      const result = await deployToRailway(token, name, region, input.panel, { adminPassword, secretKey })
+      await env.DB.prepare(
+        `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, name, panel, admin_username, admin_password, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(result.deploymentId, input.userId, tokenId, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, name, input.panel.id, adminUsername, adminPassword, nowIso()).run()
+      await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), tokenId).run()
+      await logStarted(env, input.userId, 'railway', name)
+      return { ok: true, platform, id: result.deploymentId, adminUsername, adminPassword, domain: result.domain ?? null, dashboardUrl: result.projectUrl }
+    }
+
+    const result = await deployToRender(token, name, input.panel, { adminPassword, secretKey })
+    await env.DB.prepare(
+      `INSERT INTO render_deploys (id, user_id, token_id, service_id, name, panel, admin_username, admin_password, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(result.deployId, input.userId, tokenId, result.serviceId, name, input.panel.id, adminUsername, adminPassword, nowIso()).run()
+    await env.DB.prepare('UPDATE render_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), tokenId).run()
+    await logStarted(env, input.userId, 'render', name)
+    return { ok: true, platform, id: result.deployId, serviceId: result.serviceId, adminUsername, adminPassword, domain: null, dashboardUrl: result.dashboardUrl }
+  } catch (err) {
+    const msg = err instanceof RailwayApiError || err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار پنل'
+    return { ok: false, error: msg }
+  }
+}
+
+async function logStarted(env: Env, userId: string, platform: PanelPlatform, name: string): Promise<void> {
+  await env.DB.prepare('INSERT INTO activity_logs (id, user_id, action, entity_type, entity_name, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(genId(), userId, `${platform}_deploy_started`, 'deployment', name, nowIso())
+    .run()
+}
+
+export type PanelWatchResult =
+  | { state: 'pending' | 'failed'; status: string; url: string | null }
+  | {
+      state: 'live'
+      status: string
+      url: string
+      panelPath: string
+      panelName: string
+      adminUsername: string | null
+      adminPassword: string | null
+      /** True on the first poll that observed the deployment live. */
+      firstLive: boolean
+    }
+
+interface RailRec {
+  name: string | null
+  domain: string | null
+  panel: string | null
+  admin_username: string | null
+  admin_password: string | null
+  setup_done: number
+  token_id: string
+}
+
+interface RenderRec {
+  name: string | null
+  url: string | null
+  panel: string | null
+  service_id: string
+  admin_username: string | null
+  admin_password: string | null
+  setup_done: number
+  token_id: string
+}
+
+/**
+ * Poll one panel deployment; when it goes live, bootstrap the panel admin
+ * (panels exposing a setup endpoint) exactly once and notify the bot owner.
+ */
+export async function watchPanelDeploy(env: Env, userId: string, platform: PanelPlatform, deployId: string): Promise<PanelWatchResult> {
+  try {
+    if (platform === 'railway') {
+      const rec = await env.DB.prepare('SELECT name, domain, panel, admin_username, admin_password, setup_done, token_id FROM railway_deploys WHERE id = ? AND user_id = ?')
+        .bind(deployId, userId)
+        .first<RailRec>()
+      if (!rec) return { state: 'pending', status: 'NOT_FOUND', url: null }
+      const token = await activeToken(env, userId, rec.token_id, 'railway')
+      if (!token) return { state: 'pending', status: 'NO_TOKEN', url: null }
+
+      let status = await railwayDeployStatus(token, deployId)
+      if (status.status !== 'SUCCESS') {
+        const failed = ['FAILED', 'CRASHED', 'REMOVED'].includes(status.status)
+        return { state: failed ? 'failed' : 'pending', status: status.status, url: status.url }
+      }
+
+      const panel = resolvePanel(rec.panel)
+      if (!rec.domain) return { state: 'pending', status: 'SUCCESS_NO_DOMAIN', url: null }
+      const url = `https://${rec.domain}`
+      const firstLive = !rec.setup_done
+      if (firstLive) {
+        if (panel.setupPath && rec.admin_username && rec.admin_password) {
+          await bootstrapPanelAdmin(`${url}${panel.setupPath}`, rec.admin_username, rec.admin_password)
+        }
+        await env.DB.prepare('UPDATE railway_deploys SET setup_done = 1 WHERE id = ? AND user_id = ?').bind(deployId, userId).run()
+        await notifyDeployment(env, userId, rec.name ?? panel.name, 'deployed', url, `${url}${panel.panelPath}`).catch(() => null)
+      }
+      return {
+        state: 'live',
+        status: status.status,
+        url,
+        panelPath: panel.panelPath,
+        panelName: panel.name,
+        adminUsername: rec.admin_username,
+        adminPassword: rec.admin_password,
+        firstLive,
+      }
+    }
+
+    const rec = await env.DB.prepare('SELECT name, url, panel, service_id, admin_username, admin_password, setup_done, token_id FROM render_deploys WHERE id = ? AND user_id = ?')
+      .bind(deployId, userId)
+      .first<RenderRec>()
+    if (!rec) return { state: 'pending', status: 'NOT_FOUND', url: null }
+    const token = await activeToken(env, userId, rec.token_id, 'render')
+    if (!token) return { state: 'pending', status: 'NO_TOKEN', url: null }
+
+    const status = await renderDeployStatus(token, deployId, rec.service_id)
+    if (status.status !== 'LIVE') {
+      const failed = ['FAILED', 'DEACTIVATED', 'CANCELED', 'BUILD_FAILED'].includes(status.status)
+      return { state: failed ? 'failed' : 'pending', status: status.status, url: status.url ?? rec.url }
+    }
+
+    const liveUrl = status.url ?? rec.url
+    if (!liveUrl) return { state: 'pending', status: 'LIVE_NO_URL', url: null }
+    const panel = resolvePanel(rec.panel)
+    const firstLive = !rec.setup_done
+    if (firstLive) {
+      if (status.url && rec.url !== status.url) {
+        await env.DB.prepare('UPDATE render_deploys SET url = ? WHERE id = ? AND user_id = ?').bind(status.url, deployId, userId).run()
+      }
+      if (panel.setupPath && rec.admin_username && rec.admin_password) {
+        await bootstrapPanelAdmin(`${liveUrl}${panel.setupPath}`, rec.admin_username, rec.admin_password)
+      }
+      await env.DB.prepare('UPDATE render_deploys SET setup_done = 1, url = ? WHERE id = ? AND user_id = ?').bind(liveUrl, deployId, userId).run()
+      await notifyDeployment(env, userId, rec.name ?? panel.name, 'deployed', liveUrl, `${liveUrl}${panel.panelPath}`).catch(() => null)
+    }
+    return {
+      state: 'live',
+      status: status.status,
+      url: liveUrl,
+      panelPath: panel.panelPath,
+      panelName: panel.name,
+      adminUsername: rec.admin_username,
+      adminPassword: rec.admin_password,
+      firstLive,
+    }
+  } catch (err) {
+    return { state: 'pending', status: err instanceof Error ? err.message.slice(0, 200) : 'ERROR', url: null }
+  }
+}
+
+async function activeToken(env: Env, userId: string, tokenId: string, platform: PanelPlatform): Promise<string | null> {
+  const table = platform === 'railway' ? 'railway_tokens' : 'render_tokens'
+  const row = await env.DB.prepare(`SELECT token FROM ${table} WHERE id = ? AND user_id = ? AND status = 'active'`)
+    .bind(tokenId, userId)
+    .first<{ token: string }>()
+  return row?.token ?? null
+}
+
+/** POST the one-time admin credentials to the panel's setup endpoint (if any). */
+async function bootstrapPanelAdmin(setupUrl: string, username: string, password: string): Promise<void> {
+  // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await fetch(setupUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+        signal: AbortSignal.timeout(12000),
+      })
+      return
+    } catch {
+      if (attempt === 3) return
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+  }
+}

@@ -1,8 +1,9 @@
 import type { Env } from './env'
 import { genId, nowIso, safeJsonParse } from './util'
-import { PANELS, panelOriginLabel, panelVerifiedLabel, resolvePanel } from '../shared/panels'
+import { PANELS, panelsForTarget, panelOriginLabel, panelVerifiedLabel, resolvePanel } from '../shared/panels'
 import { autoWorkerSources } from '../shared/worker-sources'
 import { startDeployment } from './deploy'
+import { startPanelDeploy, watchPanelDeploy, type PanelWatchResult, type StartPanelDeployResult } from './panel-deploy'
 import {
   type BotConfigRow, type BotSession, type Screen, type ScreenCtx, type TgButton,
   clearSession, faDate, loadSession, saveSession, sendMsg, statusIcon, subUrlOf,
@@ -316,8 +317,8 @@ export async function serversScreen(ctx: ScreenCtx, page: number): Promise<Scree
 
   if (!items.length) {
     return {
-      text: '🖥 <b>سرورها</b>\n\nهنوز پنلی روی Railway یا Render مستقر نشده است.\nاز پنل وب → «استقرار جدید» → روش Railway یا Render استفاده کنید.',
-      keyboard: { inline_keyboard: [[{ text: '🧩 پنل‌های آماده', callback_data: 'l:panels:0' }], [homeButton()]] },
+      text: '🖥 <b>سرورها</b>\n\nهنوز پنلی روی Railway یا Render مستقر نشده است.\nهمین‌جا با «🚀 استقرار جدید → پنل Railway/Render» مستقر کنید یا از پنل وب استفاده کنید.',
+      keyboard: { inline_keyboard: [[{ text: '🚀 استقرار پنل', callback_data: 'dpl:start' }, { text: '🧩 پنل‌های آماده', callback_data: 'l:panels:0' }], [homeButton()]] },
     }
   }
 
@@ -462,10 +463,10 @@ export function helpScreen(): Screen {
       '<b>دستورات</b>\n' +
       '/start — شروع و منوی اصلی\n' +
       '/start &lt;code&gt; — اتصال مالک به ربات (کد در پنل وب)\n' +
-      '/quickstart — چهار قدم تا اولین ورکر\n' +
+      '/quickstart — چند قدم تا اولین استقرار\n' +
       '/status — داشبورد\n' +
       '/workers — لیست ورکرها\n' +
-      '/deploy — استقرار ورکر جدید (ویزارد)\n' +
+      '/deploy — استقرار ورکر یا پنل Railway/Render (ویزارد)\n' +
       '/panels — کاتالوگ پنل‌ها\n' +
       '/servers — پنل‌های Railway و Render\n' +
       '/tokens — توکن‌ها\n' +
@@ -504,12 +505,17 @@ export function gateScreen(): Screen {
 
 /** `Record<string, unknown>` so it can also be persisted as a bot session. */
 interface WizardData extends Record<string, unknown> {
+  /** Cloudflare branch — worker execution method. */
   method?: 'workers' | 'pages'
   source?: string
+  /** Row id + name of whichever token the deploy runs with (CF/Railway/Render). */
   tokenId?: string
   tokenName?: string
   name?: string
   uuid?: string
+  /** Railway/Render branch — destination platform + catalog panel id. */
+  target?: 'railway' | 'render'
+  panel?: string
 }
 
 function randomName(): string {
@@ -523,18 +529,38 @@ function randomName(): string {
 export function deployStartScreen(): Screen {
   return {
     text:
-      '🚀 <b>استقرار ورکر جدید</b>\n\n' +
-      'این ویزارد از همان موتور پنل وب استفاده می‌کند: توکن بررسی می‌شود، KV ساخته می‌شود و ورکر روی کلودفلر مستقر می‌گردد.\n\n' +
-      '<b>مرحلهٔ ۱ از ۴ — روش اجرا</b>\n' +
-      '⚡ <b>Workers</b> روش پیشنهادی و کامل است.\n' +
-      '📄 <b>Pages</b> نسخهٔ بتا برای پروژه‌های Pages.',
+      '🚀 <b>استقرار جدید</b>\n\n' +
+      'چه چیزی مستقر کنیم؟\n\n' +
+      '⚡ <b>ورکر کلودفلر</b> — ورکر VLESS با پنل داخلی، ساب و KV خودکار (روش پیشنهادی و کامل).\n' +
+      '🏗 <b>پنل روی Railway</b> — پنل‌های کاتالوگ با دامنهٔ رایگان <code>*.up.railway.app</code>.\n' +
+      '☁️ <b>پنل روی Render</b> — همان پنل‌ها روی Render.com.',
     keyboard: {
       inline_keyboard: [
-        [{ text: '⚡ Cloudflare Workers', callback_data: 'dpl:m:workers' }],
-        [{ text: '📄 Cloudflare Pages (بتا)', callback_data: 'dpl:m:pages' }],
+        [{ text: '⚡ ورکر کلودفلر', callback_data: 'dpl:m:workers' }],
+        [{ text: '🏗 پنل روی Railway', callback_data: 'dpl:T:railway' }, { text: '☁️ Render', callback_data: 'dpl:T:render' }],
+        [{ text: '📄 Pages (بتا)', callback_data: 'dpl:m:pages' }],
         [backButton('n:menu')],
       ],
     },
+  }
+}
+
+/** Railway/Render branch — pick a panel from the shared catalog. */
+export function deployPanelScreen(data: WizardData): Screen {
+  const target = data.target === 'render' ? 'render' : 'railway'
+  const panels = panelsForTarget(target)
+  const keyboard: TgButton[][] = panels.map((p) => [{ text: `🧩 ${p.name}`, callback_data: `dpl:p:${p.id}` }])
+  keyboard.push([backButton('dpl:start', '🔙 روش استقرار')])
+  return {
+    text:
+      `<b>استقرار پنل روی ${target === 'render' ? 'Render' : 'Railway'} — انتخاب پنل</b>\n\n` +
+      panels
+        .map((p) => {
+          const verified = panelVerifiedLabel(p)
+          return `• <b>${p.name}</b> — <i>${p.tagline}</i>${verified ? `\n  ${verified}` : ''}`
+        })
+        .join('\n'),
+    keyboard: { inline_keyboard: keyboard },
   }
 }
 
@@ -547,7 +573,29 @@ export function deploySourceScreen(): Screen {
   return { text, keyboard: { inline_keyboard: keyboard } }
 }
 
-export async function deployTokenScreen(ctx: ScreenCtx): Promise<Screen> {
+export async function deployTokenScreen(ctx: ScreenCtx, data: WizardData): Promise<Screen> {
+  // Railway/Render branch — the platform token decides where the panel lands.
+  if (data.target === 'railway' || data.target === 'render') {
+    const table = data.target === 'railway' ? 'railway_tokens' : 'render_tokens'
+    const label = data.target === 'railway' ? 'Railway' : 'Render'
+    const ts = await ctx.env.DB.prepare(`SELECT id, name FROM ${table} WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20`)
+      .bind(ctx.cfg.user_id).all<{ id: string; name: string }>()
+    if (!ts.results.length) {
+      return {
+        text: `🔑 <b>توکن ${label} لازم است</b>\n\nهیچ توکن فعالی ثبت نشده. اول در پنل وب یک توکن ${label} اضافه کنید.`,
+        keyboard: {
+          inline_keyboard: [
+            [{ text: `➕ افزودن توکن ${label} در پنل وب`, url: `${ctx.origin}/#/tokens` }],
+            [backButton('dpl:p:', '🔙 انتخاب پنل')],
+          ],
+        },
+      }
+    }
+    const keyboard: TgButton[][] = ts.results.map((t) => [{ text: `🔑 ${t.name}`, callback_data: `dpl:t:${t.id}` }])
+    keyboard.push([backButton('dpl:p:', '🔙 انتخاب پنل')])
+    return { text: `<b>توکن ${label}</b>\n\nاستقرار پنل با این حساب انجام می‌شود؛ یکی را انتخاب کنید:`, keyboard: { inline_keyboard: keyboard } }
+  }
+
   const ts = await ctx.env.DB.prepare("SELECT id, name FROM cf_tokens WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20")
     .bind(ctx.cfg.user_id).all<{ id: string; name: string }>()
   if (!ts.results.length) {
@@ -562,6 +610,28 @@ export async function deployTokenScreen(ctx: ScreenCtx): Promise<Screen> {
 }
 
 export function deployConfirmScreen(data: WizardData, uuid: string): Screen {
+  // Railway/Render branch — panel + platform + token summary.
+  if (data.target === 'railway' || data.target === 'render') {
+    const panel = resolvePanel(data.panel)
+    const label = data.target === 'railway' ? 'Railway' : 'Render'
+    return {
+      text:
+        `<b>تأیید نهایی — پنل روی ${label}</b>\n\n` +
+        `🧩 پنل: <b>${panel.name}</b>\n` +
+        `📦 نام پروژه: <code>${data.name ?? ''}</code>\n` +
+        `🔑 توکن: <code>${data.tokenName ?? ''}</code>\n\n` +
+        'رمز ادمین به‌صورت تصادفی ساخته و به‌عنوان متغیر محیطی سرویس ست می‌شود؛ بعد از آماده‌شدن فقط همین‌جا یک‌بار نمایش داده می‌شود.\n' +
+        'با تأیید، استقرار شروع می‌شود و نتیجه همین‌جا اعلام خواهد شد.',
+      keyboard: {
+        inline_keyboard: [
+          [{ text: '✅ شروع استقرار پنل', callback_data: 'dpl:go' }],
+          [{ text: '✏️ تغییر نام', callback_data: 'dpl:name' }],
+          [backButton('dpl:p:', '❌ لغو / تغییر پنل')],
+        ],
+      },
+    }
+  }
+
   const source = autoWorkerSources().find((s) => s.id === data.source)?.name ?? data.source ?? '—'
   return {
     text:
@@ -657,6 +727,37 @@ export async function routeCallback(args: RouterArgs): Promise<Screen | null> {
   }
   if (kind === 'w') return workerScreen(ctx, a ?? '')
 
+  // Live status check for a Railway/Render panel deploy started in the wizard.
+  if (kind === 'srv') {
+    const platform = a === 'render' ? 'render' : 'railway'
+    const id = b ?? ''
+    const watched: PanelWatchResult = await watchPanelDeploy(env, cfg.user_id, platform, id)
+    if (watched.state === 'live') {
+      const kb: TgButton[][] = [[{ text: `🔐 باز کردن پنل ${watched.panelName}`, url: `${watched.url}${watched.panelPath}` }], [{ text: '🖥 سرورها', callback_data: 'l:servers:0' }], [homeButton()]]
+      let text =
+        `🟢 <b>پنل ${watched.panelName} زنده است</b>\n\n` +
+        `🔗 <code>${watched.url}${watched.panelPath}</code>\n`
+      if (watched.firstLive && watched.adminUsername) {
+        text +=
+          `\n👤 ادمین: <code>${watched.adminUsername}</code>\n🔐 رمز: <code>${watched.adminPassword ?? '—'}</code>\n\n` +
+          '⚠️ این رمز فقط همین‌جا نمایش داده می‌شود — ذخیره‌اش کنید.'
+      } else {
+        text += '\n⏳ بوت‌استرپ ادمین قبلاً انجام شده است.'
+      }
+      return { text, keyboard: { inline_keyboard: kb } }
+    }
+    if (watched.state === 'failed') {
+      return {
+        text: `❌ <b>استقرار ناموفق بود</b>\n\nوضعیت Railway/Render: <code>${watched.status}</code>\nاز داشبورد پلتفرم لاگها را ببینید و دوباره تلاش کنید.`,
+        keyboard: { inline_keyboard: [[{ text: '🚀 استقرار جدید', callback_data: 'dpl:start' }], [{ text: '🖥 سرورها', callback_data: 'l:servers:0' }], [homeButton()]] },
+      }
+    }
+    return {
+      text: `⏳ <b>هنوز در حال استقرار است…</b>\n\nوضعیت: <code>${watched.status}</code>\n\nچند لحظه دیگر دوباره «بررسی وضعیت» را بزنید.`,
+      keyboard: { inline_keyboard: [[{ text: '🔄 بررسی دوباره', callback_data: `srv:${platform}:${id}` }], [{ text: '🖥 سرورها', callback_data: 'l:servers:0' }], [homeButton()]] },
+    }
+  }
+
   if (kind === 'cp') {
     const d = await env.DB.prepare('SELECT id, name, worker_url, panel_url, uuid, custom_path FROM deployments WHERE id = ? AND user_id = ?')
       .bind(a ?? '', cfg.user_id)
@@ -734,6 +835,47 @@ async function deployWizard(args: RouterArgs, a: string, b: string): Promise<Scr
     await clearSession(env, cfg.user_id, args.telegramId)
     return deployStartScreen()
   }
+
+  // ── Railway/Render panel branch ──
+  if (a === 'T') {
+    data.target = b === 'render' ? 'render' : 'railway'
+    data.panel = undefined
+    data.tokenId = undefined
+    data.name = undefined
+    await saveSession(env, cfg.user_id, args.telegramId, { state: 'deploy', data })
+    return deployPanelScreen(data)
+  }
+  if (a === 'p' && data.target) {
+    const panel = resolvePanel(b)
+    if (!panel.targets.includes(data.target)) return deployPanelScreen(data)
+    data.panel = panel.id
+    await saveSession(env, cfg.user_id, args.telegramId, { state: 'deploy', data })
+    return deployTokenScreen(ctx, data)
+  }
+  if (a === 't' && data.target && data.panel) {
+    const table = data.target === 'railway' ? 'railway_tokens' : 'render_tokens'
+    const token = await env.DB.prepare(`SELECT id, name FROM ${table} WHERE id = ? AND user_id = ? AND status = 'active'`)
+      .bind(b, cfg.user_id)
+      .first<{ id: string; name: string }>()
+    if (!token) return deployTokenScreen(ctx, data)
+    data.tokenId = token.id
+    data.tokenName = token.name
+    data.name = data.name ?? randomName()
+    await saveSession(env, cfg.user_id, args.telegramId, { state: 'deploy', data })
+    return deployConfirmScreen(data, String(data.uuid ?? ''))
+  }
+
+  // ── Shared steps ──
+  if (a === 'name') {
+    await saveSession(env, cfg.user_id, args.telegramId, { state: 'await_name', data })
+    return {
+      text: '✏️ <b>نام پروژه/ورکر</b>\n\nنام جدید را بفرستید (حروف کوچک انگلیسی، عدد و خط تیره — مثل <code>mil-ab12cd</code>).',
+      keyboard: { inline_keyboard: [[backButton('dpl:confirm', '❌ لغو')]] },
+    }
+  }
+  if (a === 'confirm') return deployConfirmScreen(data, String(data.uuid ?? crypto.randomUUID()))
+
+  // ── Cloudflare branch ──
   if (a === 'm') {
     data.method = b === 'pages' ? 'pages' : 'workers'
     await saveSession(env, cfg.user_id, args.telegramId, { state: 'deploy', data })
@@ -743,14 +885,14 @@ async function deployWizard(args: RouterArgs, a: string, b: string): Promise<Scr
     if (!data.method) return deployStartScreen()
     data.source = b || 'edgetunnel'
     await saveSession(env, cfg.user_id, args.telegramId, { state: 'deploy', data })
-    return deployTokenScreen(ctx)
+    return deployTokenScreen(ctx, data)
   }
   if (a === 't') {
     if (!data.source) return deployStartScreen()
     const token = await env.DB.prepare("SELECT id, name FROM cf_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
       .bind(b, cfg.user_id)
       .first<{ id: string; name: string }>()
-    if (!token) return deployTokenScreen(ctx)
+    if (!token) return deployTokenScreen(ctx, data)
     data.tokenId = token.id
     data.tokenName = token.name
     data.name = data.name ?? randomName()
@@ -763,16 +905,42 @@ async function deployWizard(args: RouterArgs, a: string, b: string): Promise<Scr
     await saveSession(env, cfg.user_id, args.telegramId, { state: 'deploy', data })
     return deployConfirmScreen(data, data.uuid)
   }
-  if (a === 'name') {
-    await saveSession(env, cfg.user_id, args.telegramId, { state: 'await_name', data })
-    return {
-      text: '✏️ <b>نام ورکر</b>\n\nنام جدید را بفرستید (حروف کوچک انگلیسی، عدد و خط تیره — مثل <code>mil-ab12cd</code>).',
-      keyboard: { inline_keyboard: [[backButton('dpl:confirm', '❌ لغو')]] },
-    }
-  }
-  if (a === 'confirm') return deployConfirmScreen(data, String(data.uuid ?? crypto.randomUUID()))
 
   if (a === 'go') {
+    // Panel branch: Railway or Render via the shared engine.
+    if (data.target && data.panel && data.tokenId && data.name) {
+      const started: StartPanelDeployResult = await startPanelDeploy(env, {
+        userId: cfg.user_id,
+        tokenId: data.tokenId,
+        name: data.name,
+        panel: resolvePanel(data.panel),
+      })
+      await clearSession(env, cfg.user_id, args.telegramId)
+      if (!started.ok) {
+        return {
+          text: `❌ <b>استقرار پنل شروع نشد</b>\n\n${started.error}`,
+          keyboard: { inline_keyboard: [[{ text: '🔁 تلاش دوباره', callback_data: 'dpl:start' }], [homeButton()]] },
+        }
+      }
+      const label = started.platform === 'render' ? 'Render' : 'Railway'
+      return {
+        text:
+          `🚀 <b>استقرار پنل روی ${label} شروع شد</b>\n\n` +
+          `🧩 ${resolvePanel(data.panel).name}\n` +
+          `📦 <code>${data.name}</code>\n\n` +
+          'پروژه ساخته می‌شود، مخزن پنل متصل و متغیرهای محیطی ست می‌شوند. معمولاً ۲ تا ۵ دقیقه طول می‌کشد؛ به محض آماده‌شدن، نتیجه و رمز ادمین همین‌جا اعلام می‌شود.',
+        keyboard: {
+          inline_keyboard: [
+            [{ text: started.platform === 'render' ? '☁️ داشبورد Render' : '🏗 داشبورد Railway', url: started.dashboardUrl }],
+            [{ text: '🖥 سرورها', callback_data: 'l:servers:0' }, { text: '📊 داشبورد', callback_data: 'n:status' }],
+            [{ text: '🔄 بررسی وضعیت', callback_data: `srv:${started.platform}:${started.id}` }],
+            [homeButton()],
+          ],
+        },
+      }
+    }
+
+    // Cloudflare worker branch.
     if (!data.method || !data.source || !data.tokenId || !data.name) return deployStartScreen()
     const started = await startDeployment(env, args.exec, {
       userId: cfg.user_id,
@@ -887,9 +1055,10 @@ export async function routeText(args: RouterArgs, text: string): Promise<Screen 
         '⚡ <b>شروع سریع</b>\n\n' +
         '۱) در پنل وب یک توکن Cloudflare اضافه کنید.\n' +
         '۲) در همین ربات /deploy را بزنید.\n' +
-        '۳) روش (Workers/Pages)، منبع، توکن و نام را انتخاب کنید.\n' +
-        '۴) نتیجهٔ استقرار خودکار همین‌جا اعلام می‌شود.\n\n' +
-        'برای پنل‌های Railway/Render/VPS از پنل وب استفاده کنید؛ کاتالوگشان در «🧩 پنل‌ها» است.',
+        '۳) روش را انتخاب کنید: ورکر کلودفلر، یا پنل روی Railway/Render.\n' +
+        '۴) منبع/پنل، توکن و نام را انتخاب و تأیید کنید.\n' +
+        '۵) نتیجهٔ استقرار خودکار همین‌جا اعلام می‌شود.\n\n' +
+        'استقرار پنل VPS از پنل وب است؛ کاتالوگ کامل در «🧩 پنل‌ها».',
       keyboard: { inline_keyboard: [[{ text: '🚀 استقرار جدید', callback_data: 'dpl:start' }], [homeButton()]] },
     }
   }

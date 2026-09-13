@@ -337,7 +337,7 @@ export default function BotConfigPage() {
           {[
             { cmd: '/start', desc: 'شروع و نمایش منوی اصلی (همراه با کیبورد دائمی پایین صفحه)' },
             { cmd: '/quickstart', desc: 'شروع سریع — چهار قدم تا اولین ورکر' },
-            { cmd: '/deploy', desc: 'ویزارد استقرار: روش ← منبع ← توکن ← تأیید' },
+            { cmd: '/deploy', desc: 'ویزارد استقرار: ورکر کلودفلر یا پنل Railway/Render' },
             { cmd: '/workers', desc: 'لیست ورکرهای مستقر شده (صفحه‌بندی‌شده)' },
             { cmd: '/config <name>', desc: 'دریافت لینک پنل، ساب و کانفیگ' },
             { cmd: '/sub <name>', desc: 'دریافت لینک اشتراک (ساب)' },

@@ -2,11 +2,12 @@ import type { Env } from './env'
 import { apiError, json, getUserFromRequest, logActivity, genId, nowIso, safeJsonParse } from './util'
 import { handleSignup, handleLogin, handleLogout, handleMe } from './auth'
 import { startDeployment } from './deploy'
-import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiError } from './railway'
-import { verifyRenderToken, deployToRender, renderDeployStatus, RenderApiError } from './render'
+import { verifyRailwayToken, RailwayApiError } from './railway'
+import { verifyRenderToken, RenderApiError } from './render'
+import { startPanelDeploy, watchPanelDeploy } from './panel-deploy'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
-import { handleTelegramWebhook, notifyDeployment } from './telegram'
+import { handleTelegramWebhook } from './telegram'
 import { syncBotProfile } from './telegram-core'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
@@ -124,33 +125,29 @@ async function loadRailwayToken(env: Env, userId: string, id: string): Promise<{
 /** Auto-deploy a catalog panel to Railway: create project + service, start deploy. */
 async function handleRailwayDeploy(env: Env, userId: string, request: Request): Promise<Response> {
   const body = safeJsonParse<{ token_id?: string; name?: string; region?: string; panel?: string }>(await request.text().catch(() => ''), {})
-  const name = (body.name ?? '').trim().toLowerCase()
-  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام پروژه نامعتبر است')
-  const region = /^[a-z0-9-]+$/.test(body.region ?? '') ? (body.region as string) : 'us-west2'
+  // Same validation + creation path the Telegram bot uses (worker/panel-deploy.ts).
+  const started = await startPanelDeploy(env, {
+    userId,
+    tokenId: body.token_id ?? '',
+    name: body.name ?? '',
+    panel: resolvePanel(body.panel),
+    region: body.region,
+  })
+  if (!started.ok) return apiError(started.error, 400)
   const panel = resolvePanel(body.panel)
-  const row = await loadRailwayToken(env, userId, body.token_id ?? '')
-  if (!row) return apiError('توکن Railway فعال انتخاب‌شده پیدا نشد', 400)
-
-  try {
-    // One-time credentials for the panel — generated here, pushed as env vars,
-    // and persisted so the status poller can finish the admin bootstrap.
-    const adminUsername = 'admin'
-    const adminPassword = panel.defaultAdminPassword ?? `mil${genId().replaceAll('-', '')}`.slice(0, 14)
-    const secretKey = genId()
-    const result = await deployToRailway(row.token, name, region, panel, { adminPassword, secretKey })
-
-    await env.DB.prepare(
-      `INSERT INTO railway_deploys (id, user_id, token_id, project_id, service_id, environment_id, region, domain, name, panel, admin_username, admin_password, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(result.deploymentId, userId, row.id, result.projectId, result.serviceId, result.environmentId, region, result.domain ?? null, name, panel.id, adminUsername, adminPassword, nowIso()).run()
-
-    await env.DB.prepare('UPDATE railway_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
-    await logActivity(env, userId, 'railway_deploy_started', 'deployment', name)
-    return json({ data: { ...result, panel: panel.id, panel_name: panel.name, panel_path: panel.panelPath, admin_username: adminUsername, admin_password: adminPassword } })
-  } catch (err) {
-    const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Railway'
-    return apiError(msg, 400)
-  }
+  return json({
+    data: {
+      deploymentId: started.id,
+      projectId: started.id,
+      projectUrl: started.dashboardUrl,
+      domain: started.domain,
+      panel: panel.id,
+      panel_name: panel.name,
+      panel_path: panel.panelPath,
+      admin_username: started.adminUsername,
+      admin_password: started.adminPassword,
+    },
+  })
 }
 
 // ── Render.com tokens & auto-deploy ──────────────────────────────────────────
@@ -214,144 +211,61 @@ async function loadRenderToken(env: Env, userId: string, id: string): Promise<{ 
 /** Auto-deploy a catalog panel to Render.com: create Blueprint service, start deploy. */
 async function handleRenderDeploy(env: Env, userId: string, request: Request): Promise<Response> {
   const body = safeJsonParse<{ token_id?: string; name?: string; panel?: string }>(await request.text().catch(() => ''), {})
-  const name = (body.name ?? '').trim().toLowerCase()
-  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام سرویس نامعتبر است')
+  // Same validation + creation path the Telegram bot uses (worker/panel-deploy.ts).
+  const started = await startPanelDeploy(env, {
+    userId,
+    tokenId: body.token_id ?? '',
+    name: body.name ?? '',
+    panel: resolvePanel(body.panel),
+  })
+  if (!started.ok) return apiError(started.error, 400)
   const panel = resolvePanel(body.panel)
-  const row = await loadRenderToken(env, userId, body.token_id ?? '')
-  if (!row) return apiError('کلید API رندر انتخاب‌شده پیدا نشد', 400)
-
-  try {
-    const adminPassword = panel.defaultAdminPassword ?? `mil${genId().replaceAll('-', '')}`.slice(0, 14)
-    const secretKey = genId()
-    const result = await deployToRender(row.token, name, panel, { adminPassword, secretKey })
-    await env.DB.prepare(
-      `INSERT INTO render_deploys (id, user_id, token_id, service_id, name, panel, admin_username, admin_password, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(result.deployId, userId, row.id, result.serviceId, name, panel.id, 'admin', adminPassword, nowIso()).run()
-    await env.DB.prepare('UPDATE render_tokens SET last_used_at = ? WHERE id = ?').bind(nowIso(), row.id).run()
-    await logActivity(env, userId, 'render_deploy_started', 'deployment', name)
-    return json({ data: { ...result, panel: panel.id, panel_name: panel.name, panel_path: panel.panelPath, admin_username: 'admin', admin_password: adminPassword } })
-  } catch (err) {
-    const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در استقرار روی Render'
-    return apiError(msg, 400)
-  }
+  return json({
+    data: {
+      deployId: started.id,
+      serviceId: started.serviceId,
+      dashboardUrl: started.dashboardUrl,
+      panel: panel.id,
+      panel_name: panel.name,
+      panel_path: panel.panelPath,
+      admin_username: started.adminUsername,
+      admin_password: started.adminPassword,
+    },
+  })
 }
 
 /** Poll the status of a Render deployment that handleRenderDeploy started. */
 async function handleRenderStatus(env: Env, userId: string, url: URL): Promise<Response> {
-  const tokenId = url.searchParams.get('token_id') ?? ''
   const deployId = url.searchParams.get('deploy_id') ?? ''
-  const serviceId = url.searchParams.get('service_id') ?? ''
-  if (!deployId || !serviceId || !tokenId) return apiError('شناسه استقرار یا کلید ناقص است')
-  const row = await loadRenderToken(env, userId, tokenId)
-  if (!row) return apiError('کلید API رندر پیدا نشد', 400)
-  try {
-    const status = await renderDeployStatus(row.token, deployId, serviceId)
-    const rec = await env.DB.prepare(
-      'SELECT name, panel, url, admin_username, admin_password, setup_done FROM render_deploys WHERE id = ? AND user_id = ?',
-    ).bind(deployId, userId).first<{ name: string | null; panel: string | null; url: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
-    const liveUrl = status.url ?? rec?.url ?? null
-
-    // Persist the live URL as soon as Render publishes it.
-    if (status.url && rec && rec.url !== status.url) {
-      await env.DB.prepare('UPDATE render_deploys SET url = ? WHERE id = ? AND user_id = ?').bind(status.url, deployId, userId).run()
-    }
-
-    // One-time transition once the service is live: bootstrap the panel admin
-    // (if it exposes a setup endpoint) and notify the bot owner.
-    if (status.status === 'LIVE' && liveUrl && rec && !rec.setup_done) {
-      const panel = resolvePanel(rec.panel)
-      if (panel.setupPath && rec.admin_username && rec.admin_password) {
-        for (let attempt = 0; attempt < 4; attempt++) {
-          try {
-            await fetch(`${liveUrl}${panel.setupPath}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
-              signal: AbortSignal.timeout(12000),
-            })
-            break
-          } catch {
-            if (attempt === 3) break
-            await new Promise((r) => setTimeout(r, 1500))
-          }
-        }
-      }
-      await env.DB.prepare('UPDATE render_deploys SET setup_done = 1, url = ? WHERE id = ? AND user_id = ?').bind(liveUrl, deployId, userId).run()
-      await notifyDeployment(
-        env,
-        userId,
-        rec.name ?? panel.name,
-        'deployed',
-        liveUrl,
-        `${liveUrl}${panel.panelPath}`,
-      ).catch(() => null)
-    }
-
-    return json({ data: { ...status, url: liveUrl } })
-  } catch (err) {
-    const msg = err instanceof RenderApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
-    return apiError(msg, 400)
-  }
+  if (!deployId) return apiError('شناسه استقرار ناقص است')
+  // Same lifecycle the Telegram bot uses (worker/panel-deploy.ts): on the live
+  // transition the panel admin is bootstrapped once and the owner is notified.
+  const watched = await watchPanelDeploy(env, userId, 'render', deployId)
+  if (watched.state === 'failed') return apiError(`استقرار ناموفق بود (${watched.status})`, 400)
+  return json({
+    data: {
+      status: watched.state === 'live' ? 'LIVE' : watched.status,
+      url: watched.url,
+      setup_done: watched.state === 'live' ? true : undefined,
+    },
+  })
 }
 
 /** Poll the status of a Railway deployment that handleRailwayDeploy started. */
 async function handleRailwayStatus(env: Env, userId: string, url: URL): Promise<Response> {
-  const tokenId = url.searchParams.get('token_id') ?? ''
   const deploymentId = url.searchParams.get('deployment_id') ?? ''
-  if (!deploymentId || !tokenId) return apiError('شناسه استقرار یا توکن ناقص است')
-  const row = await loadRailwayToken(env, userId, tokenId)
-  if (!row) return apiError('توکن Railway پیدا نشد', 400)
-  try {
-    let status = await railwayDeployStatus(row.token, deploymentId)
-
-    // When the deploy goes live, finish the StanNG panel setup (POST /api/setup
-    // with the stored one-time admin credentials) and report the domain URL.
-    let setupDone = false
-    if (status.status === 'SUCCESS') {
-      const rec = await env.DB.prepare(
-        'SELECT name, domain, panel, admin_username, admin_password, setup_done FROM railway_deploys WHERE id = ? AND user_id = ?',
-      ).bind(deploymentId, userId).first<{ name: string | null; domain: string | null; panel: string | null; admin_username: string | null; admin_password: string | null; setup_done: number }>()
-      if (rec?.domain) status = { ...status, url: rec.domain }
-      const panel = resolvePanel(rec?.panel)
-      // One-time transition once the panel is live: bootstrap its admin account
-      // (only panels that expose a setup endpoint) and notify the bot owner.
-      if (rec?.domain && !rec.setup_done) {
-        if (panel.setupPath && rec.admin_username && rec.admin_password) {
-          // Brief retry loop — DNS/proxy warm-up right after the deploy goes live.
-          for (let attempt = 0; attempt < 4; attempt++) {
-            try {
-              await fetch(`https://${rec.domain}${panel.setupPath}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: rec.admin_username, password: rec.admin_password }),
-                signal: AbortSignal.timeout(12000),
-              })
-              break
-            } catch {
-              if (attempt === 3) break
-              await new Promise((r) => setTimeout(r, 1500))
-            }
-          }
-          setupDone = true
-        }
-        // Mark done regardless — an HTTP 400 (already-configured) counts as done.
-        await env.DB.prepare('UPDATE railway_deploys SET setup_done = 1 WHERE id = ? AND user_id = ?').bind(deploymentId, userId).run()
-        await notifyDeployment(
-          env,
-          userId,
-          rec.name ?? panel.name,
-          'deployed',
-          `https://${rec.domain}`,
-          `https://${rec.domain}${panel.panelPath}`,
-        ).catch(() => null)
-      }
-    }
-    return json({ data: { ...status, setup_done: setupDone } })
-  } catch (err) {
-    const msg = err instanceof RailwayApiError ? err.message : err instanceof Error ? err.message : 'خطا در بررسی وضعیت'
-    return apiError(msg, 400)
-  }
+  if (!deploymentId) return apiError('شناسه استقرار ناقص است')
+  // Same lifecycle the Telegram bot uses (worker/panel-deploy.ts): on the live
+  // transition the panel admin is bootstrapped once and the owner is notified.
+  const watched = await watchPanelDeploy(env, userId, 'railway', deploymentId)
+  if (watched.state === 'failed') return apiError(`استقرار ناموفق بود (${watched.status})`, 400)
+  return json({
+    data: {
+      status: watched.state === 'live' ? 'SUCCESS' : watched.status,
+      url: watched.url,
+      setup_done: watched.state === 'live' ? true : undefined,
+    },
+  })
 }
 
 // ── Deployments ────────────────────────────────────────────────────────────
