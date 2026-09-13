@@ -1,5 +1,5 @@
 import type { Env } from './env'
-import { MENU, replyKeyboard, routeCallback, routeText } from './telegram-ui'
+import { replyKeyboard, routeCallback, routeText } from './telegram-ui'
 import {
   answerCb,
   checkIsAdmin,
@@ -50,7 +50,21 @@ const MAIN_SCREENS = new Set([
   'l:workers:0', 'l:panels:0', 'l:servers:0',
 ])
 
-const isTab = (text: string): boolean => (Object.values(MENU) as string[]).includes(text)
+
+/**
+ * Telegram accepts a single `reply_markup` per message, so the persistent tab
+ * keyboard and a screen's inline buttons can never travel together — sending
+ * the tabs used to silently drop the buttons (the "broken bot" report: text
+ * arrived with no buttons under it).
+ *
+ * They are therefore delivered as two messages: a one-line hint that installs
+ * the tab keyboard, then the screen itself with its own buttons. Telegram keeps
+ * the reply keyboard visible until it is replaced, so the tabs stay put for
+ * every later screen and tab presses never need this again.
+ */
+async function installTabKeyboard(token: string, chatId: number | string): Promise<void> {
+  await sendMsg(token, chatId, '⌨️ منوی سریع فعال شد — از دکمه‌های پایین هم می‌توانید استفاده کنید.', replyKeyboard()).catch(() => null)
+}
 
 function jsonOk(): Response {
   return new Response(JSON.stringify({ ok: true }), {
@@ -169,7 +183,8 @@ export async function handleTelegramWebhook(
         if (deep) {
           const screen = await routeCallback({ ...args, data: deep })
           if (screen) {
-            await sendMsg(bt, chatId, screen.text, MAIN_SCREENS.has(deep) ? replyKeyboard() : screen.keyboard)
+            if (MAIN_SCREENS.has(deep)) await installTabKeyboard(bt, chatId)
+            await renderScreen(bt, chatId, null, screen)
             return
           }
         }
@@ -180,10 +195,11 @@ export async function handleTelegramWebhook(
         // Routing may have just claimed the bot (via `/start <code>`), so the
         // keyboard decision uses the post-routing ownership state.
         const owns = isAdmin || String(cfg.chat_id ?? '') === telegramId
-        if (owns && (text === '/start' || text === '/menu' || text === '/quickstart' || isTab(text))) {
-          await sendMsg(bt, chatId, screen.text, replyKeyboard())
-          return
+        if (owns && (cmd === '/start' || text === '/menu' || text === '/quickstart')) {
+          await installTabKeyboard(bt, chatId)
         }
+        // A tab press just re-renders its screen; the tab keyboard is already on
+        // screen, so the screen's own buttons must be sent untouched.
         await renderScreen(bt, chatId, null, screen)
       } catch {
         await sendMsg(bt, chatId, errorScreen().text).catch(() => null)
