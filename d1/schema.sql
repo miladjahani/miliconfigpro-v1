@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
   is_active INTEGER NOT NULL DEFAULT 1,
   welcome_message TEXT NOT NULL DEFAULT 'سلام! به ربات miliconfig خوش آمدید. برای شروع /start را بفرستید.',
   chat_id TEXT,                          -- owner chat for push notifications
+  claim_code TEXT,                       -- one-time `/start <code>` owner claim code
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -211,6 +212,19 @@ CREATE INDEX IF NOT EXISTS idx_render_deploys_user ON render_deploys(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_user ON deployments(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
 CREATE INDEX IF NOT EXISTS idx_bot_users_user ON bot_users(user_id);
+
+-- Conversation state for the Telegram bot's multi-step flows (deploy wizard,
+-- rename, search, welcome-message edit). One row per user + telegram account.
+CREATE TABLE IF NOT EXISTS bot_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  telegram_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  data TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_sessions_user ON bot_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_user ON optimizer_jobs(user_id);

@@ -1,12 +1,13 @@
 import type { Env } from './env'
 import { apiError, json, getUserFromRequest, logActivity, genId, nowIso, safeJsonParse } from './util'
 import { handleSignup, handleLogin, handleLogout, handleMe } from './auth'
-import { runDeployment } from './deploy'
+import { startDeployment } from './deploy'
 import { verifyRailwayToken, deployToRailway, railwayDeployStatus, RailwayApiError } from './railway'
 import { verifyRenderToken, deployToRender, renderDeployStatus, RenderApiError } from './render'
 import { handleWorkerConfig } from './kvconfig'
 import { handleIpScanner, handleRangeScan } from './scanner'
 import { handleTelegramWebhook, notifyDeployment } from './telegram'
+import { syncBotProfile } from './telegram-core'
 import { ensureSchema } from './schema'
 import { handleOptimizerCreate, handleOptimizerList, handleOptimizerGet, handleOptimizerDelete, serveOptimizerSub } from './optimizer'
 import { handleOptProbe, handleOptPorts, handleOptScanBatch, handleOptSpeedtest } from './probe'
@@ -384,48 +385,21 @@ async function getDeployment(env: Env, userId: string, id: string): Promise<Resp
 
 async function createDeployment(env: Env, userId: string, request: Request, ctx: ExecutionContext, origin: string): Promise<Response> {
   const body = safeJsonParse<DeploymentBody>(await request.text().catch(() => ''), {})
-  const name = (body.name ?? '').trim().toLowerCase()
-  const uuid = (body.uuid ?? '').trim()
-  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return apiError('نام ورکر نامعتبر است')
-  if (!uuid) return apiError('UUID الزامی است')
-
-  const tokenRow = await env.DB.prepare("SELECT id, token FROM cf_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
-    .bind(body.cf_token_id ?? '', userId)
-    .first<{ id: string; token: string }>()
-  if (!tokenRow) return apiError('توکن فعال انتخاب‌شده پیدا نشد', 400)
-
-  // Enforce the user's quota to avoid runaway deployments.
-  const quotaRow = await env.DB.prepare('SELECT max_deployments FROM users WHERE id = ?').bind(userId).first<{ max_deployments: number | null }>()
-  const quota = quotaRow?.max_deployments ?? 100
-  const count = await env.DB.prepare('SELECT COUNT(*) AS c FROM deployments WHERE user_id = ?').bind(userId).first<{ c: number }>()
-  if ((count?.c ?? 0) >= quota) return apiError(`به سقف تعداد ورکرهای خود (${quota}) رسیده‌اید`, 400)
-
-  const id = genId()
-  await env.DB.prepare(
-    `INSERT INTO deployments (id, user_id, name, worker_code, config, status, uuid, custom_path, method, worker_source, created_at, updated_at)
-     VALUES (?, ?, ?, '[auto-loaded]', '{}', 'deploying', ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(id, userId, name, uuid, body.custom_path || null, body.method === 'pages' ? 'pages' : 'workers',
-      body.worker_source ?? 'edgetunnel', nowIso(), nowIso())
-    .run()
-
-  await logActivity(env, userId, 'deployment_created', 'deployment', name)
-
-  ctx.waitUntil(runDeployment(env, {
-    deployment_id: id,
-    worker_name: name,
-    cf_token: tokenRow.token,
-    cf_token_row_id: tokenRow.id,
-    uuid,
+  // Same validation + creation path the Telegram bot uses (worker/deploy.ts).
+  const started = await startDeployment(env, ctx, {
+    userId,
+    name: body.name ?? '',
+    uuid: body.uuid ?? '',
+    cfTokenId: body.cf_token_id ?? '',
     method: body.method === 'pages' ? 'pages' : 'workers',
-    worker_source: body.worker_source ?? 'edgetunnel',
+    workerSource: body.worker_source ?? 'edgetunnel',
     proxyip: body.proxyip || undefined,
-    admin_password: body.admin_password || undefined,
-    custom_path: body.custom_path || undefined,
+    adminPassword: body.admin_password || undefined,
+    customPath: body.custom_path || undefined,
     origin,
-  }))
-
-  return getDeployment(env, userId, id)
+  })
+  if (!started.ok) return apiError(started.error, 400)
+  return getDeployment(env, userId, started.id)
 }
 
 async function deleteDeployment(env: Env, userId: string, id: string): Promise<Response> {
@@ -470,6 +444,14 @@ async function setBotWebhook(botToken: string, origin: string, secret: string): 
   }).then((r) => r.json()).catch(() => null)
   const data = resp as { ok?: boolean; description?: string } | null
   return { ok: !!data?.ok, description: data?.description }
+}
+
+/**
+ * One-time code the owner sends to the bot as `/start <code>` to become its
+ * owner. Regenerated lazily whenever the bot has no owner yet, cleared on claim.
+ */
+function newClaimCode(): string {
+  return genId().replace(/-/g, '').slice(0, 12).toLowerCase()
 }
 
 /** Live webhook diagnostics straight from Telegram (getWebhookInfo). */
@@ -528,12 +510,14 @@ async function saveBotConfig(env: Env, userId: string, request: Request, origin:
       `UPDATE bot_config SET
          welcome_message = COALESCE(?, welcome_message),
          is_active = COALESCE(?, is_active),
+         claim_code = COALESCE(claim_code, ?),
          updated_at = ?
        WHERE id = ?`,
     )
       .bind(
         body.welcome_message?.trim() ?? null,
         typeof body.is_active === 'boolean' ? (body.is_active ? 1 : 0) : null,
+        existing.chat_id ? null : newClaimCode(),
         nowIso(),
         existing.id as string,
       )
@@ -575,18 +559,22 @@ async function saveBotConfig(env: Env, userId: string, request: Request, origin:
   }
   if (existing) {
     await env.DB.prepare(
-      `UPDATE bot_config SET bot_token = ?, bot_username = ?, webhook_url = ?, webhook_secret = ?, is_active = ?, welcome_message = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE bot_config SET bot_token = ?, bot_username = ?, webhook_url = ?, webhook_secret = ?, is_active = ?, welcome_message = ?, claim_code = COALESCE(claim_code, ?), updated_at = ? WHERE id = ?`,
     )
-      .bind(botToken, botUsername, webhookUrl, webhookSecret, body.is_active === false ? 0 : 1, welcome, nowIso(), existing.id as string)
+      .bind(botToken, botUsername, webhookUrl, webhookSecret, body.is_active === false ? 0 : 1, welcome, existing.chat_id ? null : newClaimCode(), nowIso(), existing.id as string)
       .run()
   } else {
     await env.DB.prepare(
-      `INSERT INTO bot_config (id, user_id, bot_token, bot_username, webhook_url, webhook_secret, is_active, welcome_message, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      `INSERT INTO bot_config (id, user_id, bot_token, bot_username, webhook_url, webhook_secret, is_active, welcome_message, claim_code, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
     )
-      .bind(genId(), userId, botToken, botUsername, webhookUrl, webhookSecret, welcome, nowIso(), nowIso())
+      .bind(genId(), userId, botToken, botUsername, webhookUrl, webhookSecret, welcome, newClaimCode(), nowIso(), nowIso())
       .run()
   }
+
+  // Register the command list, description and the "open web panel" button so
+  // the bot behaves like an app from the very first time it is opened.
+  await syncBotProfile(botToken, origin).catch(() => null)
 
   await logActivity(env, userId, 'bot_configured', 'bot', botUsername)
   return getBotConfig(env, userId)

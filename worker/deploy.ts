@@ -78,6 +78,84 @@ const WORKER_SOURCES: Record<string, WorkerSourceConfig> = {
   },
 }
 
+/** Input shared by the web API and the Telegram bot when starting a deploy. */
+export interface StartDeploymentInput {
+  userId: string
+  /** Worker script name (lowercase letters, digits and hyphens). */
+  name: string
+  uuid: string
+  /** Row id of the Cloudflare token to use (must belong to the user + be active). */
+  cfTokenId: string
+  method?: 'workers' | 'pages'
+  workerSource?: string
+  proxyip?: string
+  adminPassword?: string
+  customPath?: string
+  /** Panel origin, used for the bundled-source fallback and the wizard link. */
+  origin: string
+}
+
+export type StartDeploymentResult = { ok: true; id: string } | { ok: false; error: string }
+
+/**
+ * Validate + create a deployment row and hand it to the deploy engine.
+ * Extracted so the web API and the Telegram bot run the exact same checks
+ * (name/uuid/token/quota) and can never drift apart.
+ */
+export async function startDeployment(
+  env: Env,
+  ctx: ExecutionContext,
+  input: StartDeploymentInput,
+): Promise<StartDeploymentResult> {
+  const name = (input.name ?? '').trim().toLowerCase()
+  const uuid = (input.uuid ?? '').trim()
+  if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return { ok: false, error: 'نام ورکر نامعتبر است' }
+  if (!uuid) return { ok: false, error: 'UUID الزامی است' }
+
+  const tokenRow = await env.DB.prepare("SELECT id, token FROM cf_tokens WHERE id = ? AND user_id = ? AND status = 'active'")
+    .bind(input.cfTokenId ?? '', input.userId)
+    .first<{ id: string; token: string }>()
+  if (!tokenRow) return { ok: false, error: 'توکن فعال انتخاب‌شده پیدا نشد' }
+
+  const quotaRow = await env.DB.prepare('SELECT max_deployments FROM users WHERE id = ?')
+    .bind(input.userId)
+    .first<{ max_deployments: number | null }>()
+  const quota = quotaRow?.max_deployments ?? 100
+  const count = await env.DB.prepare('SELECT COUNT(*) AS c FROM deployments WHERE user_id = ?')
+    .bind(input.userId)
+    .first<{ c: number }>()
+  if ((count?.c ?? 0) >= quota) return { ok: false, error: `به سقف تعداد ورکرهای خود (${quota}) رسیده‌اید` }
+
+  const id = genId()
+  await env.DB.prepare(
+    `INSERT INTO deployments (id, user_id, name, worker_code, config, status, uuid, custom_path, method, worker_source, created_at, updated_at)
+     VALUES (?, ?, ?, '[auto-loaded]', '{}', 'deploying', ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, input.userId, name, uuid, input.customPath || null, input.method === 'pages' ? 'pages' : 'workers',
+      input.workerSource ?? 'edgetunnel', nowIso(), nowIso())
+    .run()
+
+  await env.DB.prepare('INSERT INTO activity_logs (id, user_id, action, entity_type, entity_name, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(genId(), input.userId, 'deployment_created', 'deployment', name, nowIso())
+    .run()
+
+  ctx.waitUntil(runDeployment(env, {
+    deployment_id: id,
+    worker_name: name,
+    cf_token: tokenRow.token,
+    cf_token_row_id: tokenRow.id,
+    uuid,
+    method: input.method === 'pages' ? 'pages' : 'workers',
+    worker_source: input.workerSource ?? 'edgetunnel',
+    proxyip: input.proxyip || undefined,
+    admin_password: input.adminPassword || undefined,
+    custom_path: input.customPath || undefined,
+    origin: input.origin,
+  }))
+
+  return { ok: true, id }
+}
+
 export interface DeployJob {
   deployment_id: string
   worker_name: string

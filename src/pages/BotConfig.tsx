@@ -13,6 +13,7 @@ import {
   Copy,
   RefreshCw,
   PlugZap,
+  ShieldCheck,
 } from 'lucide-react'
 
 interface WebhookInfo {
@@ -32,6 +33,7 @@ export default function BotConfigPage() {
   const [hookInfo, setHookInfo] = useState<WebhookInfo | null>(null)
   const [checkingHook, setCheckingHook] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
+  const [claimCopied, setClaimCopied] = useState(false)
 
   /** Strip invisible Unicode (ZWNJ/RTL marks) + whitespace + optional "bot" prefix —
    *  Persian copy-paste often injects these and Telegram silently rejects the token. */
@@ -91,6 +93,14 @@ export default function BotConfigPage() {
       navigator.clipboard.writeText(config.webhook_url)
       setWebhookCopied(true)
       setTimeout(() => setWebhookCopied(false), 2000)
+    }
+  }
+
+  const copyClaimCommand = () => {
+    if (config?.claim_code) {
+      navigator.clipboard.writeText(`/start ${config.claim_code}`)
+      setClaimCopied(true)
+      setTimeout(() => setClaimCopied(false), 2000)
     }
   }
 
@@ -280,6 +290,44 @@ export default function BotConfigPage() {
         </div>
       )}
 
+      {/* Owner claim */}
+      <div className="glass-card p-6">
+        <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-3">
+          <ShieldCheck className="w-5 h-5 text-brand-400" /> اتصال مالک به ربات
+        </h2>
+        {config?.chat_id ? (
+          <div className="flex items-center gap-3 p-4 rounded-xl bg-green-500/10 border border-green-500/30">
+            <Check className="w-5 h-5 text-green-400 shrink-0" />
+            <div>
+              <p className="text-sm text-white font-medium">مالک متصل است</p>
+              <p className="text-xs text-slate-400" dir="rtl">
+                ربات قفل است؛ فقط شما و ادمین‌هایی که تأیید می‌کنید به ورکرها و پنل‌ها دسترسی دارند.
+              </p>
+            </div>
+          </div>
+        ) : config?.claim_code ? (
+          <>
+            <p className="text-sm text-slate-400 leading-relaxed mb-3" dir="rtl">
+              ربات خصوصی است. برای اینکه به‌عنوان مالک شناخته شوید، این دستور را در تلگرام برای ربات بفرستید:
+            </p>
+            <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-900/50 border border-brand-500/30">
+              <code className="flex-1 text-sm text-brand-200 font-mono truncate" dir="ltr">/start {config.claim_code}</code>
+              <button onClick={copyClaimCommand} className="p-1.5 rounded-lg text-slate-500 hover:text-white transition-colors">
+                {claimCopied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 mt-3" dir="rtl">
+              کد یک‌بار مصرف است و بلافاصله پس از اتصال باطل می‌شود. تا زمانی که متصل نشوید، هیچ‌کس دیگری به
+              داده‌های ربات دسترسی ندارد.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-slate-400" dir="rtl">
+            برای ساخت کد اتصال، یک بار «ذخیرهٔ تنظیمات» را بزنید — کد همین‌جا نمایش داده می‌شود.
+          </p>
+        )}
+      </div>
+
       {/* Bot commands info */}
       <div className="glass-card p-6">
         <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-4">
@@ -287,17 +335,23 @@ export default function BotConfigPage() {
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {[
-            { cmd: '/start', desc: 'شروع کار با ربات' },
-            { cmd: '/deploy <name>', desc: 'استقرار ورکر جدید' },
-            { cmd: '/workers', desc: 'لیست ورکرهای مستقر شده' },
+            { cmd: '/start', desc: 'شروع و نمایش منوی اصلی (همراه با کیبورد دائمی پایین صفحه)' },
+            { cmd: '/quickstart', desc: 'شروع سریع — چهار قدم تا اولین ورکر' },
+            { cmd: '/deploy', desc: 'ویزارد استقرار: روش ← منبع ← توکن ← تأیید' },
+            { cmd: '/workers', desc: 'لیست ورکرهای مستقر شده (صفحه‌بندی‌شده)' },
             { cmd: '/config <name>', desc: 'دریافت لینک پنل، ساب و کانفیگ' },
             { cmd: '/sub <name>', desc: 'دریافت لینک اشتراک (ساب)' },
             { cmd: '/panel <name>', desc: 'دریافت لینک پنل ورکر' },
-            { cmd: '/panels', desc: 'پنل‌های آمادهٔ استقرار (StanNG v2، PXPANEL، 3X-UI، S-UI، PasarGuard، Remnawave)' },
-            { cmd: '/servers', desc: 'پنل‌های مستقرشده روی Railway' },
+            { cmd: '/panels', desc: 'پنل‌های آمادهٔ استقرار (StanNG v2، PXPANEL، LUFFY، 3X-UI، S-UI، PasarGuard، Remnawave، WG-Easy)' },
+            { cmd: '/servers', desc: 'پنل‌های مستقرشده روی Railway و Render' },
+            { cmd: '/configs', desc: 'کانفیگ‌ها و ساب‌های آماده' },
+            { cmd: '/members', desc: 'کاربران ساب و سهمیهٔ مصرف' },
+            { cmd: '/settings', desc: 'تنظیمات ربات (پیام خوش‌آمد، ثبت دستورات و دکمهٔ منو)' },
             { cmd: '/set <name> <key> <value>', desc: 'تغییر تنظیمات ورکر' },
-            { cmd: '/status', desc: 'وضعیت سرویس‌ها و سرورها' },
+            { cmd: '/status', desc: 'داشبورد وضعیت سرویس‌ها و سرورها' },
             { cmd: '/tokens', desc: 'لیست توکن‌های کلودفلر' },
+            { cmd: '/id', desc: 'نمایش شناسهٔ تلگرام شما' },
+            { cmd: '/menu', desc: 'بازگشت به منوی اصلی' },
             { cmd: '/help', desc: 'راهنمای دستورات' },
           ].map((c) => (
             <div key={c.cmd} className="flex items-center gap-3 p-3 rounded-xl bg-slate-900/40 border border-slate-800/50">
@@ -306,6 +360,12 @@ export default function BotConfigPage() {
             </div>
           ))}
         </div>
+        <p className="text-xs text-slate-500 mt-4 leading-relaxed">
+          ربات مانند یک اپلیکیشن کار می‌کند: دکمه‌های پایین صفحه بخش‌های اصلی‌اند، هر صفحه در همان پیام به‌روز
+          می‌شود و دکمهٔ «باز کردن پنل» گوشهٔ چت، شما را به همین پنل وب می‌آورد. لینک‌های عمیق هم پشتیبانی
+          می‌شوند: <code className="text-brand-300" dir="ltr">t.me/&lt;bot&gt;?start=workers</code> یا
+          {' '}<code className="text-brand-300" dir="ltr">?start=deploy</code>.
+        </p>
       </div>
     </div>
   )

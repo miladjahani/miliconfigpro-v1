@@ -76,6 +76,10 @@ export interface BotConfig {
   webhook_url: string | null
   is_active: boolean
   welcome_message: string
+  /** Owner chat, set after the owner claims the bot with `/start <claim_code>`. */
+  chat_id: string | null
+  /** One-time `/start <code>` code shown in the panel; null once claimed. */
+  claim_code: string | null
   created_at: string
   updated_at: string
 }
